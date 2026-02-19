@@ -1,0 +1,28 @@
+paths:
+  raw_logs_dir: "./data/raw_logs"
+  processed_dir: "./data/processed"
+  binaries_dir: "./data/binaries"
+  models_dir: "./models"
+  ghidra_output_dir: "./data/processed/ghidra_features"
+  input_dir: "./data/input"
+
+ingestors:
+  cowrie_input_dir: "./data/input/cowrie"
+  dionaea_bistream_dir: "./data/input/dionaea_bistreams"
+  zeek_history_dir: "./data/input/zeek/logs"
+  zeek_spool_dir: "./data/input/zeek/spool"
+
+analysis:
+  session_link_time_window_sec: 300
+  max_log_lines: 150000
+
+ml:
+  classes:
+    - Safe
+    - Recon
+    - Downloader
+    - Exploit
+    - Destructive
+    - ADVANCED_APT
+  vectorizer_path: "./data/processed/ai_ready/vectorizer_deep.pkl"
+  model_path: "./models/brain_v2_deep.pkl"

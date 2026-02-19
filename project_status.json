@@ -1,0 +1,23 @@
+{
+  "project_name": "AdaptiveShield",
+  "version": "1.0",
+  "description": "Multi-agent cyber deception system for proactive threat detection and analysis.",
+  "current_state": {
+    "raw_logs_present": true,
+    "models_trained": true,
+    "binaries_correlated": false,
+    "last_run": "2026-02-08T00:00:00Z",
+    "notes": "Raw logs migrated from old setup. Models available. Session-binary correlation implemented but not yet run. Training script added (src/training/train_model.py)."
+  },
+  "key_paths": {
+    "raw_logs": "./data/raw_logs/",
+    "processed": "./data/processed/",
+    "models": "./models/",
+    "binaries": "./data/binaries/"
+  },
+  "next_steps": [
+    "Run main.py to process correlations and predictions.",
+    "Mount new logs under ./data/input/ for ingestion.",
+    "Train new models if needed via core/processing/vectorizer.py"
+  ]
+}

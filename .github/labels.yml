@@ -1,0 +1,16 @@
+labels:
+  - name: bug
+    color: d73a4a
+    description: Something isn't working
+  - name: enhancement
+    color: a2eeef
+    description: New feature or request
+  - name: config
+    color: 0e8a16
+    description: Configuration or secrets changes
+  - name: docs
+    color: 0075ca
+    description: Documentation changes
+  - name: ci
+    color: 8a2be2
+    description: CI/CD related changes

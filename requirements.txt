@@ -1,0 +1,10 @@
+# Core dependencies
+numpy>=1.21.0
+scikit-learn>=1.0.0
+PyYAML>=6.0
+
+# Optional: Malware analysis (install if needed)
+# angr>=9.2.0
+
+# Optional: Network discovery
+# python-nmap>=0.7.1
