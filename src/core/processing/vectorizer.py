@@ -3,7 +3,12 @@ import numpy as np
 import os
 import pickle
 from sklearn.feature_extraction.text import TfidfVectorizer
+from scipy.sparse import hstack, csr_matrix
 
+
+# ===================================================================
+# Label mapping (shared by both old and enriched pipelines)
+# ===================================================================
 
 LABEL_MAP = {
     "Benign": 0,
@@ -18,6 +23,20 @@ LABEL_MAP = {
     "Obfuscated_Go_Binary": 5,
 }
 
+# Maps binary triage primary_label -> training label ID
+# This is the key bridge: binary behavior -> ML class
+BINARY_LABEL_TO_CLASS = {
+    "miner": 2,                # Malware_Download
+    "botnet_dropper": 2,       # Malware_Download (dropper behavior)
+    "downloader": 2,           # Malware_Download
+    "credential_stealer": 3,   # Exploit_Attempt (credential theft)
+    "rat": 3,                  # Exploit_Attempt (remote access)
+    "recon_scanner": 1,        # Reconnaissance
+    "destructive": 4,          # Data_Destruction
+    "packed_unknown": 3,       # Exploit_Attempt (suspicious, packed)
+    "worm": 3,                 # Exploit_Attempt (self-propagating)
+}
+
 SYNTHETIC_DATA = {
     0: ["ls -la", "git status", "cd /var/www", "whoami", "pwd", "systemctl status nginx"],
     1: ["nmap -sV 127.0.0.1", "masscan 0.0.0.0/0", "zmap -p 80", "netstat -an"],
@@ -27,6 +46,10 @@ SYNTHETIC_DATA = {
     5: ["./payload.bin Activate_Zorya_Protocol", "go run logic_bomb.go --silent", "chmod +x /tmp/svc; /tmp/svc --hide"],
 }
 
+
+# ===================================================================
+# Original dataset builder (preserved for backward compatibility)
+# ===================================================================
 
 def build_dataset(
     fusion_file,
@@ -94,3 +117,230 @@ def build_dataset(
         "shape": X.shape,
         "output_dir": output_dir,
     }
+
+
+# ===================================================================
+# Enriched dataset builder (Phase 1 — binary-aware labels)
+# ===================================================================
+
+# Boolean binary feature column names (must match the keys in
+# session["binary_features"] produced by analysis.enrich_sessions_with_binary_features)
+BINARY_FEATURE_COLUMNS = [
+    "has_miner",
+    "has_botnet",
+    "has_downloader",
+    "has_destructive",
+    "has_recon",
+    "has_credential_access",
+    "has_rat",
+    "has_go_binary",
+    "has_packed",
+]
+
+
+def _label_from_binary_features(binary_features):
+    """
+    Determine a training label for a session based on its aggregated
+    binary features.  Uses the strongest signal from downloaded binaries.
+
+    Priority order (highest wins):
+      5 - Go binary with multi-capability (APT-like)
+      4 - Destructive
+      3 - Credential stealer / RAT / packed unknown
+      2 - Miner / botnet / downloader
+      1 - Recon scanner
+      0 - No binary indicators (but session exists)
+
+    Returns (label_id, source_reason) tuple.
+    """
+    if not binary_features or binary_features.get("num_downloads", 0) == 0:
+        return None, "no_downloads"
+
+    labels = binary_features.get("binary_labels", [])
+    tags = set(binary_features.get("binary_tags", []))
+
+    # Go binary with multiple capabilities = APT-like (class 5)
+    if binary_features.get("has_go_binary") and len(tags) >= 4:
+        return 5, "go_binary_multi_capability"
+
+    # Check each category in priority order
+    if binary_features.get("has_destructive"):
+        return 4, "binary_destructive"
+    if binary_features.get("has_credential_access"):
+        return 3, "binary_credential_stealer"
+    if binary_features.get("has_rat"):
+        return 3, "binary_rat"
+    if binary_features.get("has_packed"):
+        return 3, "binary_packed_suspicious"
+    if binary_features.get("has_miner"):
+        return 2, "binary_miner"
+    if binary_features.get("has_botnet"):
+        return 2, "binary_botnet"
+    if binary_features.get("has_downloader"):
+        return 2, "binary_downloader"
+    if binary_features.get("has_recon"):
+        return 1, "binary_recon"
+
+    # Has downloads but no strong indicators
+    if labels:
+        # Use the BINARY_LABEL_TO_CLASS mapping for the best label
+        best_class = 0
+        for lbl in labels:
+            cls = BINARY_LABEL_TO_CLASS.get(lbl, 0)
+            best_class = max(best_class, cls)
+        if best_class > 0:
+            return best_class, f"binary_label_{labels[0]}"
+
+    return None, "unknown_binary_behavior"
+
+
+def build_enriched_dataset(
+    enriched_sessions,
+    output_dir,
+    synthetic_multiplier=200,
+    tfidf_max_features=3000,
+):
+    """
+    Build a training dataset that fuses command-line text features (TF-IDF)
+    with binary behavior features from Phase 1 triage.
+
+    This replaces the weak IP-based labeling with strong labels derived
+    from actual binary analysis.
+
+    Parameters
+    ----------
+    enriched_sessions : dict
+        Output of analysis.enrich_sessions_with_binary_features().
+        Has keys "sessions" and "downloads".
+    output_dir : str
+        Directory to write output files.
+    synthetic_multiplier : int
+        How many times to repeat synthetic examples per class.
+        Lower than the original (200 vs 500) because we now have real
+        labeled data from binary analysis.
+    tfidf_max_features : int
+        Max TF-IDF features.
+
+    Returns
+    -------
+    dict
+        Statistics about the built dataset.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    sessions = enriched_sessions.get("sessions", [])
+
+    corpus = []
+    labels = []
+    binary_feature_rows = []
+    label_sources = []  # track where each label came from (for debugging)
+
+    # --- Real session data with binary-enriched labels ---
+    labeled_from_binary = 0
+    labeled_default = 0
+
+    for session in sessions:
+        commands = session.get("commands", [])
+        if not commands:
+            continue
+
+        # Join all commands in this session into one document
+        cmd_text = " ; ".join(commands)
+
+        # Determine label from binary features
+        bf = session.get("binary_features")
+        label, reason = _label_from_binary_features(bf)
+
+        if label is not None:
+            labeled_from_binary += 1
+        else:
+            # No binary-based label: default to 0 (Benign) since it's
+            # a real session without malware indicators
+            label = 0
+            reason = "no_binary_indicators"
+            labeled_default += 1
+
+        corpus.append(cmd_text)
+        labels.append(label)
+        label_sources.append(reason)
+
+        # Build the binary feature vector for this session
+        if bf:
+            row = [1.0 if bf.get(col, False) else 0.0 for col in BINARY_FEATURE_COLUMNS]
+            # Add num_downloads and max_priority as numeric features
+            row.append(float(bf.get("num_downloads", 0)))
+            row.append(float(bf.get("max_priority", 0)) / 100.0)  # normalize to 0-1
+        else:
+            row = [0.0] * (len(BINARY_FEATURE_COLUMNS) + 2)
+
+        binary_feature_rows.append(row)
+
+    real_count = len(corpus)
+
+    # --- Synthetic data (reduced multiplier since we have real labels) ---
+    num_binary_cols = len(BINARY_FEATURE_COLUMNS) + 2
+    for label_id, commands in SYNTHETIC_DATA.items():
+        for _ in range(synthetic_multiplier):
+            for cmd in commands:
+                corpus.append(cmd)
+                labels.append(label_id)
+                label_sources.append("synthetic")
+                # Synthetic data gets zero binary features
+                binary_feature_rows.append([0.0] * num_binary_cols)
+
+    synthetic_count = len(corpus) - real_count
+
+    # --- Build TF-IDF features ---
+    vectorizer = TfidfVectorizer(
+        max_features=tfidf_max_features,
+        analyzer='char_wb',
+        ngram_range=(2, 5),
+    )
+    X_tfidf = vectorizer.fit_transform(corpus)
+
+    # --- Combine TF-IDF with binary features ---
+    X_binary = csr_matrix(np.array(binary_feature_rows))
+    X_combined = hstack([X_tfidf, X_binary], format="csr")
+
+    y = np.array(labels)
+
+    # --- Save outputs ---
+    with open(os.path.join(output_dir, "X_enriched_sparse.pkl"), 'wb') as f:
+        pickle.dump(X_combined, f)
+    with open(os.path.join(output_dir, "y_enriched.pkl"), 'wb') as f:
+        pickle.dump(y, f)
+    with open(os.path.join(output_dir, "vectorizer_enriched.pkl"), 'wb') as f:
+        pickle.dump(vectorizer, f)
+    # Save the feature column names for later interpretation
+    feature_names = {
+        "tfidf_features": tfidf_max_features,
+        "binary_feature_columns": BINARY_FEATURE_COLUMNS + ["num_downloads", "max_priority_norm"],
+        "total_features": X_combined.shape[1],
+    }
+    with open(os.path.join(output_dir, "feature_names_enriched.json"), 'w') as f:
+        json.dump(feature_names, f, indent=2)
+
+    # --- Label distribution ---
+    from collections import Counter
+    label_dist = dict(Counter(y.tolist()))
+    source_dist = dict(Counter(label_sources))
+
+    stats = {
+        "total_samples": len(y),
+        "real_sessions": real_count,
+        "synthetic_samples": synthetic_count,
+        "labeled_from_binary": labeled_from_binary,
+        "labeled_default_benign": labeled_default,
+        "feature_shape": X_combined.shape,
+        "tfidf_features": X_tfidf.shape[1],
+        "binary_features": X_binary.shape[1],
+        "label_distribution": label_dist,
+        "label_source_distribution": source_dist,
+        "output_dir": output_dir,
+    }
+
+    # Save stats for reference
+    with open(os.path.join(output_dir, "enriched_dataset_stats.json"), 'w') as f:
+        json.dump(stats, f, indent=2, default=str)
+
+    return stats

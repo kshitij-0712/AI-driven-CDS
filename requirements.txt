@@ -3,8 +3,12 @@ numpy>=1.21.0
 scikit-learn>=1.0.0
 PyYAML>=6.0
 
-# Optional: Malware analysis (install if needed)
-# angr>=9.2.0
+# Phase 1: Lightweight static binary analysis
+pyelftools>=0.29          # ELF header/section/symbol parsing
+pefile>=2023.2.7          # PE (Windows) header/import/export parsing
+
+# Optional: Phase 2 — Deep static analysis (requires Ghidra installed separately)
+# angr>=9.2.0             # Phase 3 — Symbolic execution
 
 # Optional: Network discovery
 # python-nmap>=0.7.1

@@ -12,6 +12,13 @@ ingestors:
   zeek_history_dir: "./data/input/zeek/logs"
   zeek_spool_dir: "./data/input/zeek/spool"
 
+# Phase 1: Binary analysis paths
+binary_analysis:
+  cowrie_downloads_dir: "./data/cowrie/lib/cowrie/downloads"
+  dionaea_binaries_dir: "./data/dionaea/lib/dionaea/binaries"
+  triage_output_dir: "./data/processed/binary_triage"
+  triage_results_file: "./data/processed/binary_triage/all_triage_results.json"
+
 analysis:
   session_link_time_window_sec: 300
   max_log_lines: 150000
@@ -26,3 +33,5 @@ ml:
     - ADVANCED_APT
   vectorizer_path: "./data/processed/ai_ready/vectorizer_deep.pkl"
   model_path: "./models/brain_v2_deep.pkl"
+  enriched_vectorizer_path: "./data/processed/ai_ready/vectorizer_enriched.pkl"
+  enriched_model_path: "./models/brain_v3_enriched.pkl"
