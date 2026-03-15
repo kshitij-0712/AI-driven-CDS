@@ -139,13 +139,21 @@ pip install -r requirements.txt
 pip install angr
 ```
 
-### Install (Host Machine -- Neural Training)
-```bash
+### Install (Host Machine -- Neural Training on Windows)
+```powershell
 python -m venv .venv
-.venv\Scripts\activate  # Windows
+.venv\Scripts\activate
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install pandas scikit-learn numpy pyyaml
+pip install pandas scikit-learn numpy pyyaml matplotlib seaborn
 ```
+
+**Windows notes for OpenCode session:**
+- Use `$env:PYTHONPATH="src"` in PowerShell or `set PYTHONPATH=src` in cmd before running scripts
+- Or run scripts as: `.venv\Scripts\python -m module_name` with PYTHONPATH set
+- The virtual environment is at `.venv\` with activation via `.venv\Scripts\activate`
+- All export data is in `data\exports\` -- paths use forward slashes in Python code but backslashes in shell
+- GPU: RTX 3050 (4GB VRAM) -- use `torch.cuda.is_available()` to verify CUDA setup
+- RAM: 16GB -- sufficient for loading the 67MB sessions_complete.csv into pandas
 
 ### Ghidra Setup (Phase 2)
  - Ghidra 12.0 via snap: `/snap/ghidra/35/ghidra_12.0_PUBLIC/support/analyzeHeadless`
