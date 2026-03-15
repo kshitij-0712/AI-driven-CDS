@@ -35,3 +35,32 @@ ml:
   model_path: "./models/brain_v2_deep.pkl"
   enriched_vectorizer_path: "./data/processed/ai_ready/vectorizer_enriched.pkl"
   enriched_model_path: "./models/brain_v3_enriched.pkl"
+  deep_v4_vectorizer_path: "./data/processed/ai_ready/vectorizer_deep_v4.pkl"
+  deep_v4_model_path: "./models/brain_v4_deep.pkl"
+
+# Phase 4: Deep binary analysis paths
+deep_analysis:
+  ghidra_features_dir: "./data/processed/ghidra_features"
+  angr_features_dir: "./data/processed/angr_features"
+  script_features_dir: "./data/processed/script_features"
+  merged_features_file: "./data/processed/merged_binary_features.json"
+
+# MITRE ATT&CK integration
+mitre:
+  knowledge_base_module: "core.mitre.attack_mapping"
+  session_annotator_module: "core.mitre.session_annotator"
+  num_tactic_features: 14
+  num_total_mitre_features: 21
+
+# Portable dataset export
+export:
+  export_dir: "./data/exports"
+  files:
+    sessions: "sessions.csv"
+    downloads: "downloads.csv"
+    binary_features: "binary_features.csv"
+    session_labels: "session_labels.csv"
+    sessions_mitre: "sessions_mitre.csv"
+    sessions_complete: "sessions_complete.csv"
+    mitre_knowledge_base: "mitre_knowledge_base.json"
+    export_manifest: "export_manifest.json"
