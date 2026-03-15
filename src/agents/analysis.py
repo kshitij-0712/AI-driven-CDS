@@ -438,6 +438,140 @@ def enrich_sessions_with_binary_features(
     return correlated
 
 
+# ===================================================================
+# Phase 4: Deep binary feature enrichment
+# ===================================================================
+
+def enrich_sessions_with_deep_features(
+    correlated,
+    triage_path=DEFAULT_TRIAGE_PATH,
+):
+    """
+    Enrich session data with DEEP binary analysis features from all phases.
+
+    This is the Phase 4 upgrade to enrich_sessions_with_binary_features().
+    Instead of only using Phase 1 triage data, it uses the feature_merger
+    to pull in Ghidra (Phase 2), angr (Phase 3), and script analysis
+    results alongside triage.
+
+    The result per session includes:
+      - All the original Phase 1 fields (has_miner, has_botnet, etc.)
+      - A "deep_feature_vector" list: the 79-column numeric vector from
+        the feature merger, aggregated across all binaries the session
+        downloaded (using max/sum aggregation as appropriate)
+
+    Parameters
+    ----------
+    correlated : dict
+        Output of correlate_downloads_from_logs().
+    triage_path : str
+        Path to triage results (passed through to Phase 1 enrichment).
+
+    Returns
+    -------
+    dict
+        Same structure as input, with enriched fields on sessions.
+    """
+    from core.malware.feature_merger import (
+        merge_all_features, DEEP_FEATURE_COLUMNS, get_feature_vector,
+    )
+
+    # First, run the Phase 1 enrichment to get labels and boolean flags
+    correlated = enrich_sessions_with_binary_features(correlated, triage_path)
+
+    # Load the merged deep features
+    merged = merge_all_features(verbose=True)
+
+    # Build session -> SHA256 list mapping (same as Phase 1)
+    session_shas = {}
+    for session in correlated.get("sessions", []):
+        sid = session.get("session_id")
+        shas = session.get("download_shas", [])
+        if shas:
+            session_shas[sid] = shas
+    if not session_shas:
+        for dl in correlated.get("downloads", []):
+            sid = dl.get("session_id")
+            sha = dl.get("sha256")
+            if sid and sha:
+                session_shas.setdefault(sid, []).append(sha)
+
+    # Aggregate deep features per session
+    # Strategy: for each numeric column, take the MAX across all binaries
+    # the session downloaded. This captures the "most dangerous" binary's
+    # features. Boolean flags use OR (max). Counts use SUM.
+    #
+    # Rationale: A session that downloads a miner AND a recon scanner
+    # should have both signals. Sum for counts, max for boolean/complexity.
+
+    # Columns where we want SUM instead of MAX (count-like features)
+    SUM_COLUMNS = {
+        "ghidra_mining_pool_count", "ghidra_crypto_wallet_count",
+        "ghidra_ip_count", "ghidra_url_count", "ghidra_shell_cmd_count",
+        "angr_ip_count", "angr_url_count", "angr_mining_indicator_count",
+        "angr_shell_cmd_count", "script_url_count", "script_download_count",
+        "deep_mining_signal_count", "deep_total_network_indicators",
+        "deep_total_crypto_indicators", "deep_total_evasion_indicators",
+    }
+
+    # Build a set mapping column name -> index for fast lookup
+    sum_indices = set()
+    for i, col in enumerate(DEEP_FEATURE_COLUMNS):
+        if col in SUM_COLUMNS:
+            sum_indices.add(i)
+
+    n_cols = len(DEEP_FEATURE_COLUMNS)
+    zero_vector = [0.0] * n_cols
+
+    sessions_with_deep = 0
+    sessions_with_any_deep_tool = 0
+
+    for session in correlated.get("sessions", []):
+        sid = session.get("session_id")
+        shas = session_shas.get(sid, [])
+
+        if not shas:
+            session["deep_feature_vector"] = list(zero_vector)
+            session["deep_feature_columns"] = DEEP_FEATURE_COLUMNS
+            continue
+
+        # Collect feature vectors for all binaries in this session
+        vectors = []
+        has_deep = False
+        for sha in shas:
+            entry = merged.get(sha)
+            if entry:
+                vec = get_feature_vector(entry)
+                vectors.append(vec)
+                if entry.get("has_ghidra_results", 0) > 0 or entry.get("has_angr_results", 0) > 0:
+                    has_deep = True
+
+        if not vectors:
+            session["deep_feature_vector"] = list(zero_vector)
+            session["deep_feature_columns"] = DEEP_FEATURE_COLUMNS
+            continue
+
+        # Aggregate: MAX for most columns, SUM for count columns
+        aggregated = list(zero_vector)
+        for i in range(n_cols):
+            values = [v[i] for v in vectors]
+            if i in sum_indices:
+                aggregated[i] = sum(values)
+            else:
+                aggregated[i] = max(values)
+
+        session["deep_feature_vector"] = aggregated
+        session["deep_feature_columns"] = DEEP_FEATURE_COLUMNS
+        sessions_with_deep += 1
+        if has_deep:
+            sessions_with_any_deep_tool += 1
+
+    print("Deep feature enrichment: %d sessions got deep features, "
+          "%d have Ghidra/angr data" % (sessions_with_deep, sessions_with_any_deep_tool))
+
+    return correlated
+
+
 def run_ingestors(config):
     raw_dir = config["paths"]["raw_logs_dir"]
     cowrie_out = os.path.join(raw_dir, "raw_cowrie_all.json")

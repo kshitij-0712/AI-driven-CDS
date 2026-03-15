@@ -312,8 +312,9 @@ def build_enriched_dataset(
     with open(os.path.join(output_dir, "vectorizer_enriched.pkl"), 'wb') as f:
         pickle.dump(vectorizer, f)
     # Save the feature column names for later interpretation
+    # NOTE: Use X_tfidf.shape[1] (actual count), NOT tfidf_max_features (the parameter).
     feature_names = {
-        "tfidf_features": tfidf_max_features,
+        "tfidf_features": X_tfidf.shape[1],
         "binary_feature_columns": BINARY_FEATURE_COLUMNS + ["num_downloads", "max_priority_norm"],
         "total_features": X_combined.shape[1],
     }
@@ -341,6 +342,187 @@ def build_enriched_dataset(
 
     # Save stats for reference
     with open(os.path.join(output_dir, "enriched_dataset_stats.json"), 'w') as f:
+        json.dump(stats, f, indent=2, default=str)
+
+    return stats
+
+
+# ===================================================================
+# Phase 4: Deep dataset builder (all binary analysis features)
+# ===================================================================
+
+def build_deep_dataset(
+    enriched_sessions,
+    output_dir,
+    synthetic_multiplier=200,
+    tfidf_max_features=3000,
+):
+    """
+    Build a training dataset that fuses command-line TF-IDF features with
+    the FULL 79-column deep binary analysis feature vector (Phase 1-3).
+
+    This is the Phase 4 upgrade to build_enriched_dataset(). The key
+    difference: instead of 11 boolean/count binary features from Phase 1
+    triage alone, we now have 79 features that include:
+      - Phase 1 triage: entropy, priority, heuristic scores
+      - Phase 2 Ghidra: function count, imports, crypto patterns, strings
+      - Phase 3 angr: CFG metrics, syscalls, behavioral flags, complexity
+      - Script analysis: dropper/miner detection for shell scripts
+      - Derived: cross-source signals (mining consensus, evasion count, etc.)
+
+    Sessions must have been enriched with enrich_sessions_with_deep_features()
+    which adds the "deep_feature_vector" field.
+
+    Parameters
+    ----------
+    enriched_sessions : dict
+        Output of analysis.enrich_sessions_with_deep_features().
+    output_dir : str
+        Directory to write output files.
+    synthetic_multiplier : int
+        How many times to repeat synthetic examples per class.
+    tfidf_max_features : int
+        Max TF-IDF features.
+
+    Returns
+    -------
+    dict
+        Statistics about the built dataset.
+    """
+    from core.malware.feature_merger import DEEP_FEATURE_COLUMNS
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    sessions = enriched_sessions.get("sessions", [])
+    n_deep = len(DEEP_FEATURE_COLUMNS)
+
+    corpus = []
+    labels = []
+    deep_feature_rows = []
+    label_sources = []
+
+    # --- Real session data ---
+    labeled_from_binary = 0
+    labeled_default = 0
+
+    for session in sessions:
+        commands = session.get("commands", [])
+        if not commands:
+            continue
+
+        cmd_text = " ; ".join(commands)
+
+        # Use the same labeling logic from Phase 1 (binary_features still present)
+        bf = session.get("binary_features")
+        label, reason = _label_from_binary_features(bf)
+
+        if label is not None:
+            labeled_from_binary += 1
+        else:
+            label = 0
+            reason = "no_binary_indicators"
+            labeled_default += 1
+
+        corpus.append(cmd_text)
+        labels.append(label)
+        label_sources.append(reason)
+
+        # Use the deep feature vector (79 columns)
+        deep_vec = session.get("deep_feature_vector")
+        if deep_vec and len(deep_vec) == n_deep:
+            deep_feature_rows.append(deep_vec)
+        else:
+            deep_feature_rows.append([0.0] * n_deep)
+
+    real_count = len(corpus)
+
+    # --- Synthetic data ---
+    for label_id, commands in SYNTHETIC_DATA.items():
+        for _ in range(synthetic_multiplier):
+            for cmd in commands:
+                corpus.append(cmd)
+                labels.append(label_id)
+                label_sources.append("synthetic")
+                deep_feature_rows.append([0.0] * n_deep)
+
+    synthetic_count = len(corpus) - real_count
+
+    # --- Build TF-IDF ---
+    vectorizer = TfidfVectorizer(
+        max_features=tfidf_max_features,
+        analyzer='char_wb',
+        ngram_range=(2, 5),
+    )
+    X_tfidf = vectorizer.fit_transform(corpus)
+
+    # --- Normalize deep features ---
+    # Some features have very different scales (file_size in MB vs boolean 0/1).
+    # We do per-column min-max normalization to [0, 1] so tree models can
+    # split effectively and features don't dominate by magnitude alone.
+    deep_array = np.array(deep_feature_rows, dtype=np.float64)
+
+    # Compute column-wise min/max for normalization
+    col_min = deep_array.min(axis=0)
+    col_max = deep_array.max(axis=0)
+    col_range = col_max - col_min
+    # Avoid division by zero: columns with no variation get 0
+    col_range[col_range == 0] = 1.0
+    deep_normalized = (deep_array - col_min) / col_range
+
+    # Save normalization params for inference
+    norm_params = {
+        "columns": DEEP_FEATURE_COLUMNS,
+        "min": col_min.tolist(),
+        "max": col_max.tolist(),
+    }
+    with open(os.path.join(output_dir, "deep_normalization_params.json"), 'w') as f:
+        json.dump(norm_params, f, indent=2)
+
+    X_deep = csr_matrix(deep_normalized)
+
+    # --- Combine ---
+    X_combined = hstack([X_tfidf, X_deep], format="csr")
+    y = np.array(labels)
+
+    # --- Save outputs ---
+    with open(os.path.join(output_dir, "X_deep_v4_sparse.pkl"), 'wb') as f:
+        pickle.dump(X_combined, f)
+    with open(os.path.join(output_dir, "y_deep_v4.pkl"), 'wb') as f:
+        pickle.dump(y, f)
+    with open(os.path.join(output_dir, "vectorizer_deep_v4.pkl"), 'wb') as f:
+        pickle.dump(vectorizer, f)
+
+    # Feature names for interpretation
+    # NOTE: Use X_tfidf.shape[1] (actual count), NOT tfidf_max_features (the parameter).
+    # The actual count can be less if the corpus vocabulary is smaller than max_features.
+    feature_names = {
+        "tfidf_features": X_tfidf.shape[1],
+        "deep_feature_columns": DEEP_FEATURE_COLUMNS,
+        "total_features": X_combined.shape[1],
+    }
+    with open(os.path.join(output_dir, "feature_names_deep_v4.json"), 'w') as f:
+        json.dump(feature_names, f, indent=2)
+
+    # --- Label distribution ---
+    from collections import Counter
+    label_dist = dict(Counter(y.tolist()))
+    source_dist = dict(Counter(label_sources))
+
+    stats = {
+        "total_samples": len(y),
+        "real_sessions": real_count,
+        "synthetic_samples": synthetic_count,
+        "labeled_from_binary": labeled_from_binary,
+        "labeled_default_benign": labeled_default,
+        "feature_shape": X_combined.shape,
+        "tfidf_features": X_tfidf.shape[1],
+        "deep_features": n_deep,
+        "label_distribution": label_dist,
+        "label_source_distribution": source_dist,
+        "output_dir": output_dir,
+    }
+
+    with open(os.path.join(output_dir, "deep_v4_dataset_stats.json"), 'w') as f:
         json.dump(stats, f, indent=2, default=str)
 
     return stats

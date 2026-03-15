@@ -62,6 +62,34 @@ def load_enriched_data(processed_dir):
     return X, y, feature_info
 
 
+def load_deep_v4_data(processed_dir):
+    """
+    Load the Phase 4 deep dataset (TF-IDF + 79 deep binary features)
+    produced by vectorizer.build_deep_dataset().
+    """
+    X_path = os.path.join(processed_dir, "ai_ready", "X_deep_v4_sparse.pkl")
+    y_path = os.path.join(processed_dir, "ai_ready", "y_deep_v4.pkl")
+
+    if not (os.path.exists(X_path) and os.path.exists(y_path)):
+        raise FileNotFoundError(
+            "Phase 4 deep datasets not found. Run: "
+            "vectorizer.build_deep_dataset() first."
+        )
+
+    with open(X_path, 'rb') as f:
+        X = pickle.load(f)
+    with open(y_path, 'rb') as f:
+        y = pickle.load(f)
+
+    names_path = os.path.join(processed_dir, "ai_ready", "feature_names_deep_v4.json")
+    feature_info = None
+    if os.path.exists(names_path):
+        with open(names_path, 'r') as f:
+            feature_info = json.load(f)
+
+    return X, y, feature_info
+
+
 def train_random_forest(X, y):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     clf = RandomForestClassifier(n_estimators=150, max_depth=35, n_jobs=-1, random_state=42)
@@ -146,6 +174,88 @@ def train_enriched_model(X, y, feature_info=None):
     return clf, acc, report, extras
 
 
+def train_deep_v4_model(X, y, feature_info=None):
+    """
+    Train a RandomForest on the Phase 4 deep dataset (TF-IDF + 79 deep features).
+
+    Same architecture as train_enriched_model() but with improved feature
+    importance analysis that groups the 79 deep features by source
+    (triage, Ghidra, angr, script, derived).
+
+    Returns (model, accuracy, report, extras).
+    """
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y,
+    )
+
+    clf = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=40,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        n_jobs=-1,
+        random_state=42,
+        class_weight="balanced",
+    )
+    clf.fit(X_train, y_train)
+
+    y_pred = clf.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+
+    present_classes = sorted(set(y_test) | set(y_pred))
+    target_names = [CLASS_NAMES.get(c, f"class_{c}") for c in present_classes]
+    report = classification_report(
+        y_test, y_pred,
+        labels=present_classes,
+        target_names=target_names,
+        output_dict=True,
+    )
+
+    # Cross-validation
+    n_folds = min(3, min(np.bincount(y)))
+    n_folds = max(2, n_folds)
+    try:
+        cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+        cv_scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy")
+    except Exception:
+        cv_scores = np.array([acc])
+
+    importances = clf.feature_importances_
+    extras = {
+        "cv_scores": cv_scores.tolist(),
+        "cv_mean": float(cv_scores.mean()),
+        "cv_std": float(cv_scores.std()),
+    }
+
+    if feature_info:
+        n_tfidf = feature_info.get("tfidf_features", 0)
+        deep_cols = feature_info.get("deep_feature_columns", [])
+        if deep_cols and n_tfidf > 0:
+            deep_importances = importances[n_tfidf:n_tfidf + len(deep_cols)]
+
+            # Individual feature importances
+            extras["deep_feature_importance"] = {
+                col: round(float(imp), 6)
+                for col, imp in zip(deep_cols, deep_importances)
+            }
+
+            # Group by source prefix (has_* are derived/meta features → group with "deep")
+            source_importance = {}
+            for col, imp in zip(deep_cols, deep_importances):
+                prefix = col.split("_")[0]
+                if prefix == "has":
+                    prefix = "deep"  # has_ghidra_results etc. are derived meta-features
+                source_importance[prefix] = source_importance.get(prefix, 0.0) + imp
+            extras["importance_by_source"] = {
+                k: round(float(v), 6) for k, v in sorted(source_importance.items(), key=lambda x: -x[1])
+            }
+
+            extras["tfidf_total_importance"] = round(float(importances[:n_tfidf].sum()), 6)
+            extras["deep_total_importance"] = round(float(deep_importances.sum()), 6)
+
+    return clf, acc, report, extras
+
+
 def save_model(model, models_dir, name="brain_v2_deep.pkl"):
     os.makedirs(models_dir, exist_ok=True)
     out_path = os.path.join(models_dir, name)
@@ -212,9 +322,55 @@ def main_enriched():
         print(f"  Binary total importance:  {extras.get('binary_total_importance', 0):.4f}")
 
 
+def main_deep_v4():
+    """
+    Train using the Phase 4 deep dataset (TF-IDF + 79 deep binary features).
+    Call this after running the Phase 4 pipeline.
+    """
+    processed_dir = "./data/processed"
+    models_dir = "./models"
+
+    print("Loading Phase 4 deep dataset...")
+    X, y, feature_info = load_deep_v4_data(processed_dir)
+    print(f"  Shape: {X.shape}, Classes: {sorted(set(y))}")
+    print(f"  Label distribution: {dict(zip(*np.unique(y, return_counts=True)))}")
+
+    print("Training deep v4 model...")
+    model, acc, report, extras = train_deep_v4_model(X, y, feature_info)
+
+    model_path = save_model(model, models_dir, name="brain_v4_deep.pkl")
+    report_path = save_report(report, processed_dir, acc, extras)
+
+    print(f"\nDeep v4 model saved to {model_path}")
+    print(f"Training report saved to {report_path}")
+    print(f"Accuracy: {acc * 100:.2f}%")
+    print(f"Cross-val: {extras['cv_mean']*100:.2f}% +/- {extras['cv_std']*100:.2f}%")
+
+    if "importance_by_source" in extras:
+        print("\nImportance by source:")
+        for src, imp in extras["importance_by_source"].items():
+            bar = "#" * int(imp * 200)
+            print(f"  {src:12s}: {imp:.6f} {bar}")
+
+    if "deep_feature_importance" in extras:
+        print("\nTop 15 deep features by importance:")
+        sorted_feats = sorted(
+            extras["deep_feature_importance"].items(),
+            key=lambda x: -x[1],
+        )
+        for col, imp in sorted_feats[:15]:
+            bar = "#" * int(imp * 500)
+            print(f"  {col:40s}: {imp:.6f} {bar}")
+
+        print(f"\n  TF-IDF total importance:  {extras.get('tfidf_total_importance', 0):.4f}")
+        print(f"  Deep total importance:    {extras.get('deep_total_importance', 0):.4f}")
+
+
 if __name__ == "__main__":
     import sys
-    if "--enriched" in sys.argv:
+    if "--deep-v4" in sys.argv:
+        main_deep_v4()
+    elif "--enriched" in sys.argv:
         main_enriched()
     else:
         main()
