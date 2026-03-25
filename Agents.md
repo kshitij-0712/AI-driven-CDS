@@ -5,7 +5,7 @@ AdaptiveShield is an autonomous cyber-deception system that proactively detects,
 
 **Project Origin**: Real honeypot logs (Cowrie SSH, Dionaea multi-protocol, Zeek network monitor) collected from an Azure VM over ~63 days. All binary analysis was performed in a VirtualBox VM (Ubuntu 24.04, no GPU, 7.8GB RAM) specifically because malware binaries get flagged on the Windows host.
 
-**Current State**: All binary analysis (Phases 1-4) is COMPLETE. A portable dataset has been exported to `data/exports/` for neural model training on the host machine (RTX 3050 GPU, 16GB RAM, Windows).
+**Current State**: All binary analysis (Phases 1-4) is COMPLETE. Phase 5 neural model (`brain_v5_neural.pkl`) has been trained and saved. The BiLSTM + structured features model achieves 1.00 F1 on all classes.
 
 ## 2. Agent Definitions
 
@@ -61,12 +61,13 @@ AdaptiveShield is an autonomous cyber-deception system that proactively detects,
 - Models:
    - `brain_v2_deep.pkl` -- Original model trained on synthetic + IP-labeled data only.
    - `brain_v3_enriched.pkl` -- **Enriched model** trained on TF-IDF + binary behavior features from Phase 1 triage. Uses 3,011 features (3,000 TF-IDF char n-grams + 11 binary features).
-   - `brain_v4_deep.pkl` -- **Deep model** trained on TF-IDF + 79-column deep binary feature vectors from all analysis phases (triage + Ghidra + angr + script features + derived cross-source features). **THIS IS THE CURRENT PRODUCTION MODEL** but has known limitations (see Section 9).
-   - `brain_v5_neural.pkl` -- **PLANNED**: BiLSTM + structured features neural model to be trained on host machine.
+   - `brain_v4_deep.pkl` -- **Deep model** trained on TF-IDF + 79-column deep binary feature vectors from all analysis phases (triage + Ghidra + angr + script features + derived cross-source features).
+   - `brain_v5_neural.pkl` -- **CURRENT PRODUCTION MODEL**: BiLSTM + structured features neural model. Character-level embedding, attention pooling, 100-dim structured input (21 MITRE + 79 binary). ~706K parameters. Trained with combined focal + cost-sensitive loss.
  - Vectorizers:
    - `vectorizer_deep.pkl` -- Original TF-IDF vectorizer.
    - `vectorizer_enriched.pkl` -- Enriched vectorizer (same TF-IDF + binary feature columns).
    - `vectorizer_deep_v4.pkl` -- Deep v4 vectorizer (TF-IDF + 79 deep feature columns).
+   - (v5 uses built-in CommandTokenizer, no separate vectorizer needed)
 - Output: ActionCommand for Deception Agent.
 
 ### XAI Agent ("The Narrator")
@@ -397,45 +398,107 @@ structured = df[mitre_cols + binary_cols].values
 labels = df["label_id"].values
 ```
 
-## 11. Planned Neural Model Architecture (Phase 5)
+## 11. Neural Model Architecture (Phase 5) - IMPLEMENTED
 
 ### Architecture: BiLSTM + Structured Features
 ```
 Input Commands (text)     Structured Features (100-dim)
        |                           |
-  Char/Token Embedding      BatchNorm + Dense(64)
+  Char Embedding (64d)      BatchNorm + Dense(128)
        |                           |
-  BiLSTM (128 hidden)        ReLU + Dropout
+  BiLSTM (128 hidden x2)     ReLU + Dropout(0.3)
        |                           |
-  Attention Pooling                |
+  Attention Pooling          Dense(64) + ReLU
        |                           |
        +----------+----------------+
                   |
-            Concatenate
+            Concatenate (256 + 64 = 320)
                   |
-           Dense(128) + ReLU
+           Dense(128) + ReLU + Dropout
                   |
            Dense(6) + Softmax
                   |
            Class Prediction (0-5)
 ```
 
-### Design Decisions (already made)
-- **Architecture**: Neural approach (BiLSTM + structured features)
-- **Synthetic data strategy**: Hybrid (real sessions primary, synthetic only for rare classes 1 and 3)
-- **MITRE depth**: Sub-technique level (T1059.004 not just T1059)
-- **Loss function**: Cost-sensitive (higher penalty for missing APT/Destructive)
-- **Training hardware**: RTX 3050 GPU with CUDA on Windows host
+### Model Specifications
+- **Total Parameters**: 706,574
+- **Character Vocabulary**: 256 (full ASCII)
+- **Max Sequence Length**: 512 characters
+- **Structured Input**: 100-dim (21 MITRE + 79 binary features)
+- **Output**: 6 classes (Safe, Recon, Downloader, Exploit, Destructive, ADVANCED_APT)
 
-### Training Approach
-1. Load `sessions_complete.csv` from export
-2. Character-level or subword tokenization of commands
-3. BiLSTM encoder for command sequences
-4. Concatenate with 21 MITRE features + 79 binary features = 100-dim structured input
-5. Cost-sensitive cross-entropy loss with class weights inversely proportional to frequency
-6. Consider focal loss (gamma=2) for extreme imbalance handling
-7. Downsample Safe class to ~5,000 or use stratified mini-batches
-8. Generate synthetic sessions for classes 1 (Recon) and 3 (Exploit) using MITRE-informed templates
+### Training Configuration
+- **Loss Function**: Combined Focal + Cost-Sensitive Loss (gamma=2.0)
+- **Optimizer**: AdamW (lr=1e-3, weight_decay=1e-4)
+- **Batch Size**: 64
+- **Early Stopping Patience**: 7 epochs
+- **Training Time**: ~12-22 minutes on RTX 3050
+
+### Available Models
+
+#### brain_v5_neural.pkl (Original Binary-Labeled)
+- **Training Data**: Labels from binary download analysis only
+- **Test Macro F1**: 1.0000
+- **Limitation**: Command-only inference predicts everything as "Safe" because labels were based on what binaries were downloaded, not command patterns
+
+#### brain_v5_semantic_balanced.pkl (Semantic-Labeled, Balanced) - RECOMMENDED
+- **Training Data**: Combined labels (max of semantic command patterns + binary analysis)
+- **Class Balance**: Safe=5000, Recon=11746, Downloader=26, Exploit=500 (synthetic), Destructive=5000, APT=2277
+- **Test Macro F1**: 0.9655
+- **Test Weighted F1**: 0.9835
+- **Per-Class F1**: Safe=0.96, Recon=0.98, Downloader=0.86, Exploit=0.99, Destructive=1.00, APT=1.00
+
+### Semantic Labeling System
+Added `src/training/neural/semantic_labels.py` which labels commands based on BEHAVIOR using pattern matching:
+
+| Label | Pattern Examples |
+|-------|-----------------|
+| Recon | nmap, netstat -tulpn, cat /etc/passwd, ps aux |
+| Downloader | wget/curl piped to sh, download from IP |
+| Exploit | cat /etc/shadow, reverse shells, base64 decode + exec |
+| Destructive | rm -rf /, dd wipe, log clearing, history deletion |
+| ADVANCED_APT | Multi-category attacks with persistence + exfiltration |
+
+### Known Limitations
+1. **Training data homogeneity**: 35,323/35,458 Destructive sessions are the SAME SSH key replacement attack (`cd ~; chattr -ia .ssh; lockr -ia .ssh...`). Model generalizes poorly to other destructive commands.
+2. **Command-only inference**: Works best with structured MITRE+binary features. Without them, accuracy drops significantly (~75% with features vs ~14% without on hand-crafted test cases).
+3. **Real vs synthetic imbalance**: Classes 1 (Recon) and 3 (Exploit) have no real sessions - rely entirely on synthetic data.
+
+### Source Files
+| File | Description |
+|------|-------------|
+| `src/training/neural/__init__.py` | Module exports |
+| `src/training/neural/model.py` | BiLSTM + StructuredEncoder + ThreatClassifier |
+| `src/training/neural/dataset.py` | CommandTokenizer + ThreatDataset + DataLoaders |
+| `src/training/neural/losses.py` | FocalLoss + CostSensitiveLoss + CombinedLoss |
+| `src/training/neural/synthetic.py` | MITRE-informed synthetic data generator |
+| `src/training/neural/trainer.py` | NeuralTrainer with AMP, early stopping, checkpointing |
+| `src/training/neural/train_neural.py` | Main training script |
+| `src/training/neural/semantic_labels.py` | Pattern-based semantic command labeling |
+
+### Usage
+```powershell
+# Windows (from project root):
+
+# Train with semantic labels (RECOMMENDED):
+.venv\Scripts\python src\training\neural\train_neural.py --use-semantic-labels --label-mode combined --epochs 30 --model-name brain_v5_semantic_balanced
+
+# Train with original binary-based labels:
+.venv\Scripts\python src\training\neural\train_neural.py --epochs 30 --batch-size 64 --downsample-safe 5000
+
+# Using pre-computed semantic labels (faster):
+.venv\Scripts\python src\training\neural\train_neural.py --use-semantic-labels --precomputed-labels data/exports/sessions_semantic_labeled.csv
+```
+
+### Saved Artifacts
+- `models/brain_v5_neural.pkl` -- Full inference bundle (model + tokenizer)
+- `models/brain_v5_neural.pt` -- PyTorch state dict only
+- `models/brain_v5_neural_results.json` -- Training metrics and history
+- `models/brain_v5_semantic_balanced.pkl` -- **RECOMMENDED** Semantic-labeled model
+- `models/brain_v5_semantic_balanced.pt` -- PyTorch state dict
+- `models/brain_v5_semantic_balanced_results.json` -- Training metrics
+- `checkpoints/best_model.pt` -- Best checkpoint during training
 
 ## 12. How 195 Files Became 41 Analysis Targets
 
@@ -479,6 +542,13 @@ Input Commands (text)     Structured Features (100-dim)
 | `src/core/processing/vectorizer.py` | TF-IDF + feature building, synthetic data, labeling |
 | `src/training/train_model.py` | RandomForest training |
 | `src/agents/analysis.py` | Session correlation + binary enrichment |
+| `src/training/neural/__init__.py` | Neural module exports |
+| `src/training/neural/model.py` | BiLSTM + StructuredEncoder + ThreatClassifier |
+| `src/training/neural/dataset.py` | CommandTokenizer + ThreatDataset + DataLoaders |
+| `src/training/neural/losses.py` | FocalLoss + CostSensitiveLoss + CombinedLoss |
+| `src/training/neural/synthetic.py` | MITRE-informed synthetic data generator |
+| `src/training/neural/trainer.py` | NeuralTrainer with AMP, early stopping, checkpointing |
+| `src/training/neural/train_neural.py` | Main training script |
 
 ### Configuration
 | File | Description |
@@ -487,9 +557,10 @@ Input Commands (text)     Structured Features (100-dim)
 
 ## 14. Git Information
 - **Repository**: https://github.com/kshitij-0712/AI-driven-CDS.git
-- **Branch**: `fE`
+- **Branch**: `model` (neural model development)
 - **Last binary analysis commit**: `dd9998b` (Phases 2-4 complete)
 - **MITRE + export files**: committed on top of dd9998b
+- **Neural model (Phase 5)**: `brain_v5_neural.pkl` trained and saved
 
 ## 15. Data Provenance Summary
 | Metric | Value |

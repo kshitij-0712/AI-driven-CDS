@@ -37,6 +37,27 @@ ml:
   enriched_model_path: "./models/brain_v3_enriched.pkl"
   deep_v4_vectorizer_path: "./data/processed/ai_ready/vectorizer_deep_v4.pkl"
   deep_v4_model_path: "./models/brain_v4_deep.pkl"
+  # Phase 5: Neural model (BiLSTM + structured features)
+  neural_v5_model_path: "./models/brain_v5_neural.pkl"
+  neural_v5_state_path: "./models/brain_v5_neural.pt"
+  neural_v5_results_path: "./models/brain_v5_neural_results.json"
+
+# Phase 5: Neural model training configuration
+neural_training:
+  max_length: 512
+  embed_dim: 64
+  lstm_hidden: 128
+  lstm_layers: 2
+  dropout: 0.3
+  batch_size: 64
+  lr: 0.001
+  epochs: 50
+  patience: 7
+  loss_type: "combined"  # focal, cost_sensitive, combined, ce
+  focal_gamma: 2.0
+  downsample_safe: 5000
+  synthetic_recon: 500
+  synthetic_exploit: 500
 
 # Phase 4: Deep binary analysis paths
 deep_analysis:
