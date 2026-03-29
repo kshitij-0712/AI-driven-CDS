@@ -1,5 +1,6 @@
 import json
 import subprocess
+import os
 
 
 def run_discovery(target="127.0.0.1"):
@@ -24,5 +25,7 @@ def run_discovery(target="127.0.0.1"):
 
 
 def write_report(report, output_path):
-    with open(output_path, 'w') as f:
-        json.dump(report, f, indent=2)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        with open(output_path, 'w') as f:       
+         json.dump(report, f, indent=2)

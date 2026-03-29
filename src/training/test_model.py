@@ -163,7 +163,7 @@ def main():
     predictions = []
     label_counts = {}
     for idx, session in enumerate(sessions, start=1):
-        result = predict_intent(model, vectorizer, session["commands"], class_labels)
+        result = predict_intent(model, vectorizer, session, class_labels)
         label = result["label"]
         label_counts[label] = label_counts.get(label, 0) + 1
         entry = {

