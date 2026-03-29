@@ -125,7 +125,7 @@ credentials/
 *.key
 
 # Temporary files
-data
+
 tmp/
 temp/
 *.tmp
