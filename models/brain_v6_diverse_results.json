@@ -1,0 +1,290 @@
+{
+  "training_history": {
+    "train_loss": [
+      0.5226995311638488,
+      0.045295952322939606,
+      0.03696879420101167,
+      0.027723906309905007,
+      0.02489669940128258,
+      0.024364788129304198,
+      0.019862151107552097,
+      0.015596914385744004,
+      0.018148161994393675,
+      0.018376669521888263,
+      0.017800555369199573,
+      0.01572327101029598,
+      0.016658903697716748,
+      0.019946762558879432,
+      0.013881823327891611,
+      0.012485034819372109,
+      0.012262779309395575,
+      0.010971305127895903,
+      0.00978273195651736,
+      0.012629729104104108,
+      0.012190373791214888,
+      0.010480033065257915,
+      0.009938998709768387,
+      0.011307781402792594,
+      0.010635230471048831,
+      0.010669567285008289,
+      0.009457816137320574,
+      0.009957630875779541,
+      0.010174550876064859,
+      0.00903014451842145
+    ],
+    "val_loss": [
+      0.05842002336650567,
+      0.049275254677753726,
+      0.02110829516814827,
+      0.01433557215103403,
+      0.07072558277963423,
+      0.024681898156116003,
+      0.01173455353831699,
+      0.008749844280320631,
+      0.008836395553919638,
+      0.007706867591856958,
+      0.008552048484277696,
+      0.01061553687674838,
+      0.009401568554092719,
+      0.012232183300088658,
+      0.007531244297603925,
+      0.006257508532482546,
+      0.006832464210293797,
+      0.006004527823723376,
+      0.00574474865746641,
+      0.0065911474595723545,
+      0.008513091600074995,
+      0.006178420933666043,
+      0.010259528548018816,
+      0.006436537917050923,
+      0.005406279091487725,
+      0.005800516449008408,
+      0.00518171010074628,
+      0.0053279618773241205,
+      0.005419395427790817,
+      0.008055943617872017
+    ],
+    "train_acc": [
+      0.8458715596330275,
+      0.9873525557011795,
+      0.9905635648754915,
+      0.9922018348623853,
+      0.9930537352555702,
+      0.9938401048492792,
+      0.9951507208387942,
+      0.996002621231979,
+      0.9955439056356488,
+      0.9946920052424639,
+      0.994954128440367,
+      0.9961336828309305,
+      0.9958060288335517,
+      0.9955439056356488,
+      0.9961336828309305,
+      0.9965268676277851,
+      0.997051114023591,
+      0.9967889908256881,
+      0.9965923984272608,
+      0.9963302752293578,
+      0.9969855832241153,
+      0.9967889908256881,
+      0.9974442988204456,
+      0.9973132372214941,
+      0.9974442988204456,
+      0.997051114023591,
+      0.9969855832241153,
+      0.9974442988204456,
+      0.9971821756225426,
+      0.9971166448230668
+    ],
+    "val_acc": [
+      0.9832962138084632,
+      0.9933184855233853,
+      0.9944320712694877,
+      0.9948032665181886,
+      0.9951744617668894,
+      0.9870081662954714,
+      0.9955456570155902,
+      0.995916852264291,
+      0.9962880475129918,
+      0.9974016332590943,
+      0.9966592427616926,
+      0.995916852264291,
+      0.9962880475129918,
+      0.9933184855233853,
+      0.9962880475129918,
+      0.9970304380103935,
+      0.9974016332590943,
+      0.9974016332590943,
+      0.9981440237564959,
+      0.9974016332590943,
+      0.9966592427616926,
+      0.9970304380103935,
+      0.9955456570155902,
+      0.9962880475129918,
+      0.9977728285077951,
+      0.9974016332590943,
+      0.9970304380103935,
+      0.9981440237564959,
+      0.9977728285077951,
+      0.9955456570155902
+    ]
+  },
+  "test_case_results": [
+    {
+      "name": "Safe: basic commands",
+      "expected": "Safe",
+      "predicted": "Safe",
+      "confidence": 0.8507295250892639,
+      "correct": true
+    },
+    {
+      "name": "Safe: system info",
+      "expected": "Safe",
+      "predicted": "Safe",
+      "confidence": 0.8797031044960022,
+      "correct": true
+    },
+    {
+      "name": "Safe: file reading",
+      "expected": "Safe",
+      "predicted": "Safe",
+      "confidence": 0.5501091480255127,
+      "correct": true
+    },
+    {
+      "name": "Recon: nmap scan",
+      "expected": "Recon",
+      "predicted": "Recon",
+      "confidence": 0.7609195113182068,
+      "correct": true
+    },
+    {
+      "name": "Recon: network enum",
+      "expected": "Recon",
+      "predicted": "Safe",
+      "confidence": 0.9786081910133362,
+      "correct": false
+    },
+    {
+      "name": "Recon: user/suid enum",
+      "expected": "Recon",
+      "predicted": "Safe",
+      "confidence": 0.9792814254760742,
+      "correct": false
+    },
+    {
+      "name": "Recon: process/user enum",
+      "expected": "Recon",
+      "predicted": "Safe",
+      "confidence": 0.7389945387840271,
+      "correct": false
+    },
+    {
+      "name": "Downloader: wget exec",
+      "expected": "Downloader",
+      "predicted": "Downloader",
+      "confidence": 0.7368811368942261,
+      "correct": true
+    },
+    {
+      "name": "Downloader: curl pipe bash",
+      "expected": "Downloader",
+      "predicted": "Safe",
+      "confidence": 0.5421624183654785,
+      "correct": false
+    },
+    {
+      "name": "Downloader: miner",
+      "expected": "Downloader",
+      "predicted": "Downloader",
+      "confidence": 0.6571962237358093,
+      "correct": true
+    },
+    {
+      "name": "Exploit: credential theft",
+      "expected": "Exploit",
+      "predicted": "Safe",
+      "confidence": 0.9379395842552185,
+      "correct": false
+    },
+    {
+      "name": "Exploit: reverse shell",
+      "expected": "Exploit",
+      "predicted": "Safe",
+      "confidence": 0.9820399880409241,
+      "correct": false
+    },
+    {
+      "name": "Exploit: key/history theft",
+      "expected": "Exploit",
+      "predicted": "Safe",
+      "confidence": 0.5499873161315918,
+      "correct": false
+    },
+    {
+      "name": "Exploit: python revshell",
+      "expected": "Exploit",
+      "predicted": "Safe",
+      "confidence": 0.9995020627975464,
+      "correct": false
+    },
+    {
+      "name": "Destructive: rm -rf /",
+      "expected": "Destructive",
+      "predicted": "Safe",
+      "confidence": 0.9059130549430847,
+      "correct": false
+    },
+    {
+      "name": "Destructive: disk wipe",
+      "expected": "Destructive",
+      "predicted": "Safe",
+      "confidence": 0.9391228556632996,
+      "correct": false
+    },
+    {
+      "name": "Destructive: log/history wipe",
+      "expected": "Destructive",
+      "predicted": "Safe",
+      "confidence": 0.9398190975189209,
+      "correct": false
+    },
+    {
+      "name": "Destructive: shred files",
+      "expected": "Destructive",
+      "predicted": "Safe",
+      "confidence": 0.973442792892456,
+      "correct": false
+    },
+    {
+      "name": "Destructive: SSH backdoor",
+      "expected": "Destructive",
+      "predicted": "Destructive",
+      "confidence": 0.5507868528366089,
+      "correct": true
+    },
+    {
+      "name": "APT: full kill chain",
+      "expected": "ADVANCED_APT",
+      "predicted": "Downloader",
+      "confidence": 0.8686985373497009,
+      "correct": false
+    },
+    {
+      "name": "APT: persistence + exfil",
+      "expected": "ADVANCED_APT",
+      "predicted": "Downloader",
+      "confidence": 0.530302882194519,
+      "correct": false
+    },
+    {
+      "name": "APT: toolkit + browser creds",
+      "expected": "ADVANCED_APT",
+      "predicted": "Downloader",
+      "confidence": 0.7818068265914917,
+      "correct": false
+    }
+  ],
+  "test_case_accuracy": 31.818181818181817,
+  "created": "2026-03-30T12:28:52.997991"
+}

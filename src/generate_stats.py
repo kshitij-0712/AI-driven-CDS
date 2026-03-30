@@ -49,7 +49,7 @@ def load_mitre_stats():
         count = tactic_counts.get(tactic, 0)
         if count > 0:
             tactic_id = TACTICS[tactic]['id']
-            bar = "█" * (count // 2) + "░" * ((15 - count) // 2)
+            bar = "#" * (count // 2) + "-" * ((15 - count) // 2)
             print(f"    {tactic.replace('_', ' ').title():28s} ({tactic_id}): {bar} {count}")
     
     # Severity distribution
@@ -57,7 +57,7 @@ def load_mitre_stats():
     print(f"\n  Severity Distribution:")
     for sev in range(1, 11):
         count = severity_counts.get(sev, 0)
-        bar = "█" * count
+        bar = "#" * count
         print(f"    Severity {sev:2d}: {bar} {count}")
     
     return len(ATTACK_PATTERNS), len(techniques)
@@ -158,7 +158,7 @@ def load_model_stats():
     if per_class_f1:
         print(f"\n  Per-Class F1 Scores:")
         for name, f1 in zip(class_names, per_class_f1):
-            bar = "█" * int(f1 * 20) + "░" * (20 - int(f1 * 20))
+            bar = "#" * int(f1 * 20) + "-" * (20 - int(f1 * 20))
             print(f"    {name:12s}: [{bar}] {f1:.4f}")
     
     # Model config
@@ -192,16 +192,29 @@ def load_binary_stats():
     
     print(f"\n  Total Binaries Analyzed: {len(binaries)}")
     
+    # Helper to check boolean values (handles '1', '1.0', 'True', 'true')
+    def is_true(val):
+        return val in ('1', '1.0', 'True', 'true')
+    
     # Count by type
-    go_count = sum(1 for b in binaries if b.get('triage_is_go', '0') == '1' or b.get('triage_is_go', '0') == 'True')
-    packed_count = sum(1 for b in binaries if b.get('triage_is_packed', '0') == '1' or b.get('triage_is_packed', '0') == 'True')
-    ghidra_count = sum(1 for b in binaries if b.get('has_ghidra_results', '0') == '1' or b.get('has_ghidra_results', '0') == 'True')
-    angr_count = sum(1 for b in binaries if b.get('has_angr_results', '0') == '1' or b.get('has_angr_results', '0') == 'True')
+    go_count = sum(1 for b in binaries if is_true(b.get('triage_is_go', '0')))
+    packed_count = sum(1 for b in binaries if is_true(b.get('triage_is_packed', '0')))
+    ghidra_count = sum(1 for b in binaries if is_true(b.get('has_ghidra_results', '0')))
+    angr_count = sum(1 for b in binaries if is_true(b.get('has_angr_results', '0')))
+    
+    # Count by malware type (from triage_label)
+    label_counts = Counter(b.get('triage_label', 'unknown') for b in binaries)
     
     print(f"    Go Binaries:         {go_count}")
     print(f"    Packed/Obfuscated:   {packed_count}")
     print(f"    Ghidra Analyzed:     {ghidra_count}")
     print(f"    angr Analyzed:       {angr_count}")
+    
+    # Show malware type distribution
+    print(f"\n  Malware Classification:")
+    for label, count in sorted(label_counts.items(), key=lambda x: -x[1]):
+        if count > 0:
+            print(f"    {label:25s}: {count}")
 
 # ============================================================================
 # Label Distribution
@@ -238,7 +251,7 @@ def load_label_stats():
         count = label_counts.get(name, 0)
         pct = count / total * 100 if total > 0 else 0
         bar_width = int(pct / 2)
-        bar = "█" * bar_width + "░" * (50 - bar_width)
+        bar = "#" * bar_width + "-" * (50 - bar_width)
         print(f"    {name:15s}: {count:7,} ({pct:5.2f}%) [{bar}]")
 
 # ============================================================================
