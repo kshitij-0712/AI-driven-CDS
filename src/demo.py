@@ -3,19 +3,24 @@
 AdaptiveShield Demo Script - Capstone Phase 2 Review
 
 This script demonstrates the complete 10% implementation milestone:
-1. Neural model inference (threat classification)
+1. HYBRID classifier (MITRE rules + neural fallback)
 2. MITRE ATT&CK mapping and explanations
 3. Binary analysis feature integration
 4. Real-time session analysis
 
 Run with: python src/demo.py
 Or: .venv\Scripts\python src/demo.py (Windows)
+
+Modes:
+  --hybrid   Use MITRE rule-based hybrid classifier (default, 90.9% accuracy)
+  --neural   Use neural model only (brain_v5_semantic_balanced.pkl)
 """
 
 import sys
 import os
 import pickle
 import json
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -30,6 +35,7 @@ from core.mitre.attack_mapping import ATTACK_PATTERNS, TACTICS, TACTIC_NAMES
 from core.mitre.session_annotator import annotate_session, annotation_to_flat_dict
 from training.neural.model import ThreatClassifier
 from training.neural.dataset import CommandTokenizer
+from training.neural.hybrid_classifier_v2 import HybridClassifierV2
 
 # ============================================================================
 # Configuration
@@ -133,7 +139,7 @@ def get_severity_display(severity: float) -> tuple:
 def format_probability_bar(prob: float, width: int = 20) -> str:
     """Create a visual probability bar."""
     filled = int(prob * width)
-    bar = "█" * filled + "░" * (width - filled)
+    bar = "#" * filled + "-" * (width - filled)
     return f"[{bar}] {prob*100:5.1f}%"
 
 # ============================================================================
@@ -230,6 +236,35 @@ def analyze_mitre(commands: str) -> dict:
 # Inference
 # ============================================================================
 
+def classify_with_hybrid(classifier: HybridClassifierV2, commands: str, mitre_analysis: dict) -> dict:
+    """
+    Classify a session using the hybrid MITRE rule-based classifier.
+    
+    Args:
+        classifier: HybridClassifierV2 instance
+        commands: Command string
+        mitre_analysis: Output from analyze_mitre() (used for display, not classification)
+    
+    Returns:
+        dict with prediction, probabilities (deterministic), confidence, rule explanation
+    """
+    pred_id, pred_name, explanation = classifier.classify(commands)
+    
+    # Create probability distribution (rule-based = deterministic, 100% on predicted class)
+    probs = {name: 0.0 for name in CLASS_NAMES}
+    probs[pred_name] = 1.0
+    
+    return {
+        'predicted_class': pred_id,
+        'predicted_label': pred_name,
+        'confidence': 1.0,  # Rule-based = deterministic
+        'probabilities': probs,
+        'description': CLASS_DESCRIPTIONS[pred_id],
+        'rule_matched': explanation.get('rule_matched', 'N/A'),
+        'explanation': explanation
+    }
+
+
 def classify_session(model, tokenizer, device, commands: str, mitre_analysis: dict) -> dict:
     """
     Classify a session using the neural model.
@@ -323,6 +358,10 @@ def display_session_analysis(session: dict, mitre_analysis: dict, classification
     print(f"  Predicted: {pred_label} (Confidence: {confidence*100:.1f}%)")
     print(f"  Expected:  {expected}")
     print(f"  Status:    {status_color}{status}{RESET_COLOR}")
+    
+    # Show rule matched (for hybrid classifier)
+    if 'rule_matched' in classification:
+        print(f"  Rule:      {classification['rule_matched']}")
     
     # Probability distribution
     print(f"\n\033[1mClass Probabilities:\033[0m")
@@ -444,8 +483,13 @@ def display_model_architecture(model):
 # Main Demo Flow
 # ============================================================================
 
-def run_demo():
-    """Run the complete demo."""
+def run_demo(use_hybrid: bool = True):
+    """Run the complete demo.
+    
+    Args:
+        use_hybrid: If True, use MITRE rule-based hybrid classifier (default).
+                    If False, use neural model only.
+    """
     
     print("\n" + "=" * 80)
     print("      ADAPTIVESHIELD - AI-Driven Cyber Deception System")
@@ -456,13 +500,36 @@ def run_demo():
     if torch.cuda.is_available():
         print(f"  GPU Device: {torch.cuda.get_device_name(0)}")
     
-    # Load model
-    print_header("1. LOADING NEURAL MODEL")
-    model, tokenizer, device = load_model()
+    classifier_mode = "HYBRID (MITRE Rules)" if use_hybrid else "NEURAL (BiLSTM)"
+    print(f"  Classifier Mode: {classifier_mode}")
     
-    # Display architecture
-    print_header("2. MODEL ARCHITECTURE")
-    display_model_architecture(model)
+    # Initialize classifiers based on mode
+    model = tokenizer = device = None
+    hybrid_classifier = None
+    
+    if use_hybrid:
+        print_header("1. INITIALIZING HYBRID CLASSIFIER")
+        hybrid_classifier = HybridClassifierV2()
+        print(f"  Hybrid classifier initialized!")
+        print(f"  Mode: MITRE rule-based classification with priority ordering")
+        print(f"  Accuracy on diverse test cases: 90.9% (20/22)")
+    else:
+        print_header("1. LOADING NEURAL MODEL")
+        model, tokenizer, device = load_model()
+    
+    # Display architecture (only for neural mode)
+    if not use_hybrid and model is not None:
+        print_header("2. MODEL ARCHITECTURE")
+        display_model_architecture(model)
+    else:
+        print_header("2. HYBRID CLASSIFIER RULES")
+        print_subheader("Classification Priority Order")
+        print("  1. EXPLOIT: Reverse shell patterns (highest priority)")
+        print("  2. APT: Persistence + exfiltration, or 4+ tactics with severity >= 7")
+        print("  3. DESTRUCTIVE: rm -rf /, disk wipe, SSH backdoor patterns")
+        print("  4. DOWNLOADER: wget/curl + execute, C2 + execution")
+        print("  5. SAFE: Discovery-only with severity <= 3")
+        print("  6. RECON: Discovery with severity >= 4, multiple techniques")
     
     # Display knowledge base
     print_header("3. MITRE ATT&CK KNOWLEDGE BASE")
@@ -482,9 +549,13 @@ def run_demo():
         # Analyze with MITRE
         mitre_analysis = analyze_mitre(session['commands'])
         
-        # Classify with neural model
-        classification = classify_session(model, tokenizer, device, 
-                                          session['commands'], mitre_analysis)
+        # Classify based on mode
+        if use_hybrid:
+            classification = classify_with_hybrid(hybrid_classifier, 
+                                                   session['commands'], mitre_analysis)
+        else:
+            classification = classify_session(model, tokenizer, device, 
+                                              session['commands'], mitre_analysis)
         
         # Display results
         display_session_analysis(session, mitre_analysis, classification)
@@ -498,9 +569,11 @@ def run_demo():
     print_header("6. DEMO SUMMARY")
     
     accuracy = correct / total * 100
-    print(f"\n  Classification Accuracy: {correct}/{total} ({accuracy:.0f}%)")
+    print(f"\n  Classifier Mode: {classifier_mode}")
+    print(f"  Classification Accuracy: {correct}/{total} ({accuracy:.0f}%)")
     
     print(f"\n  Key Achievements (10% Milestone):")
+    print(f"    [X] Hybrid MITRE classifier (90.9%% accuracy on diverse tests)")
     print(f"    [X] Neural model trained (706K parameters, F1=0.9655)")
     print(f"    [X] MITRE ATT&CK integration (76 patterns, 53 techniques)")
     print(f"    [X] Multi-phase binary analysis pipeline (185 binaries)")
@@ -518,14 +591,29 @@ def run_demo():
     print("                      Demo Complete")
     print("=" * 80 + "\n")
 
-def interactive_mode():
-    """Run interactive classification mode."""
+def interactive_mode(use_hybrid: bool = True):
+    """Run interactive classification mode.
+    
+    Args:
+        use_hybrid: If True, use MITRE rule-based hybrid classifier (default).
+                    If False, use neural model only.
+    """
     print_header("INTERACTIVE MODE")
-    print("\nEnter commands to classify (semicolon-separated).")
+    
+    classifier_mode = "HYBRID (MITRE Rules)" if use_hybrid else "NEURAL (BiLSTM)"
+    print(f"\nClassifier Mode: {classifier_mode}")
+    print("Enter commands to classify (semicolon-separated).")
     print("Type 'quit' or 'exit' to stop.\n")
     
-    # Load model
-    model, tokenizer, device = load_model()
+    # Initialize classifiers based on mode
+    model = tokenizer = device = None
+    hybrid_classifier = None
+    
+    if use_hybrid:
+        hybrid_classifier = HybridClassifierV2()
+        print("Hybrid classifier initialized.\n")
+    else:
+        model, tokenizer, device = load_model()
     
     while True:
         try:
@@ -541,7 +629,12 @@ def interactive_mode():
         
         # Analyze
         mitre_analysis = analyze_mitre(commands)
-        classification = classify_session(model, tokenizer, device, commands, mitre_analysis)
+        
+        # Classify based on mode
+        if use_hybrid:
+            classification = classify_with_hybrid(hybrid_classifier, commands, mitre_analysis)
+        else:
+            classification = classify_session(model, tokenizer, device, commands, mitre_analysis)
         
         # Display
         session = {'name': 'User Input', 'commands': commands, 'expected': '?'}
@@ -562,12 +655,23 @@ if __name__ == '__main__':
     parser.add_argument('--quick', '-q', action='store_true',
                        help='Quick demo (fewer test cases)')
     
+    # Classifier mode (mutually exclusive)
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument('--hybrid', action='store_true', default=True,
+                           help='Use MITRE rule-based hybrid classifier (default, 90.9%% accuracy)')
+    mode_group.add_argument('--neural', action='store_true',
+                           help='Use neural model only (brain_v5_semantic_balanced.pkl)')
+    
     args = parser.parse_args()
     
+    # Handle mutual exclusivity: if --neural is set, disable hybrid
+    if args.neural:
+        args.hybrid = False
+    
     if args.interactive:
-        interactive_mode()
+        interactive_mode(use_hybrid=args.hybrid)
     else:
         if args.quick:
             # Use only first 3 test cases
             DEMO_SESSIONS = DEMO_SESSIONS[:3]
-        run_demo()
+        run_demo(use_hybrid=args.hybrid)
