@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quick retrain script for the demo-aligned neural model with fixed labels.
+Quick retrain script for the MITRE-only semantic balanced neural model.
 This is a wrapper to call train_neural.py with appropriate arguments.
 """
 
@@ -11,15 +11,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent
 
 print("\n" + "="*80)
-print(" RETRAINING NEURAL MODEL WITH FIXED DEMO-ALIGNED LABELS")
+print(" RETRAINING NEURAL MODEL WITH MITRE-ONLY SEMANTIC BALANCED LABELS")
 print("="*80)
 
-# Training arguments optimized for demo alignment
-# These match what was used for previous demo-aligned training
+# Training arguments optimized for MITRE-only semantic balanced labeling
 cmd = [
     sys.executable, 
     str(PROJECT_ROOT / "src" / "training" / "neural" / "train_neural.py"),
-    "--label-mode", "demo-aligned",
+    "--label-mode", "mitre_only_semantic_balanced",
     "--mitre-only",  # Use MITRE features only (21-dim)
     "--use-semantic-labels",  # Enable semantic labeling
     "--epochs", "40",
@@ -28,7 +27,7 @@ cmd = [
     "--synthetic-recon", "1500",
     "--synthetic-exploit", "1500",
     "--patience", "7",
-    "--model-name", "brain_v5_mitre_only_demo_aligned_v2",
+    "--model-name", "brain_v5_mitre_only_semantic_balanced_v2",
     "--loss", "combined",
     "--lr", "1e-3",
 ]

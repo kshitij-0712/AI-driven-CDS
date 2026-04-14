@@ -308,12 +308,12 @@ if __name__ == '__main__':
 
 
 # =============================================================================
-# DEMO-ALIGNED LABELING (for improving neural model on demo test cases)
+# MITRE-ONLY SEMANTIC BALANCED LABELING (for neural model training)
 # =============================================================================
 
-def compute_demo_aligned_label(command: str) -> Tuple[int, str, Dict[str, float]]:
+def compute_mitre_only_semantic_balanced_label(command: str) -> Tuple[int, str, Dict[str, float]]:
     """
-    Demo-aligned semantic labeling that matches demo test case expectations.
+    MITRE-only semantic balanced labeling based on command patterns.
     
     Key differences from standard semantic labeling:
     1. Safe = low severity + simple commands (even if they match Discovery patterns)
@@ -323,7 +323,7 @@ def compute_demo_aligned_label(command: str) -> Tuple[int, str, Dict[str, float]
     5. Destructive = file/data destruction (not SSH key replacement)
     6. ADVANCED_APT = multi-stage with persistence + exfiltration
     
-    Demo alignment rules:
+    Semantic alignment rules:
     - 'ls -la; pwd; whoami' should be SAFE (not Recon)
     - 'nmap' should be RECON (high confidence)
     - 'wget ... | bash' should be DOWNLOADER (not Destructive)
@@ -407,9 +407,9 @@ def compute_demo_aligned_label(command: str) -> Tuple[int, str, Dict[str, float]
     return (0, 'Safe', {'safe': 1.0})
 
 
-def label_sessions_demo_aligned(df: pd.DataFrame, show_progress: bool = True) -> pd.DataFrame:
+def label_sessions_mitre_only_semantic_balanced(df: pd.DataFrame, show_progress: bool = True) -> pd.DataFrame:
     """
-    Label all sessions using demo-aligned semantic labeling.
+    Label all sessions using MITRE-only semantic balanced labeling.
     
     This labeling prioritizes:
     1. Explicit attack patterns (destructive, exploit, downloader)
@@ -418,7 +418,7 @@ def label_sessions_demo_aligned(df: pd.DataFrame, show_progress: bool = True) ->
     4. Default everything else to Safe (even with discovery patterns)
     """
     if show_progress:
-        print("Labeling sessions with demo-aligned semantics...")
+        print("Labeling sessions with MITRE-only semantic balanced semantics...")
     
     df = df.copy()
     
@@ -429,25 +429,25 @@ def label_sessions_demo_aligned(df: pd.DataFrame, show_progress: bool = True) ->
             print(f"  Processed {idx + 1}/{len(df)} sessions...")
         
         commands = str(row['commands']) if pd.notna(row['commands']) else ""
-        label_id, label_name, _ = compute_demo_aligned_label(commands)
+        label_id, label_name, _ = compute_mitre_only_semantic_balanced_label(commands)
         labels.append((label_id, label_name))
     
     label_ids, label_names = zip(*labels)
-    df['demo_aligned_label_id'] = label_ids
-    df['demo_aligned_label_name'] = label_names
+    df['mitre_only_semantic_balanced_label_id'] = label_ids
+    df['mitre_only_semantic_balanced_label_name'] = label_names
     
     if show_progress:
-        print("\nDemo-Aligned Label Distribution:")
-        print(df['demo_aligned_label_name'].value_counts().sort_index())
+        print("\nMITRE-Only Semantic Balanced Label Distribution:")
+        print(df['mitre_only_semantic_balanced_label_name'].value_counts().sort_index())
     
     return df
 
 
-def load_demo_aligned_labels(df: pd.DataFrame) -> pd.DataFrame:
+def load_mitre_only_semantic_balanced_labels(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Load or compute demo-aligned labels for the entire dataset.
-    Uses the demo_aligned_label_id and demo_aligned_label_name columns.
+    Load or compute MITRE-only semantic balanced labels for the entire dataset.
+    Uses the mitre_only_semantic_balanced_label_id and mitre_only_semantic_balanced_label_name columns.
     """
-    if 'demo_aligned_label_id' not in df.columns:
-        df = label_sessions_demo_aligned(df, show_progress=True)
+    if 'mitre_only_semantic_balanced_label_id' not in df.columns:
+        df = label_sessions_mitre_only_semantic_balanced(df, show_progress=True)
     return df

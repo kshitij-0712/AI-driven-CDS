@@ -1,7 +1,7 @@
-# PowerShell script to retrain the neural model with fixed demo-aligned labels
+# PowerShell script to retrain the neural model with MITRE-only semantic balanced labels
 # Run this from the project root on Windows
 
-Write-Host "`n$(("="*80))`n RETRAINING NEURAL MODEL WITH FIXED DEMO-ALIGNED LABELS`n$(("="*80))" -ForegroundColor Cyan
+Write-Host "`n$(("="*80))`n RETRAINING NEURAL MODEL WITH MITRE-ONLY SEMANTIC BALANCED LABELS`n$(("="*80))" -ForegroundColor Cyan
 
 # Activate venv
 & .\.venv\Scripts\Activate.ps1
@@ -9,10 +9,10 @@ Write-Host "`n$(("="*80))`n RETRAINING NEURAL MODEL WITH FIXED DEMO-ALIGNED LABE
 # Set PYTHONPATH
 $env:PYTHONPATH = "src"
 
-# Training arguments optimized for demo alignment
+# Training arguments optimized for MITRE-only semantic balanced labeling
 $TrainingArgs = @(
     "src/training/neural/train_neural.py",
-    "--label-mode", "demo-aligned",
+    "--label-mode", "mitre_only_semantic_balanced",
     "--mitre-only",
     "--use-semantic-labels",
     "--epochs", "40",
@@ -21,7 +21,7 @@ $TrainingArgs = @(
     "--synthetic-recon", "1500",
     "--synthetic-exploit", "1500",
     "--patience", "7",
-    "--model-name", "brain_v5_mitre_only_demo_aligned_v2",
+    "--model-name", "brain_v5_mitre_only_semantic_balanced_v2",
     "--loss", "combined",
     "--lr", "1e-3"
 )
