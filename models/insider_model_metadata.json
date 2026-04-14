@@ -1,0 +1,98 @@
+{
+  "feature_names": [
+    "num_commands",
+    "duration_sec",
+    "command_density",
+    "num_downloads",
+    "has_downloads",
+    "src_ip_internal",
+    "short_session",
+    "low_noise_session",
+    "privileged_command_count",
+    "persistence_command_count",
+    "credential_command_count",
+    "suspicious_command_count",
+    "triage_priority",
+    "triage_is_go",
+    "triage_is_packed",
+    "triage_is_stripped",
+    "triage_is_dll",
+    "triage_is_static",
+    "triage_score_mining",
+    "triage_score_botnet",
+    "triage_score_recon",
+    "triage_score_destructive",
+    "mitre_severity_max",
+    "mitre_severity_weighted",
+    "mitre_kill_chain_score",
+    "mitre_matched_commands",
+    "has_ghidra_results",
+    "has_angr_results",
+    "has_script_results"
+  ],
+  "summary": {
+    "examples": 53266,
+    "label_counts": {
+      "normal": 5000,
+      "insider_like": 48266
+    },
+    "train_report": {
+      "accuracy": 1.0,
+      "classification_report": {
+        "0": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 4000.0
+        },
+        "1": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 38612.0
+        },
+        "accuracy": 1.0,
+        "macro avg": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 42612.0
+        },
+        "weighted avg": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1-score": 1.0,
+          "support": 42612.0
+        }
+      }
+    },
+    "test_accuracy": 1.0,
+    "test_report": {
+      "0": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1000.0
+      },
+      "1": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 9654.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 10654.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 10654.0
+      }
+    }
+  }
+}

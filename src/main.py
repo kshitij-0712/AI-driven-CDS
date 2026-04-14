@@ -7,6 +7,8 @@ from agents.analysis import run_ingestors, correlate_downloads_to_sessions
 from agents.decision import load_model, predict_intent
 from agents.deception import decide_decoy_action
 from agents.xai import explain_action
+from agents.insider.insider_detection import analyze_session
+from agents.insider.dataset import load_export_dataset
 
 
 def load_config(config_path):
@@ -38,8 +40,29 @@ def main():
         cowrie_path,
         config["analysis"]["session_link_time_window_sec"],
     )
+    os.makedirs("./data/processed", exist_ok=True)
     with open("./data/processed/session_binary_map.json", "w") as f:
         json.dump(correlation, f, indent=2)
+
+    insider_model_path = config["insider"]["model_path"]
+    insider_export_path = config["insider"]["export_dataset_path"]
+    if os.path.exists(insider_model_path) and os.path.exists(insider_export_path):
+        sessions = load_export_dataset(insider_export_path, max_rows=500)
+        insider_results = []
+        for row in sessions:
+            result = analyze_session(row)
+            insider_results.append(
+                {
+                    "session_id": row.get("session_id", ""),
+                    "src_ip": row.get("src_ip", ""),
+                    "insider_flag": result["insider_flag"],
+                    "risk_score": result["risk_score"],
+                    "explanation": result["explanation"],
+                }
+            )
+        with open("./data/processed/insider_predictions.json", "w", encoding="utf-8") as f:
+            json.dump(insider_results, f, indent=2)
+        print(f"Wrote insider predictions for {len(insider_results)} sessions.")
 
     model_path = config["ml"]["model_path"]
     vectorizer_path = config["ml"]["vectorizer_path"]

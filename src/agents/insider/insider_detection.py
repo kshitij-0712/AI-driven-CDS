@@ -30,6 +30,13 @@ def detect_insider_behavior(session):
     return risk, explanation
 
 
+import os
+from .inference import load_insider_model, predict_insider
+
+MODEL_PATH = os.path.abspath("./models/insider_model.pkl")
+_model_bundle = None
+
+
 def compute_cert_risk(session):
     commands = session.get("commands", [])
 
@@ -47,7 +54,30 @@ def compute_cert_risk(session):
     return risk, explanation
 
 
+def _load_insider_model():
+    global _model_bundle
+    if _model_bundle is not None:
+        return _model_bundle
+    if os.path.exists(MODEL_PATH):
+        try:
+            _model_bundle = load_insider_model(MODEL_PATH)
+        except Exception:
+            _model_bundle = None
+    return _model_bundle
+
+
 def analyze_session(session):
+    bundle = _load_insider_model()
+    if bundle is not None:
+        result = predict_insider(bundle, session)
+        return {
+            "session_id": session.get("session_id", ""),
+            "src_ip": session.get("src_ip", ""),
+            "insider_flag": result["label"],
+            "risk_score": result["score"],
+            "explanation": [f"ML insider score={result['score']:.3f}"],
+        }
+
     insider_risk, insider_exp = detect_insider_behavior(session)
     cert_risk, cert_exp = compute_cert_risk(session)
 
