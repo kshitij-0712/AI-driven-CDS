@@ -1,0 +1,209 @@
+import json
+import os
+import time
+from typing import Dict
+
+import httpx
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+
+from agents.decision import build_hybrid_classifier, classify_http_request
+from agents.deception import DecoyManager
+from interceptor.nftables_manager import NftablesManager
+from interceptor.session_store import SessionStore
+
+
+def _request_to_context(request: Request, body: str) -> Dict:
+    return {
+        "method": request.method,
+        "path": request.url.path,
+        "query": str(request.url.query or ""),
+        "body": body,
+        "headers": dict(request.headers),
+        "source_ip": request.client.host if request.client else "unknown",
+    }
+
+
+def create_http_guard_app(config: Dict) -> FastAPI:
+    app = FastAPI(title="AdaptiveShield HTTP Guard", version="0.1.0")
+
+    runtime_cfg = config.get("runtime", {})
+    http_cfg = config.get("http_guard", {})
+    decoy_cfg = config.get("decoys", {})
+
+    db_path = runtime_cfg.get("db_path", "./runtime/adaptiveshield.db")
+    threat_log_path = runtime_cfg.get("threat_log_path", "./runtime/logs/threat_events.jsonl")
+    real_host = http_cfg.get("real_service_host", "127.0.0.1")
+    real_port = int(http_cfg.get("real_service_port", 8080))
+    timeout_sec = int(http_cfg.get("request_timeout_sec", 10))
+    brute_force_threshold = int(http_cfg.get("brute_force_threshold", 8))
+    block_duration_minutes = int(http_cfg.get("block_duration_minutes", 60))
+    fallback_on_error = bool(http_cfg.get("fallback_on_error", True))
+
+    os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
+
+    store = SessionStore(db_path)
+    nft = NftablesManager()
+    nft.ensure_base_ruleset()
+
+    classifier = build_hybrid_classifier()
+    decoys = DecoyManager(
+        http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
+        max_instances=int(decoy_cfg.get("max_instances", 5)),
+        idle_timeout_sec=int(decoy_cfg.get("idle_timeout_sec", 300)),
+        fallback_url=decoy_cfg.get("fallback_url"),
+    )
+    decoys.pre_pull_images(decoy_cfg.get("pre_pull_images", []))
+
+    async def forward_request(target_base_url: str, request: Request, body: bytes) -> Response:
+        target_url = f"{target_base_url}{request.url.path}"
+        if request.url.query:
+            target_url = f"{target_url}?{request.url.query}"
+
+        headers = dict(request.headers)
+        headers.pop("host", None)
+
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
+            upstream = await client.request(
+                request.method,
+                target_url,
+                headers=headers,
+                content=body,
+            )
+
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=dict(upstream.headers),
+        )
+
+    @app.get("/health")
+    async def health():
+        return {
+            "status": "ok",
+            "classifier": "hybrid_v2",
+            "docker_available": decoys.docker_available,
+            "real_service": f"http://{real_host}:{real_port}",
+        }
+
+    @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+    async def guard(path: str, request: Request):
+        raw_body = await request.body()
+        body_str = raw_body.decode("utf-8", errors="ignore")
+
+        context = _request_to_context(request, body_str)
+        src_ip = context["source_ip"]
+
+        blocked_until = store.get_blocked_until(src_ip)
+        if blocked_until and blocked_until > time.time():
+            return JSONResponse(
+                status_code=403,
+                content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
+            )
+
+        session_id = store.get_or_create_session(src_ip)
+        decision = classify_http_request(classifier, context)
+
+        # Simple brute-force detection for HTTP login endpoints.
+        path_lower = request.url.path.lower()
+        if request.method.upper() == "POST" and any(k in path_lower for k in ["login", "signin", "auth"]):
+            attempts = store.increment_counter(session_id, "login_attempts")
+            if attempts >= brute_force_threshold:
+                decision = {
+                    "class_id": 3,
+                    "label": "Exploit",
+                    "confidence": 1.0,
+                    "action": "drop_and_block",
+                    "rule": "HTTP brute-force threshold exceeded",
+                    "mitre_tactics": ["credential_access"],
+                    "severity_max": 8,
+                    "http_findings": ["brute_force"],
+                }
+
+        action = decision["action"]
+        target = f"http://{real_host}:{real_port}"
+
+        if action == "drop_and_block":
+            target = "blocked"
+            block_seconds = block_duration_minutes * 60
+            store.mark_blocked(session_id, block_seconds)
+            nft.block_ip(src_ip, reason=decision.get("rule"))
+            result = JSONResponse(
+                status_code=403,
+                content={
+                    "error": "request_blocked",
+                    "label": decision["label"],
+                    "rule": decision.get("rule"),
+                },
+            )
+        elif action == "redirect_to_decoy":
+            decoy = decoys.get_or_spawn_http_decoy(session_id)
+            if decoy:
+                target = decoy.base_url
+            try:
+                result = await forward_request(target, request, raw_body)
+            except Exception:
+                result = JSONResponse(
+                    status_code=502,
+                    content={"error": "upstream_failure", "target": target},
+                )
+        else:
+            try:
+                result = await forward_request(target, request, raw_body)
+            except Exception:
+                if fallback_on_error:
+                    decoy = decoys.get_or_spawn_http_decoy(session_id)
+                    if decoy:
+                        target = decoy.base_url
+                        try:
+                            result = await forward_request(target, request, raw_body)
+                        except Exception:
+                            result = JSONResponse(
+                                status_code=502,
+                                content={"error": "upstream_failure", "target": target},
+                            )
+                    else:
+                        result = JSONResponse(
+                            status_code=502,
+                            content={"error": "real_service_unreachable"},
+                        )
+                else:
+                    result = JSONResponse(
+                        status_code=502,
+                        content={"error": "real_service_unreachable"},
+                    )
+
+        event = {
+            "timestamp": time.time(),
+            "session_id": session_id,
+            "source_ip": src_ip,
+            "method": request.method,
+            "path": request.url.path,
+            "query": str(request.url.query or ""),
+            "label": decision["label"],
+            "action": action,
+            "target": target,
+            "rule": decision.get("rule"),
+            "mitre_tactics": decision.get("mitre_tactics", []),
+            "severity_max": decision.get("severity_max", 0),
+            "response_status": result.status_code,
+            "login_attempts": store.get_counter(session_id, "login_attempts"),
+        }
+
+        # Basic brute-force detector: repeated non-safe attempts from same source.
+        if decision["label"] != "Safe" and brute_force_threshold > 0:
+            # Count suspicious events for this session only (simple first cut).
+            # SessionStore request_count already increases per request;
+            # if many suspicious events, escalate.
+            if decision["label"] in ("Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"):
+                # Soft marker in log for future XAI module consumption.
+                event["suspicious"] = True
+
+        store.write_event(session_id, event)
+        with open(threat_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+        print(json.dumps(event), flush=True)
+
+        return result
+
+    return app

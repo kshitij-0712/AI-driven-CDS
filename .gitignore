@@ -115,6 +115,7 @@ config/settings.local.yaml
 # Logs
 *.log
 logs/
+runtime/
 
 # Secrets / credentials
 .env

@@ -577,3 +577,60 @@ Added `src/training/neural/semantic_labels.py` which labels commands based on BE
 | Real malicious sessions | 200 (127 Destructive + 49 APT + 24 Downloader) |
 | MITRE-matched sessions | 74,005 (94.3%) |
 | High-severity sessions | 39,217 (severity >= 7) |
+
+## 16. Runtime Deployment Plan (Current Build Track)
+
+This section captures the agreed implementation direction for deployment and integration work.
+
+### Deployment Goals
+- One-shot startup with Docker Compose (`docker compose up -d --build`).
+- Same-host protection model: AdaptiveShield runs in front of the real service.
+- Real-time decisioning and routing (not batch-only analysis).
+- Kernel-level control for blocking via nftables, with HTTP-first request inspection.
+
+### Agreed Defaults
+- **Initial protocol scope**: HTTP first (`80` now, `443` next).
+- **Real service target**: `127.0.0.1:8080` (configurable).
+- **Decoy strategy**: pre-pull images for faster first response.
+- **Operational telemetry**: detailed CLI/runtime logs first; XAI ingestion follows.
+
+### Runtime Architecture (Implemented Base)
+- **Orchestrator**: `src/orchestrator/main.py`
+- **HTTP Guard**: `src/interceptor/http_proxy.py`
+- **Session/Event Store**: `src/interceptor/session_store.py` (SQLite)
+- **Kernel Block Manager**: `src/interceptor/nftables_manager.py`
+- **Decoy Manager (Docker API)**: `src/agents/deception.py`
+- **HTTP Classification Bridge**: `src/agents/decision.py`
+
+### Runtime Decision Policy (HTTP)
+- `Safe` -> forward to real service
+- `Recon` -> forward and log
+- `Downloader` / `Exploit` -> redirect to decoy
+- `Destructive` / `ADVANCED_APT` -> drop and block source IP
+- Brute-force behavior on auth endpoints can escalate to block
+
+### Team Integration Contracts
+To support parallel development without blocking:
+- XAI interface: `src/interfaces/xai_contract.py`
+- Insider interface: `src/interfaces/insider_contract.py`
+
+These contracts are the reference points for Person A (XAI) and Person B (Insider module).
+
+### Runtime Config Reference
+Deployment/runtime controls are in `config/settings.yaml`:
+- `deployment`
+- `http_guard`
+- `decoys`
+- `runtime`
+
+### One-Shot Runbook
+1. Start real app on `127.0.0.1:8080` (or update config target)
+2. Start guard: `docker compose up -d --build`
+3. Verify health: `curl http://127.0.0.1/health`
+4. Monitor logs: `docker compose logs -f adaptiveshield`
+
+### Next Build Steps
+1. Add full transparent interception flow for HTTPS (`443`) and certificate handling.
+2. Extend protocol coverage incrementally (SSH/SMB/FTP) using same routing model.
+3. Add XAI module consumption of runtime event stream.
+4. Add insider module wiring via the defined contract interfaces.
