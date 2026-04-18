@@ -50,7 +50,7 @@ def main():
         sessions = load_export_dataset(insider_export_path, max_rows=500)
         insider_results = []
         for row in sessions:
-            result = analyze_session(row)
+            result = analyze_session(row, model_path=insider_model_path)
             insider_results.append(
                 {
                     "session_id": row.get("session_id", ""),

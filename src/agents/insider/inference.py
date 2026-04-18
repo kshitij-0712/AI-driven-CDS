@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .dataset import (
     DEFAULT_FEATURE_COLUMNS,
@@ -16,7 +16,7 @@ from .dataset import (
 from .model import load_insider_model
 
 
-def build_insider_feature_vector(session: Dict[str, any], feature_names: Optional[List[str]] = None) -> List[float]:
+def build_insider_feature_vector(session: Dict[str, Any], feature_names: Optional[List[str]] = None) -> List[float]:
     if feature_names is None:
         feature_names = DEFAULT_FEATURE_COLUMNS
 

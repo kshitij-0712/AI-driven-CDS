@@ -2,7 +2,7 @@ import csv
 import ipaddress
 import os
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 DEFAULT_FEATURE_COLUMNS = [
     "num_commands",
@@ -190,7 +190,12 @@ def _build_feature_row(row: Dict[str, str]) -> Dict[str, float]:
     num_downloads = _safe_int(row.get("num_downloads"))
     command_density = num_commands / max(duration_sec, 1.0)
     has_downloads = 1 if num_downloads > 0 else 0
-    src_ip_internal = float(1 if _is_private_ip(row.get("src_ip")) else 0)
+    src_ip_internal = float(
+        1
+        if _is_private_ip(row.get("src_ip"))
+        or _safe_int(row.get("internal_source")) == 1
+        else 0
+    )
     normalized_commands = _normalize_commands(row.get("commands"))
     privileged_count = _count_patterns(normalized_commands, PRIVILEGED_PATTERNS)
     persistence_count = _count_patterns(normalized_commands, PERSISTENCE_PATTERNS)
@@ -231,6 +236,42 @@ def _build_feature_row(row: Dict[str, str]) -> Dict[str, float]:
         "has_script_results": float(1 if _safe_int(row.get("has_script_results")) else 0),
     }
     return feature_values
+
+
+def build_insider_dataset_from_cert_baseline(
+    rows: List[Dict[str, Any]],
+) -> Tuple[List[List[float]], List[int], List[str], List[Dict[str, Any]]]:
+    X = []
+    y = []
+    reasons = []
+    output_rows = []
+
+    for row in rows:
+        features = _build_feature_row(row)
+        baseline_label = str(row.get("baseline_label", "")).strip().lower()
+        session_label = str(row.get("session_label", "")).strip().lower()
+        label = 0
+        reason = "CERT baseline normal session"
+
+        if baseline_label not in {"", "0", "normal", "false"} or session_label not in {"", "normal"}:
+            label = 1
+            reason = "CERT baseline session labeled suspicious or insider-like"
+
+        X.append([features[col] for col in DEFAULT_FEATURE_COLUMNS])
+        y.append(label)
+        reasons.append(reason)
+
+        output_row = {
+            "session_id": row.get("session_id", ""),
+            **{col: features[col] for col in DEFAULT_FEATURE_COLUMNS},
+            "label": label,
+            "label_reason": reason,
+            "baseline_label": row.get("baseline_label", ""),
+            "session_label": row.get("session_label", ""),
+        }
+        output_rows.append(output_row)
+
+    return X, y, DEFAULT_FEATURE_COLUMNS, output_rows
 
 
 def build_insider_label(row: Dict[str, str], thresholds: Optional[Dict[str, float]] = None) -> Tuple[int, str]:

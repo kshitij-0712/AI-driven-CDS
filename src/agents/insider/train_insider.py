@@ -11,6 +11,7 @@ from .cert_parser import build_cert_baseline_dataset, save_cert_dataset
 from .dataset import (
     load_export_dataset,
     build_insider_dataset,
+    build_insider_dataset_from_cert_baseline,
     save_insider_dataset,
     count_internal_sessions,
 )
@@ -88,6 +89,11 @@ def main() -> None:
         default="./data/exports/cert_baseline_dataset.csv",
         help="Path to save the generated CERT baseline dataset",
     )
+    parser.add_argument(
+        "--include-cert-baseline",
+        action="store_true",
+        help="Include CERT baseline sessions in the training dataset as normal examples",
+    )
     args = parser.parse_args()
 
     print(f"Loading export dataset from: {args.export_csv}")
@@ -115,6 +121,7 @@ def main() -> None:
     print(f"Saving insider dataset to: {args.output_dataset}")
     save_insider_dataset(output_rows, args.output_dataset)
 
+    cert_rows = []
     if args.cert_dir and os.path.isdir(args.cert_dir):
         print(f"Building CERT baseline dataset from: {args.cert_dir}")
         cert_rows, cert_feature_names = build_cert_baseline_dataset(
@@ -124,12 +131,25 @@ def main() -> None:
         save_cert_dataset(cert_rows, args.cert_output)
         print(f"Saved CERT baseline dataset to: {args.cert_output} ({len(cert_rows)} rows)")
 
+        if args.include_cert_baseline and cert_rows:
+            print("Converting CERT baseline rows into insider model features...")
+            cert_X, cert_y, _, cert_output_rows = build_insider_dataset_from_cert_baseline(cert_rows)
+            X.extend(cert_X)
+            y.extend(cert_y)
+            output_rows.extend(cert_output_rows)
+            print(
+                f"Added {len(cert_X)} CERT baseline examples to the insider training dataset."
+            )
+            print(f"Saving combined insider dataset to: {args.output_dataset}")
+            save_insider_dataset(output_rows, args.output_dataset)
+
     print("Splitting training and test data...")
+    stratify = y if len(set(y)) > 1 else None
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
         test_size=args.test_size,
-        stratify=y,
+        stratify=stratify,
         random_state=args.random_state,
     )
     print(f"Training examples: {len(X_train)}, test examples: {len(X_test)}")

@@ -1,6 +1,7 @@
 from .dataset import (
     DEFAULT_FEATURE_COLUMNS,
     build_insider_dataset,
+    build_insider_dataset_from_cert_baseline,
     load_export_dataset,
     save_insider_dataset,
 )
@@ -23,6 +24,7 @@ from .cert_parser import (
 __all__ = [
     "DEFAULT_FEATURE_COLUMNS",
     "build_insider_dataset",
+    "build_insider_dataset_from_cert_baseline",
     "load_export_dataset",
     "save_insider_dataset",
     "train_insider_classifier",
