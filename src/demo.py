@@ -628,7 +628,7 @@ def run_demo(use_hybrid: bool = True):
     print(f"\n  Classifier Mode: {classifier_mode}")
     print(f"  Classification Accuracy: {correct}/{total} ({accuracy:.0f}%)")
     
-    print(f"\n  Key Achievements (10% Milestone):")
+    print(f"\n  Key Achievements :")
     print(f"    [X] Hybrid MITRE classifier (90.9%% accuracy on diverse tests)")
     print(f"    [X] Neural model trained (706K parameters, F1=0.9655)")
     print(f"    [X] MITRE ATT&CK integration (76 patterns, 53 techniques)")
@@ -636,7 +636,7 @@ def run_demo(use_hybrid: bool = True):
     print(f"    [X] 78,504 honeypot sessions processed")
     print(f"    [X] Portable dataset export (111 features per session)")
     
-    print(f"\n  Next Steps (Remaining 90%):")
+    print(f"\n  Next Steps :")
     print(f"    [ ] FastAPI inference service")
     print(f"    [ ] XAI explanations with attention visualization")
     print(f"    [ ] Real-time analyst dashboard")
