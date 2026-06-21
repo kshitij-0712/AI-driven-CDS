@@ -86,9 +86,11 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
     @app.get("/health")
     async def health():
+        from agents.decision import _neural_model
         return {
             "status": "ok",
             "classifier": "hybrid_v2",
+            "neural_model": "active" if _neural_model is not None else "unavailable",
             "docker_available": decoys.docker_available,
             "real_service": f"http://{real_host}:{real_port}",
         }
@@ -206,6 +208,12 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             "response_status": result.status_code if result else 500,
             "login_attempts": store.get_counter(session_id, "login_attempts"),
         }
+
+        # Include neural model metadata when available
+        if "neural_confidence" in decision:
+            event["neural_confidence"] = decision["neural_confidence"]
+        if "fallback_reason" in decision:
+            event["fallback_reason"] = decision["fallback_reason"]
 
         # Basic brute-force detector: repeated non-safe attempts from same source.
         if decision["label"] != "Safe" and brute_force_threshold > 0:

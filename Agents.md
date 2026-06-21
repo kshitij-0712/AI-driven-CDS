@@ -62,7 +62,8 @@ AdaptiveShield is an autonomous cyber-deception system that proactively detects,
    - `brain_v2_deep.pkl` -- Original model trained on synthetic + IP-labeled data only.
    - `brain_v3_enriched.pkl` -- **Enriched model** trained on TF-IDF + binary behavior features from Phase 1 triage. Uses 3,011 features (3,000 TF-IDF char n-grams + 11 binary features).
    - `brain_v4_deep.pkl` -- **Deep model** trained on TF-IDF + 79-column deep binary feature vectors from all analysis phases (triage + Ghidra + angr + script features + derived cross-source features).
-   - `brain_v5_neural.pkl` -- **CURRENT PRODUCTION MODEL**: BiLSTM + structured features neural model. Character-level embedding, attention pooling, 100-dim structured input (21 MITRE + 79 binary). ~706K parameters. Trained with combined focal + cost-sensitive loss.
+   - `brain_v5_neural.pkl` -- Full BiLSTM + structured features neural model.
+   - `brain_v5_mitre_only_semantic_balanced_v2.pt` -- **CURRENT PRODUCTION MODEL**: Lighter BiLSTM model (370K params) trained on MITRE tactics and command semantics. Used in the live HTTP Guard via a 3-stage dynamic pipeline (Regex Pre-filter -> Neural Inference -> MITRE rule fallback based on a 55% confidence threshold).
  - Vectorizers:
    - `vectorizer_deep.pkl` -- Original TF-IDF vectorizer.
    - `vectorizer_enriched.pkl` -- Enriched vectorizer (same TF-IDF + binary feature columns).
@@ -603,10 +604,16 @@ This section captures the agreed implementation direction for deployment and int
 - **HTTP Classification Bridge**: `src/agents/decision.py`
 
 ### Runtime Decision Policy (HTTP)
+The decision engine uses a 3-stage dynamic pipeline:
+1. **Regex Pre-Filter:** Fast matching for obvious HTTP attacks (XSS, Path Traversal, Scanners).
+2. **Neural Inference:** The `brain_v5_mitre_only` BiLSTM model evaluates the decoded payload. If confidence is $\ge 55\%$, its prediction is used.
+3. **MITRE Rule Fallback:** If neural confidence is $< 55\%$, the payload is evaluated by deterministic MITRE heuristic rules.
+
+Actions taken based on the final classification:
 - `Safe` -> forward to real service
 - `Recon` -> forward and log
-- `Downloader` / `Exploit` -> redirect to decoy
-- `Destructive` / `ADVANCED_APT` -> drop and block source IP
+- `Downloader` / `Exploit` -> redirect to decoy container
+- `Destructive` / `ADVANCED_APT` -> drop and block source IP at the kernel level via nftables
 - Brute-force behavior on auth endpoints can escalate to block
 
 ### Team Integration Contracts

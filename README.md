@@ -6,7 +6,10 @@ AdaptiveShield is a portable, multi-agent cyber deception and analysis system. I
 
 AdaptiveShield now supports HTTP-first runtime deployment on the same host as your real service.
 
-- Incoming traffic on port `80` is inspected in real time.
+- Incoming traffic on port `80` is inspected in real time using a **3-stage dynamic pipeline**:
+  1. Regex pre-filtering for fast attack matching.
+  2. Neural inference using the `brain_v5_mitre_only` BiLSTM model.
+  3. MITRE rule heuristic fallback (if neural confidence < 55%).
 - Safe traffic is forwarded to your real app (`127.0.0.1:8080` by default).
 - Suspicious and malicious traffic is logged or redirected to decoy containers.
 - High-risk traffic can be blocked with nftables-based IP rules.
@@ -73,8 +76,8 @@ Default behavior:
   python ./src/training/train_model.py
   ```
   Outputs:
-  - Model: `./models/brain_v2_deep.pkl`
-  - Report: `./data/processed/training_report.json`
+  - Model: `./models/brain_v5_mitre_only_semantic_balanced_v2.pt` (and `.pkl` bundle)
+  - Report: `./models/brain_v5_mitre_only_semantic_balanced_v2_results.json`
 
 ### Testing
 - Run inference on real Cowrie sessions:

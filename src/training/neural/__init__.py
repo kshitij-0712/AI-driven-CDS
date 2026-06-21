@@ -5,7 +5,7 @@ BiLSTM + Structured Features architecture for threat classification.
 """
 
 try:
-    from .model import ThreatClassifier, BiLSTMEncoder, StructuredEncoder
+    from .model import ThreatClassifier, ThreatClassifierMitreOnly, BiLSTMEncoder, StructuredEncoder, MitreEncoder
     from .dataset import ThreatDataset, CommandTokenizer
     from .losses import FocalLoss, CostSensitiveLoss
     from .trainer import NeuralTrainer
@@ -13,8 +13,10 @@ try:
 
     __all__ = [
         'ThreatClassifier',
+        'ThreatClassifierMitreOnly',
         'BiLSTMEncoder', 
         'StructuredEncoder',
+        'MitreEncoder',
         'ThreatDataset',
         'CommandTokenizer',
         'FocalLoss',

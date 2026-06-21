@@ -1,7 +1,43 @@
+import logging
 import pickle
 import re
+from pathlib import Path
 from urllib.parse import unquote
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+CLASS_NAMES = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
+CLASS_DESCRIPTIONS = {
+    0: "Normal/benign session",
+    1: "Reconnaissance - scanning/enum",
+    2: "Downloader - malware dropper",
+    3: "Exploit - credential theft, RAT",
+    4: "Destructive - data wipe, ransomware",
+    5: "ADVANCED_APT - multi-stage persistent threat",
+}
+
+CONFIDENCE_THRESHOLD = 0.55  # Below this, fall back to MITRE rules
+
+MITRE_FEATURE_COLS = [
+    'mitre_tactic_reconnaissance', 'mitre_tactic_resource_development',
+    'mitre_tactic_initial_access', 'mitre_tactic_execution',
+    'mitre_tactic_persistence', 'mitre_tactic_privilege_escalation',
+    'mitre_tactic_defense_evasion', 'mitre_tactic_credential_access',
+    'mitre_tactic_discovery', 'mitre_tactic_lateral_movement',
+    'mitre_tactic_collection', 'mitre_tactic_command_and_control',
+    'mitre_tactic_exfiltration', 'mitre_tactic_impact',
+    'mitre_severity_max', 'mitre_severity_mean', 'mitre_severity_weighted',
+    'mitre_kill_chain_score', 'mitre_unique_technique_count',
+    'mitre_total_commands', 'mitre_matched_commands'
+]
+
+# ---------------------------------------------------------------------------
+# HTTP attack pre-filter patterns (fast regex check before neural model)
+# ---------------------------------------------------------------------------
 
 HTTP_ATTACK_PATTERNS = {
     "xss": [
@@ -55,6 +91,11 @@ def _match_http_patterns(payload):
                 break
     return findings
 
+
+# ---------------------------------------------------------------------------
+# Legacy sklearn model helpers (kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
 def load_model(model_path, vectorizer_path):
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
@@ -81,18 +122,159 @@ def predict_intent(model, vectorizer, commands, class_labels):
     }
 
 
-def classify_http_request(hybrid_classifier, request_context):
-    """Classify an HTTP request context using the hybrid classifier.
+# ---------------------------------------------------------------------------
+# Neural model loading
+# ---------------------------------------------------------------------------
+
+_neural_model = None
+_neural_tokenizer = None
+_neural_device = "cpu"
+_neural_loaded = False
+
+
+def _encode_batch(texts, max_length=512):
+    """Inline character-level tokenizer (same logic as CommandTokenizer)."""
+    encoded = []
+    for text in texts:
+        indices = []
+        for char in text[:max_length]:
+            code = ord(char)
+            indices.append(code if code < 256 else 1)  # 1 = UNK
+        encoded.append(indices)
+
+    lengths = [len(seq) for seq in encoded]
+    max_len = min(max(lengths) if lengths else 1, max_length)
+    padded = []
+    for seq in encoded:
+        if len(seq) < max_len:
+            seq = seq + [0] * (max_len - len(seq))
+        padded.append(seq[:max_len])
+
+    import torch
+    return (
+        torch.tensor(padded, dtype=torch.long),
+        torch.tensor([min(l, max_len) for l in lengths], dtype=torch.long),
+    )
+
+
+def load_neural_model():
+    """Load the ThreatClassifierMitreOnly neural model from .pt state dict.
+
+    The model was trained on the train_1 branch and saved as a state_dict + config.
+    We reconstruct the model architecture and load the weights.
+
+    Returns True if successfully loaded, False otherwise.
+    """
+    global _neural_model, _neural_tokenizer, _neural_device, _neural_loaded
+
+    if _neural_loaded:
+        return _neural_model is not None
+
+    _neural_loaded = True  # Mark as attempted regardless of outcome
+
+    try:
+        import torch
+        from training.neural.model import ThreatClassifierMitreOnly
+    except ImportError as exc:
+        logger.warning("PyTorch or model module not available: %s", exc)
+        return False
+
+    # Locate the model file
+    model_dir = Path(__file__).parent.parent.parent / "models"
+    model_path = model_dir / "brain_v5_mitre_only_semantic_balanced_v2.pt"
+
+    if not model_path.exists():
+        logger.warning("Neural model not found at %s", model_path)
+        return False
+
+    try:
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        config = checkpoint["model_config"]
+
+        # Remove 'model_type' key — it's metadata, not a constructor arg
+        constructor_args = {k: v for k, v in config.items() if k != "model_type"}
+        model = ThreatClassifierMitreOnly(**constructor_args)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.eval()
+
+        _neural_model = model
+        _neural_device = "cpu"
+
+        param_count = sum(p.numel() for p in model.parameters())
+        logger.info(
+            "Neural model loaded: ThreatClassifierMitreOnly (%s params)", f"{param_count:,}"
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to load neural model")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# MITRE feature extraction for neural model
+# ---------------------------------------------------------------------------
+
+def _extract_mitre_features(commands: str):
+    """Extract 21-dim MITRE feature vector from a command string.
+
+    This mirrors the feature extraction used during model training.
+    """
+    from core.mitre.session_annotator import annotate_session, annotation_to_flat_dict
+
+    cmd_list = [c.strip() for c in commands.replace("&&", ";").replace("||", ";").replace("\\n", ";").split(";") if c.strip()]
+    if not cmd_list:
+        cmd_list = [commands]
+
+    annotation = annotate_session(cmd_list)
+    flat = annotation_to_flat_dict(annotation)
+
+    return [flat.get(col, 0.0) for col in MITRE_FEATURE_COLS]
+
+
+def _classify_neural(commands: str):
+    """Run neural inference on a command string.
+
+    Returns (class_id, label, confidence, probabilities) or None if model unavailable.
+    """
+    if _neural_model is None:
+        return None
+
+    import torch
+
+    # Tokenize
+    encoded, lengths = _encode_batch([commands])
+
+    # MITRE features
+    mitre_features = _extract_mitre_features(commands)
+    structured = torch.tensor([mitre_features], dtype=torch.float32)
+
+    # Inference
+    with torch.no_grad():
+        predictions, probabilities = _neural_model.predict(encoded, structured, lengths)
+
+    pred_class = predictions[0].item()
+    probs = probabilities[0].cpu().numpy()
+    confidence = float(probs[pred_class])
+
+    return pred_class, CLASS_NAMES[pred_class], confidence, {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))}
+
+
+# ---------------------------------------------------------------------------
+# Main HTTP classification entry point
+# ---------------------------------------------------------------------------
+
+def classify_http_request(hybrid_classifier, request_context, neural_model_loaded=None):
+    """Classify an HTTP request context using a multi-stage pipeline.
+
+    Pipeline:
+    1. Fast regex pre-filter for obvious attacks (XSS, SQLi, etc.)
+    2. Neural BiLSTM model (if loaded) with confidence thresholding
+    3. MITRE rule-based HybridClassifierV2 fallback
 
     request_context keys:
-      - method
-      - path
-      - query
-      - body
-      - headers (dict)
-      - source_ip
+      - method, path, query, body, headers (dict), source_ip
 
-    Returns a dict with threat label and action intent.
+    Returns a dict with threat label, action, and explanation.
     """
     method = (request_context.get("method") or "GET").upper()
     path = request_context.get("path") or "/"
@@ -103,6 +285,7 @@ def classify_http_request(hybrid_classifier, request_context):
 
     user_agent = str(headers.get("user-agent", ""))
 
+    # --- Stage 1: Fast regex pre-filter ---
     joined_payload = " ".join([path, query, body, user_agent])
     joined_payload = unquote(joined_payload)
     http_findings = _match_http_patterns(joined_payload)
@@ -131,8 +314,58 @@ def classify_http_request(hybrid_classifier, request_context):
             "http_findings": http_findings,
         }
 
-    synthetic_cmd = f"http_{method.lower()} {path} {query} {body} src={source_ip}"
+    # --- Build the synthetic command (URL-decoded) ---
+    # Extract just the values from query params (strip keys like cmd=, q=, file=)
+    # The neural model was trained on raw commands, not HTTP query strings.
+    decoded_query = unquote(query)
+    decoded_body = unquote(body)
+    query_values = []
+    for param in decoded_query.split("&"):
+        if "=" in param:
+            query_values.append(param.split("=", 1)[1])
+        else:
+            query_values.append(param)
+    synthetic_cmd = " ".join(query_values + ([decoded_body] if decoded_body else [])).strip()
+    if not synthetic_cmd:
+        synthetic_cmd = unquote(path)
 
+    # --- Stage 2: Neural model with confidence thresholding ---
+    neural_result = _classify_neural(synthetic_cmd) if _neural_model is not None else None
+
+    if neural_result is not None:
+        pred_id, label, confidence, probs = neural_result
+
+        if confidence >= CONFIDENCE_THRESHOLD:
+            # Neural model is confident — use its prediction
+            if label == "Safe":
+                action = "forward"
+            elif label == "Recon":
+                action = "forward_and_log"
+            elif label in ("Downloader", "Exploit"):
+                action = "redirect_to_decoy"
+            else:
+                action = "drop_and_block"
+
+            return {
+                "class_id": pred_id,
+                "label": label,
+                "confidence": confidence,
+                "action": action,
+                "rule": f"neural_model (confidence={confidence:.2%})",
+                "mitre_tactics": [],  # Neural model doesn't provide these directly
+                "severity_max": 0,
+                "http_findings": http_findings,
+                "neural_confidence": confidence,
+                "neural_probs": probs,
+            }
+        else:
+            # Low confidence — fall through to MITRE rules
+            logger.debug(
+                "Neural confidence %.2f%% < threshold %.0f%%, falling back to MITRE rules",
+                confidence * 100, CONFIDENCE_THRESHOLD * 100
+            )
+
+    # --- Stage 3: MITRE rule-based fallback ---
     pred_id, label, explanation = hybrid_classifier.classify(synthetic_cmd)
 
     if label == "Safe":
@@ -144,7 +377,7 @@ def classify_http_request(hybrid_classifier, request_context):
     else:
         action = "drop_and_block"
 
-    return {
+    result = {
         "class_id": pred_id,
         "label": label,
         "confidence": 1.0,
@@ -155,12 +388,33 @@ def classify_http_request(hybrid_classifier, request_context):
         "http_findings": http_findings,
     }
 
+    # Annotate with neural fallback info if neural model was attempted but low-confidence
+    if neural_result is not None:
+        _, _, neural_conf, neural_probs = neural_result
+        result["neural_confidence"] = neural_conf
+        result["neural_probs"] = neural_probs
+        result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Factory: build classifiers at startup
+# ---------------------------------------------------------------------------
 
 def build_hybrid_classifier():
     """Factory to build HybridClassifierV2.
 
     Keeps setup in one place so orchestrator/API can use it directly.
+    Also attempts to load the neural model as a side-effect.
     """
+    # Attempt to load neural model
+    neural_ok = load_neural_model()
+    if neural_ok:
+        logger.info("Neural model ready — will use neural + MITRE hybrid pipeline")
+    else:
+        logger.warning("Neural model unavailable — using MITRE rules only")
+
     try:
         from training.neural.hybrid_classifier_v2 import HybridClassifierV2
 
