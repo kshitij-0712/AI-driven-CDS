@@ -52,8 +52,35 @@ class DecoyManager:
 
             self._docker = docker.from_env()
             self._docker.ping()
+            self._discover_existing_decoys()
         except Exception:
             self._docker = None
+
+    def _discover_existing_decoys(self):
+        """Discover and reuse existing decoy containers from previous runs."""
+        if not self.docker_available:
+            return
+        try:
+            containers = self._docker.containers.list(all=True, filters={"label": "adaptiveshield.decoy=true"})
+            now = time.time()
+            for container in containers:
+                if container.status != "running":
+                    container.start()
+                container.reload()
+                port_bindings = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                http_binding = port_bindings.get("80/tcp")
+                if http_binding:
+                    host_port = http_binding[0].get("HostPort")
+                    if host_port:
+                        instance = DecoyInstance(
+                            container_id=container.id,
+                            base_url=f"http://127.0.0.1:{host_port}",
+                            decoy_type=container.labels.get("adaptiveshield.decoy_type", "http"),
+                            last_used_ts=now,
+                        )
+                        self._active_http[container.id] = instance
+        except Exception:
+            pass
 
     @property
     def docker_available(self) -> bool:
@@ -123,10 +150,9 @@ class DecoyManager:
             existing.last_used_ts = time.time()
             return existing
 
-        if len(self._active_http) < self.max_instances:
-            spawned = self._spawn_http_decoy(session_id)
-            if spawned:
-                return spawned
+        spawned = self._spawn_http_decoy(session_id)
+        if spawned:
+            return spawned
 
         if self.fallback_url:
             now = time.time()
@@ -153,7 +179,19 @@ class DecoyManager:
         for container_id in to_remove:
             try:
                 container = self._docker.containers.get(container_id)
-                container.remove(force=True)
+                container.stop(timeout=2)
+            except Exception:
+                pass
+            self._active_http.pop(container_id, None)
+
+    def shutdown_all_decoys(self):
+        """Stop all active decoy containers without removing them."""
+        if not self.docker_available:
+            return
+        for container_id in list(self._active_http.keys()):
+            try:
+                container = self._docker.containers.get(container_id)
+                container.stop(timeout=2)
             except Exception:
                 pass
             self._active_http.pop(container_id, None)
