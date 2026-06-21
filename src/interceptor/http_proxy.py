@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from contextlib import asynccontextmanager
 from typing import Dict
 
 import httpx
@@ -25,7 +26,6 @@ def _request_to_context(request: Request, body: str) -> Dict:
 
 
 def create_http_guard_app(config: Dict) -> FastAPI:
-    app = FastAPI(title="AdaptiveShield HTTP Guard", version="0.1.0")
 
     runtime_cfg = config.get("runtime", {})
     http_cfg = config.get("http_guard", {})
@@ -53,7 +53,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         idle_timeout_sec=int(decoy_cfg.get("idle_timeout_sec", 300)),
         fallback_url=decoy_cfg.get("fallback_url"),
     )
-    decoys.pre_pull_images(decoy_cfg.get("pre_pull_images", []))
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        decoys.pre_pull_images(decoy_cfg.get("pre_pull_images", []))
+        yield
+        decoys.shutdown_all_decoys()
+
+    app = FastAPI(title="AdaptiveShield HTTP Guard", version="0.1.0", lifespan=lifespan)
 
     async def forward_request(target_base_url: str, request: Request, body: bytes) -> Response:
         target_url = f"{target_base_url}{request.url.path}"
@@ -122,6 +129,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         action = decision["action"]
         target = f"http://{real_host}:{real_port}"
+        result = None
 
         if action == "drop_and_block":
             target = "blocked"
@@ -140,13 +148,22 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             decoy = decoys.get_or_spawn_http_decoy(session_id)
             if decoy:
                 target = decoy.base_url
-            try:
-                result = await forward_request(target, request, raw_body)
-            except Exception:
-                result = JSONResponse(
-                    status_code=502,
-                    content={"error": "upstream_failure", "target": target},
-                )
+            
+            # Decoy Cold-Start Fix
+            max_retries = 10
+            for i in range(max_retries):
+                try:
+                    result = await forward_request(target, request, raw_body)
+                    break
+                except Exception as e:
+                    if i == max_retries - 1:
+                        result = JSONResponse(
+                            status_code=502,
+                            content={"error": "upstream_failure", "target": target},
+                        )
+                    else:
+                        import asyncio
+                        await asyncio.sleep(0.1) # Wait 100ms before retrying
         else:
             try:
                 result = await forward_request(target, request, raw_body)
@@ -186,7 +203,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             "rule": decision.get("rule"),
             "mitre_tactics": decision.get("mitre_tactics", []),
             "severity_max": decision.get("severity_max", 0),
-            "response_status": result.status_code,
+            "response_status": result.status_code if result else 500,
             "login_attempts": store.get_counter(session_id, "login_attempts"),
         }
 

@@ -97,7 +97,7 @@ http_guard:
   listen_port: 80
   listen_port_ssl: 443
   real_service_host: "127.0.0.1"
-  real_service_port: 8080
+  real_service_port: 8090
   request_timeout_sec: 10
   session_idle_timeout_sec: 900
   brute_force_threshold: 8
@@ -108,7 +108,7 @@ decoys:
   http_image: "nginx:alpine"
   max_instances: 5
   idle_timeout_sec: 300
-  fallback_url: "http://127.0.0.1:8080"
+  fallback_url: "http://127.0.0.1:8090"
   pre_pull_images:
     - "nginx:alpine"
     - "cowrie/cowrie:latest"
