@@ -115,6 +115,7 @@ config/settings.local.yaml
 # Logs
 *.log
 logs/
+runtime/
 
 # Secrets / credentials
 .env
@@ -131,7 +132,7 @@ temp/
 *.tmp
 *.bak
 .local
-
+*.pid
 # OpenCode session files and config
 session-*.md
 .opencode/

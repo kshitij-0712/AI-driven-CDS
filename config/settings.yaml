@@ -85,3 +85,58 @@ export:
     sessions_complete: "sessions_complete.csv"
     mitre_knowledge_base: "mitre_knowledge_base.json"
     export_manifest: "export_manifest.json"
+
+# Runtime deployment config (HTTP-first guard mode)
+deployment:
+  mode: "http_guard"
+  host: "0.0.0.0"
+  port: 80
+
+http_guard:
+  enabled: true
+  listen_port: 80
+  listen_port_ssl: 443
+  real_service_host: "127.0.0.1"
+  real_service_port: 8090
+  request_timeout_sec: 10
+  session_idle_timeout_sec: 900
+  brute_force_threshold: 8
+  block_duration_minutes: 60
+  fallback_on_error: true
+
+ssh_guard:
+  enabled: true
+  listen_port: 2222
+#   Why Port 2222?
+# We run the proxy on port 2222 instead of 
+# the standard 22 for two major reasons:
+
+# Safety: If we bound AdaptiveShield to 22 right now
+#  and it crashed, you could be completely locked out of 
+# your own Linux machine!
+# Conflict: Your real machine likely already has OpenSSH 
+# running on port 22. If we try to bind to 22, Docker will 
+# crash with Address already in use. (In a real deployment, 
+# you would change OpenSSH to run on a secret port, and 
+# let AdaptiveShield bind to 22).
+
+  real_service_host: "127.0.0.1"
+  real_service_port: 2200
+  brute_force_threshold: 5  # Change it to 20 for real world scenarios
+  server_key_path: "./config/ssh_host_rsa_key"
+  allowed_keys_path: "./config/authorized_keys"
+
+decoys:
+  http_image: "nginx:alpine"
+  ssh_image: "cowrie/cowrie:latest"
+  max_instances: 5
+  idle_timeout_sec: 300
+  fallback_url: "http://127.0.0.1:8090"
+  pre_pull_images:
+    - "nginx:alpine"
+    - "cowrie/cowrie:latest"
+    - "dinotools/dionaea:latest"
+
+runtime:
+  db_path: "./runtime/adaptiveshield.db"
+  threat_log_path: "./runtime/logs/threat_events.jsonl"

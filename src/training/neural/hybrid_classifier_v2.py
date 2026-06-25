@@ -18,7 +18,10 @@ Classification Logic (priority order):
 
 import sys
 import pickle
-import torch
+try:
+    import torch
+except Exception:
+    torch = None
 import numpy as np
 import re
 from pathlib import Path

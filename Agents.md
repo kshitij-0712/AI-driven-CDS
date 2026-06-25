@@ -62,7 +62,8 @@ AdaptiveShield is an autonomous cyber-deception system that proactively detects,
    - `brain_v2_deep.pkl` -- Original model trained on synthetic + IP-labeled data only.
    - `brain_v3_enriched.pkl` -- **Enriched model** trained on TF-IDF + binary behavior features from Phase 1 triage. Uses 3,011 features (3,000 TF-IDF char n-grams + 11 binary features).
    - `brain_v4_deep.pkl` -- **Deep model** trained on TF-IDF + 79-column deep binary feature vectors from all analysis phases (triage + Ghidra + angr + script features + derived cross-source features).
-   - `brain_v5_neural.pkl` -- **CURRENT PRODUCTION MODEL**: BiLSTM + structured features neural model. Character-level embedding, attention pooling, 100-dim structured input (21 MITRE + 79 binary). ~706K parameters. Trained with combined focal + cost-sensitive loss.
+   - `brain_v5_neural.pkl` -- Full BiLSTM + structured features neural model.
+   - `brain_v5_mitre_only_semantic_balanced_v2.pt` -- **CURRENT PRODUCTION MODEL**: Lighter BiLSTM model (370K params) trained on MITRE tactics and command semantics. Used in the live HTTP Guard via a 3-stage dynamic pipeline (Regex Pre-filter -> Neural Inference -> MITRE rule fallback based on a 55% confidence threshold).
  - Vectorizers:
    - `vectorizer_deep.pkl` -- Original TF-IDF vectorizer.
    - `vectorizer_enriched.pkl` -- Enriched vectorizer (same TF-IDF + binary feature columns).
@@ -577,3 +578,66 @@ Added `src/training/neural/semantic_labels.py` which labels commands based on BE
 | Real malicious sessions | 200 (127 Destructive + 49 APT + 24 Downloader) |
 | MITRE-matched sessions | 74,005 (94.3%) |
 | High-severity sessions | 39,217 (severity >= 7) |
+
+## 16. Runtime Deployment Plan (Current Build Track)
+
+This section captures the agreed implementation direction for deployment and integration work.
+
+### Deployment Goals
+- One-shot startup with Docker Compose (`docker compose up -d --build`).
+- Same-host protection model: AdaptiveShield runs in front of the real service.
+- Real-time decisioning and routing (not batch-only analysis).
+- Kernel-level control for blocking via nftables, with HTTP-first request inspection.
+
+### Agreed Defaults
+- **Initial protocol scope**: HTTP first (`80` now, `443` next).
+- **Real service target**: `127.0.0.1:8080` (configurable).
+- **Decoy strategy**: pre-pull images for faster first response.
+- **Operational telemetry**: detailed CLI/runtime logs first; XAI ingestion follows.
+
+### Runtime Architecture (Implemented Base)
+- **Orchestrator**: `src/orchestrator/main.py`
+- **HTTP Guard**: `src/interceptor/http_proxy.py`
+- **Session/Event Store**: `src/interceptor/session_store.py` (SQLite)
+- **Kernel Block Manager**: `src/interceptor/nftables_manager.py`
+- **Decoy Manager (Docker API)**: `src/agents/deception.py`
+- **HTTP Classification Bridge**: `src/agents/decision.py`
+
+### Runtime Decision Policy (HTTP)
+The decision engine uses a 3-stage dynamic pipeline:
+1. **Regex Pre-Filter:** Fast matching for obvious HTTP attacks (XSS, Path Traversal, Scanners).
+2. **Neural Inference:** The `brain_v5_mitre_only` BiLSTM model evaluates the decoded payload. If confidence is $\ge 55\%$, its prediction is used.
+3. **MITRE Rule Fallback:** If neural confidence is $< 55\%$, the payload is evaluated by deterministic MITRE heuristic rules.
+
+Actions taken based on the final classification:
+- `Safe` -> forward to real service
+- `Recon` -> forward and log
+- `Downloader` / `Exploit` -> redirect to decoy container
+- `Destructive` / `ADVANCED_APT` -> drop and block source IP at the kernel level via nftables
+- Brute-force behavior on auth endpoints can escalate to block
+
+### Team Integration Contracts
+To support parallel development without blocking:
+- XAI interface: `src/interfaces/xai_contract.py`
+- Insider interface: `src/interfaces/insider_contract.py`
+
+These contracts are the reference points for Person A (XAI) and Person B (Insider module).
+
+### Runtime Config Reference
+Deployment/runtime controls are in `config/settings.yaml`:
+- `deployment`
+- `http_guard`
+- `decoys`
+- `runtime`
+
+### One-Shot Runbook
+1. Start real app on `127.0.0.1:8080` (or update config target)
+2. Start guard: `docker compose up -d --build`
+3. Verify health: `curl http://127.0.0.1/health`
+4. Monitor logs: `docker compose logs -f adaptiveshield`
+
+### Next Build Steps
+1. Add full transparent interception flow for HTTPS (`443`) and certificate handling.
+2. Extend protocol coverage incrementally (SSH/SMB/FTP) using same routing model.
+3. Add XAI module consumption of runtime event stream.
+4. Add insider module wiring via the defined contract interfaces.
