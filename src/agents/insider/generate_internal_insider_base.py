@@ -381,34 +381,158 @@ def create_synthetic_sessions() -> List[Dict[str, Any]]:
         "explicit_label": 0
     })
 
-    # Add more duplicates of normal and malicious scenarios to build a baseline dataset of 20 rows
-    for i in range(2, 6):
-        sessions.append({
-            "session_id": f"normal_dev_0{i}",
-            "role": "developer",
-            "work_after_hours": 0, "work_weekends": 0, "unusual_login_time": 0, "unusual_pc_login": 0,
-            "access_unauthorized_scope": 0, "access_sensitive_dirs": 0, "access_intellectual_property": 1,
-            "access_hr_db": 0, "access_finance_system": 0, "high_volume_download": 0, "download_count": i,
-            "usb_write_count": 0, "usb_mount_attempt": 0, "cloud_upload_count": 0, "printing_sensitive_files": 0,
-            "log_deletion_attempt": 0, "sudoers_modification": 0, "cron_tampering": 0, "syslog_stop_attempt": 0,
-            "credential_sharing_indicators": 0, "switch_user_count": 0, "duration_sec": 3600, "failed_sudo_count": 0,
-            "obfuscated_command_count": 0, "network_connection_count": 3, "suspicious_process_spawned": 0,
-            "behavior_deviation_score": 0.05, "explicit_label": 0
-        })
+    # Add 1000 randomized normal and malicious sessions to make a robust dataset
+    import random
+    random.seed(42)  # For reproducibility
 
-    for i in range(2, 7):
-        sessions.append({
-            "session_id": f"normal_employee_0{i}",
-            "role": "normal",
-            "work_after_hours": 0, "work_weekends": 0, "unusual_login_time": 0, "unusual_pc_login": 0,
-            "access_unauthorized_scope": 0, "access_sensitive_dirs": 0, "access_intellectual_property": 0,
-            "access_hr_db": 0, "access_finance_system": 0, "high_volume_download": 0, "download_count": 1,
-            "usb_write_count": 0, "usb_mount_attempt": 0, "cloud_upload_count": 0, "printing_sensitive_files": 0,
-            "log_deletion_attempt": 0, "sudoers_modification": 0, "cron_tampering": 0, "syslog_stop_attempt": 0,
-            "credential_sharing_indicators": 0, "switch_user_count": 0, "duration_sec": 600, "failed_sudo_count": 0,
-            "obfuscated_command_count": 0, "network_connection_count": 1, "suspicious_process_spawned": 0,
-            "behavior_deviation_score": 0.01, "explicit_label": 0
-        })
+    roles = ["developer", "finance", "admin", "hr", "normal"]
+    role_weights = [0.30, 0.15, 0.05, 0.10, 0.40]
+
+    for i in range(1000):
+        # 90% normal users, 10% malicious insiders
+        is_malicious = random.random() < 0.10
+        role = random.choices(roles, weights=role_weights)[0]
+        
+        session_id = f"simulated_{'malicious' if is_malicious else 'normal'}_{role}_{i:04d}"
+        
+        session = {
+            "session_id": session_id,
+            "role": role,
+            "work_after_hours": 0,
+            "work_weekends": 0,
+            "unusual_login_time": 0,
+            "unusual_pc_login": 0,
+            "access_unauthorized_scope": 0,
+            "access_sensitive_dirs": 0,
+            "access_intellectual_property": 0,
+            "access_hr_db": 0,
+            "access_finance_system": 0,
+            "high_volume_download": 0,
+            "download_count": 0,
+            "usb_write_count": 0,
+            "usb_mount_attempt": 0,
+            "cloud_upload_count": 0,
+            "printing_sensitive_files": 0,
+            "log_deletion_attempt": 0,
+            "sudoers_modification": 0,
+            "cron_tampering": 0,
+            "syslog_stop_attempt": 0,
+            "credential_sharing_indicators": 0,
+            "switch_user_count": 0,
+            "duration_sec": random.randint(300, 7200),
+            "failed_sudo_count": 0,
+            "obfuscated_command_count": 0,
+            "network_connection_count": random.randint(1, 10),
+            "suspicious_process_spawned": 0,
+            "behavior_deviation_score": 0.0,
+            "explicit_label": 0
+        }
+        
+        if not is_malicious:
+            # Configure typical normal behaviors depending on role
+            session["work_after_hours"] = 1 if (random.random() < 0.20 if role == "developer" else random.random() < 0.05) else 0
+            session["work_weekends"] = 1 if random.random() < 0.05 else 0
+            session["unusual_login_time"] = 1 if random.random() < 0.05 else 0
+            session["unusual_pc_login"] = 1 if random.random() < 0.02 else 0
+            
+            if role == "developer":
+                session["access_intellectual_property"] = 1 if random.random() < 0.85 else 0
+                session["download_count"] = random.randint(1, 10)
+                session["cloud_upload_count"] = random.randint(0, 2)
+            elif role == "finance":
+                session["access_finance_system"] = 1 if random.random() < 0.90 else 0
+                session["download_count"] = random.randint(1, 5)
+            elif role == "admin":
+                session["access_sensitive_dirs"] = 1 if random.random() < 0.80 else 0
+                session["switch_user_count"] = random.randint(0, 2)
+                session["download_count"] = random.randint(1, 5)
+            elif role == "hr":
+                session["access_hr_db"] = 1 if random.random() < 0.90 else 0
+                session["download_count"] = random.randint(1, 6)
+            else:
+                session["download_count"] = random.randint(0, 3)
+                
+            session["behavior_deviation_score"] = round(random.uniform(0.01, 0.15), 3)
+            
+        else:
+            # Choose one of the 6 malicious profiles
+            profile = random.randint(1, 6)
+            session["explicit_label"] = 0
+            
+            if profile == 1: # Finance Fraud
+                session["role"] = "finance"
+                session["work_after_hours"] = 1
+                session["work_weekends"] = 1
+                session["access_unauthorized_scope"] = 1
+                session["access_sensitive_dirs"] = 1
+                session["access_hr_db"] = 1
+                session["access_finance_system"] = 1
+                session["high_volume_download"] = 1
+                session["download_count"] = random.randint(15, 40)
+                session["usb_write_count"] = random.randint(5, 20)
+                session["usb_mount_attempt"] = 1
+                session["log_deletion_attempt"] = 1
+                session["behavior_deviation_score"] = round(random.uniform(0.75, 0.95), 3)
+                
+            elif profile == 2: # IP Theft
+                session["role"] = "developer"
+                session["work_after_hours"] = 1
+                session["work_weekends"] = 1
+                session["access_intellectual_property"] = 1
+                session["high_volume_download"] = 1
+                session["download_count"] = random.randint(50, 150)
+                session["cloud_upload_count"] = random.randint(3, 10)
+                session["log_deletion_attempt"] = 1
+                session["behavior_deviation_score"] = round(random.uniform(0.80, 0.98), 3)
+                
+            elif profile == 3: # HR Espionage
+                session["role"] = "hr"
+                session["work_after_hours"] = 1
+                session["unusual_pc_login"] = 1
+                session["access_unauthorized_scope"] = 1
+                session["access_sensitive_dirs"] = 1
+                session["access_hr_db"] = 1
+                session["high_volume_download"] = 1
+                session["download_count"] = random.randint(20, 80)
+                session["cloud_upload_count"] = random.randint(2, 8)
+                session["syslog_stop_attempt"] = 1
+                session["log_deletion_attempt"] = 1
+                session["behavior_deviation_score"] = round(random.uniform(0.70, 0.90), 3)
+                
+            elif profile == 4: # Admin Sabotage
+                session["role"] = "admin"
+                session["unusual_pc_login"] = 1
+                session["access_sensitive_dirs"] = 1
+                session["sudoers_modification"] = 1
+                session["cron_tampering"] = 1
+                session["syslog_stop_attempt"] = 1
+                session["suspicious_process_spawned"] = 1
+                session["switch_user_count"] = random.randint(3, 6)
+                session["behavior_deviation_score"] = round(random.uniform(0.85, 0.99), 3)
+                
+            elif profile == 5: # Data Sale
+                session["role"] = "normal"
+                session["work_weekends"] = 1
+                session["access_unauthorized_scope"] = 1
+                session["access_finance_system"] = 1
+                session["high_volume_download"] = 1
+                session["download_count"] = random.randint(20, 60)
+                session["usb_write_count"] = random.randint(5, 15)
+                session["usb_mount_attempt"] = 1
+                session["failed_sudo_count"] = random.randint(3, 6)
+                session["behavior_deviation_score"] = round(random.uniform(0.65, 0.85), 3)
+                
+            elif profile == 6: # Credential Trafficking
+                session["role"] = "developer"
+                session["work_after_hours"] = 1
+                session["access_unauthorized_scope"] = 1
+                session["access_sensitive_dirs"] = 1
+                session["cloud_upload_count"] = random.randint(1, 5)
+                session["credential_sharing_indicators"] = 1
+                session["log_deletion_attempt"] = 1
+                session["behavior_deviation_score"] = round(random.uniform(0.70, 0.90), 3)
+                
+        sessions.append(session)
 
     return sessions
 
