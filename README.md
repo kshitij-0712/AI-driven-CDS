@@ -78,6 +78,35 @@ Default behavior:
   Outputs:
   - Model: `./models/brain_v5_mitre_only_semantic_balanced_v2.pt` (and `.pkl` bundle)
   - Report: `./models/brain_v5_mitre_only_semantic_balanced_v2_results.json`
+  - Model: `./models/brain_v2_deep.pkl`
+  - Report: `./data/processed/training_report.json`
+- Train the insider-resilient detection module with the exported session dataset:
+  ```bash
+  python ./src/train_insider.py
+  ```
+  Outputs:
+  - Model: `./models/insider_model.pkl`
+  - Dataset: `./data/exports/insider_dataset.csv`
+- Generate a CERT baseline dataset from CERT output files:
+  ```bash
+  python ./src/train_insider.py --cert-dir ./data/cert-outputs --cert-output ./data/exports/cert_baseline_dataset.csv
+  ```
+  Outputs:
+  - CERT baseline dataset: `./data/exports/cert_baseline_dataset.csv`
+  - Uses files such as `login_features.csv`, `insider_login_alerts.csv`, and `final_insider_risk.csv`
+
+### Insider-resilient detection notes
+This module currently detects stealthy malicious sessions using the exported session dataset.
+The current export dataset contains no internal source IPs, so this model is still a proxy for suspicious insider-like behavior rather than a true internal user compromise detector.
+To move it closer to true malicious insider detection, refine the dataset and features with:
+- internal access / source indicators
+- unusual command patterns for privileged access
+- persistence / credential misuse signals
+- low-noise file or download activity
+- strange timing relative to normal sessions
+
+These refinements help the system approximate a malicious insider attacking its own environment instead of only generic external attacker behavior.
+If additional data is available, use Cowrie logs for session extraction and CERT logs as a normal behavior baseline.
 
 ### Testing
 - Run inference on real Cowrie sessions:

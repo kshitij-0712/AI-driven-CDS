@@ -42,6 +42,13 @@ ml:
   neural_v5_state_path: "./models/brain_v5_neural.pt"
   neural_v5_results_path: "./models/brain_v5_neural_results.json"
 
+insider:
+  export_dataset_path: "./data/exports/sessions_complete.csv"
+  prepared_dataset_path: "./data/exports/insider_dataset.csv"
+  model_path: "./models/insider_model.pkl"
+  cert_output_dir: "./data/cert-outputs"
+  cert_baseline_dataset: "./data/exports/cert_baseline_dataset.csv"
+
 # Phase 5: Neural model training configuration
 neural_training:
   max_length: 512
