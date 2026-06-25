@@ -12,6 +12,10 @@ def load_config(path: str):
         return yaml.safe_load(f)
 
 
+import asyncio
+import logging
+from interceptor.ssh_proxy import start_ssh_proxy
+
 def run(config_path: str):
     config = load_config(config_path)
     app = create_http_guard_app(config)
@@ -20,8 +24,24 @@ def run(config_path: str):
     host = deployment.get("host", "0.0.0.0")
     port = int(deployment.get("port", 80))
 
-    uvicorn.run(app, host=host, port=port, proxy_headers=True)
+    uvicorn_config = uvicorn.Config(app, host=host, port=port, proxy_headers=True)
+    server = uvicorn.Server(uvicorn_config)
 
+    async def main_loop():
+        # Pre-warm decoys to eliminate startup latency for the first attack
+        logging.info("Pre-warming HTTP and SSH decoys...")
+        app.state.decoys.get_or_spawn_http_decoy("prewarm")
+        app.state.decoys.get_or_spawn_ssh_decoy("prewarm")
+        logging.info("Decoys ready.")
+
+        # Start SSH proxy
+        ssh_task = asyncio.create_task(
+            start_ssh_proxy(config, app.state.store, app.state.nft, app.state.classifier, app.state.decoys)
+        )
+        # Start HTTP server
+        await server.serve()
+
+    asyncio.run(main_loop())
 
 def main():
     parser = argparse.ArgumentParser(description="AdaptiveShield Orchestrator")

@@ -2,7 +2,7 @@ import logging
 import pickle
 import re
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote_plus as unquote
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,7 @@ def _classify_neural(commands: str):
 # Main HTTP classification entry point
 # ---------------------------------------------------------------------------
 
-def classify_http_request(hybrid_classifier, request_context, neural_model_loaded=None):
+def classify_http_request(hybrid_classifier, request_context, command_history: str = "", neural_model_loaded=None):
     """Classify an HTTP request context using a multi-stage pipeline.
 
     Pipeline:
@@ -315,22 +315,30 @@ def classify_http_request(hybrid_classifier, request_context, neural_model_loade
         }
 
     # --- Build the synthetic command (URL-decoded) ---
-    # Extract just the values from query params (strip keys like cmd=, q=, file=)
+    # Extract just the values from query/body params (strip keys like cmd=, q=, file=)
     # The neural model was trained on raw commands, not HTTP query strings.
-    decoded_query = unquote(query)
-    decoded_body = unquote(body)
-    query_values = []
-    for param in decoded_query.split("&"):
-        if "=" in param:
-            query_values.append(param.split("=", 1)[1])
-        else:
-            query_values.append(param)
-    synthetic_cmd = " ".join(query_values + ([decoded_body] if decoded_body else [])).strip()
+    extracted_values = []
+    
+    for payload in (query, body):
+        if not payload:
+            continue
+        decoded = unquote(payload)
+        for param in decoded.split("&"):
+            if "=" in param:
+                extracted_values.append(param.split("=", 1)[1])
+            else:
+                if param.strip():
+                    extracted_values.append(param)
+                    
+    synthetic_cmd = " ".join(extracted_values).strip()
     if not synthetic_cmd:
         synthetic_cmd = unquote(path)
 
+    # Combine history with current command for context-aware classification
+    full_command = f"{command_history}; {synthetic_cmd}".strip("; ") if command_history else synthetic_cmd
+
     # --- Stage 2: Neural model with confidence thresholding ---
-    neural_result = _classify_neural(synthetic_cmd) if _neural_model is not None else None
+    neural_result = _classify_neural(full_command) if _neural_model is not None else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result
@@ -357,6 +365,7 @@ def classify_http_request(hybrid_classifier, request_context, neural_model_loade
                 "http_findings": http_findings,
                 "neural_confidence": confidence,
                 "neural_probs": probs,
+                "extracted_command": synthetic_cmd,
             }
         else:
             # Low confidence — fall through to MITRE rules
@@ -366,7 +375,7 @@ def classify_http_request(hybrid_classifier, request_context, neural_model_loade
             )
 
     # --- Stage 3: MITRE rule-based fallback ---
-    pred_id, label, explanation = hybrid_classifier.classify(synthetic_cmd)
+    pred_id, label, explanation = hybrid_classifier.classify(full_command)
 
     if label == "Safe":
         action = "forward"
@@ -395,8 +404,81 @@ def classify_http_request(hybrid_classifier, request_context, neural_model_loade
         result["neural_probs"] = neural_probs
         result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
 
+    result["extracted_command"] = synthetic_cmd
     return result
 
+# ---------------------------------------------------------------------------
+# SSH Guard Integration
+# ---------------------------------------------------------------------------
+
+def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict:
+    """Evaluate an SSH command for threats.
+    Expects `command` to be the full session context if available.
+    """
+    if not command.strip():
+        return {
+            "class_id": 0,
+            "label": "Safe",
+            "confidence": 1.0,
+            "action": "forward",
+            "rule": "Empty command",
+            "mitre_tactics": [],
+            "severity_max": 0,
+        }
+
+    # Stage 2: Neural Inference
+    neural_result = _classify_neural(command) if _neural_model is not None else None
+
+    if neural_result is not None:
+        pred_id, label, confidence, probs = neural_result
+        if confidence >= CONFIDENCE_THRESHOLD:
+            # We don't have redirect_to_decoy mid-session for SSH, so we drop_and_block for exploits too.
+            if label == "Safe":
+                action = "forward"
+            elif label == "Recon":
+                action = "forward_and_log"
+            else:
+                action = "drop_and_block"
+
+            return {
+                "class_id": pred_id,
+                "label": label,
+                "confidence": confidence,
+                "action": action,
+                "rule": f"neural_model (confidence={confidence:.2%})",
+                "mitre_tactics": [],
+                "severity_max": 0,
+                "neural_confidence": confidence,
+                "neural_probs": probs,
+            }
+
+    # Stage 3: MITRE Fallback
+    pred_id, label, explanation = hybrid_classifier.classify(command)
+    
+    if label == "Safe":
+        action = "forward"
+    elif label == "Recon":
+        action = "forward_and_log"
+    else:
+        action = "drop_and_block"
+
+    result = {
+        "class_id": pred_id,
+        "label": label,
+        "confidence": 1.0,
+        "action": action,
+        "rule": explanation.get("rule_matched"),
+        "mitre_tactics": explanation.get("mitre_tactics", []),
+        "severity_max": explanation.get("severity_max", 0),
+    }
+
+    if neural_result is not None:
+        _, _, neural_conf, neural_probs = neural_result
+        result["neural_confidence"] = neural_conf
+        result["neural_probs"] = neural_probs
+        result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
+
+    return result
 
 # ---------------------------------------------------------------------------
 # Factory: build classifiers at startup

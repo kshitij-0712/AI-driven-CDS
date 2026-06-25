@@ -61,6 +61,10 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         decoys.shutdown_all_decoys()
 
     app = FastAPI(title="AdaptiveShield HTTP Guard", version="0.1.0", lifespan=lifespan)
+    app.state.store = store
+    app.state.nft = nft
+    app.state.classifier = classifier
+    app.state.decoys = decoys
 
     async def forward_request(target_base_url: str, request: Request, body: bytes) -> Response:
         target_url = f"{target_base_url}{request.url.path}"
@@ -111,7 +115,15 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             )
 
         session_id = store.get_or_create_session(src_ip)
-        decision = classify_http_request(classifier, context)
+        
+        # Fetch command history for context-aware classification
+        command_history = store.get_command_history(session_id)
+        decision = classify_http_request(classifier, context, command_history=command_history)
+        
+        # Update command history with the current extracted command
+        extracted_cmd = decision.get("extracted_command", "")
+        if extracted_cmd and extracted_cmd != "/":
+            store.append_command_history(session_id, extracted_cmd)
 
         # Simple brute-force detection for HTTP login endpoints.
         path_lower = request.url.path.lower()

@@ -133,7 +133,6 @@ temp/
 *.bak
 .local
 *.pid
-daamy_app/
 # OpenCode session files and config
 session-*.md
 .opencode/

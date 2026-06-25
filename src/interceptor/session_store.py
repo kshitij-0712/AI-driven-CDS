@@ -137,3 +137,24 @@ class SessionStore:
     def get_counter(self, session_id: str, key: str) -> int:
         ctx = self._get_context(session_id)
         return int(ctx.get(key, 0))
+
+    def get_command_history(self, session_id: str) -> str:
+        ctx = self._get_context(session_id)
+        history = ctx.get("command_history", [])
+        return "; ".join(history)
+
+    def append_command_history(self, session_id: str, command: str) -> str:
+
+        """Appends a command to the history and returns the semicolon-separated string of all commands."""
+        ctx = self._get_context(session_id)
+        history = ctx.get("command_history", [])
+        if command and command.strip():
+            history.append(command.strip())
+            ctx["command_history"] = history
+            self.conn.execute(
+                "UPDATE sessions SET context_json = ? WHERE id = ?",
+                (json.dumps(ctx), session_id),
+            )
+            self.conn.commit()
+        return "; ".join(history)
+
