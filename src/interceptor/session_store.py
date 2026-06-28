@@ -158,3 +158,14 @@ class SessionStore:
             self.conn.commit()
         return "; ".join(history)
 
+    def update_context(self, session_id: str, updates: dict):
+        """Merges dict updates into context_json for a session."""
+        ctx = self._get_context(session_id)
+        ctx.update(updates)
+        self.conn.execute(
+            "UPDATE sessions SET context_json = ? WHERE id = ?",
+            (json.dumps(ctx), session_id),
+        )
+        self.conn.commit()
+
+

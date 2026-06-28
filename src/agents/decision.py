@@ -285,35 +285,6 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
 
     user_agent = str(headers.get("user-agent", ""))
 
-    # --- Stage 1: Fast regex pre-filter ---
-    joined_payload = " ".join([path, query, body, user_agent])
-    joined_payload = unquote(joined_payload)
-    http_findings = _match_http_patterns(joined_payload)
-
-    if "xss" in http_findings or "sqli" in http_findings or "command_injection" in http_findings:
-        return {
-            "class_id": 3,
-            "label": "Exploit",
-            "confidence": 1.0,
-            "action": "redirect_to_decoy",
-            "rule": "HTTP exploit pattern matched",
-            "mitre_tactics": ["execution", "initial_access"],
-            "severity_max": 9,
-            "http_findings": http_findings,
-        }
-
-    if "path_traversal" in http_findings or "scanner" in http_findings:
-        return {
-            "class_id": 1,
-            "label": "Recon",
-            "confidence": 1.0,
-            "action": "forward_and_log",
-            "rule": "HTTP reconnaissance pattern matched",
-            "mitre_tactics": ["reconnaissance", "discovery"],
-            "severity_max": 6,
-            "http_findings": http_findings,
-        }
-
     # --- Build the synthetic command (URL-decoded) ---
     # Extract just the values from query/body params (strip keys like cmd=, q=, file=)
     # The neural model was trained on raw commands, not HTTP query strings.
@@ -337,6 +308,47 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
     # Combine history with current command for context-aware classification
     full_command = f"{command_history}; {synthetic_cmd}".strip("; ") if command_history else synthetic_cmd
 
+    # Run MITRE rules classification first to get rule_id, rule_label, and explanation
+    rule_id, rule_label, explanation = hybrid_classifier.classify(full_command)
+
+    # --- Stage 1: Fast regex pre-filter ---
+    joined_payload = " ".join([path, query, body, user_agent])
+    joined_payload = unquote(joined_payload)
+    http_findings = _match_http_patterns(joined_payload)
+
+    stage1_id = None
+    if "xss" in http_findings or "sqli" in http_findings or "command_injection" in http_findings:
+        stage1_id, stage1_label, stage1_action = 3, "Exploit", "redirect_to_decoy"
+        stage1_rule = "HTTP exploit pattern matched"
+        stage1_tactics = ["execution", "initial_access"]
+        stage1_severity = 9
+    elif "path_traversal" in http_findings or "scanner" in http_findings:
+        stage1_id, stage1_label, stage1_action = 1, "Recon", "forward_and_log"
+        stage1_rule = "HTTP reconnaissance pattern matched"
+        stage1_tactics = ["reconnaissance", "discovery"]
+        stage1_severity = 6
+
+    if stage1_id is not None:
+        # Check if rules found a higher severity threat than Stage 1 pre-filter
+        if rule_id > stage1_id:
+            logger.info(
+                "Safeguard override (Stage 1): Stage 1 matched '%s' but rules detected '%s'. Overriding to rules.",
+                stage1_label, rule_label
+            )
+            # Fall through to rules result
+        else:
+            return {
+                "class_id": stage1_id,
+                "label": stage1_label,
+                "confidence": 1.0,
+                "action": stage1_action,
+                "rule": stage1_rule,
+                "mitre_tactics": stage1_tactics,
+                "severity_max": stage1_severity,
+                "http_findings": http_findings,
+                "extracted_command": synthetic_cmd,
+            }
+
     # --- Stage 2: Neural model with confidence thresholding ---
     neural_result = _classify_neural(full_command) if _neural_model is not None else None
 
@@ -344,7 +356,17 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
         pred_id, label, confidence, probs = neural_result
 
         if confidence >= CONFIDENCE_THRESHOLD:
-            # Neural model is confident — use its prediction
+            # Check for safeguard override
+            if rule_id > pred_id:
+                logger.info(
+                    "Safeguard override: Neural predicted '%s' (conf=%.2f%%) but rules detected '%s'. Overriding to rules.",
+                    label, confidence * 100, rule_label
+                )
+                pred_id, label, confidence = rule_id, rule_label, 1.0
+                rule_name = explanation.get("rule_matched")
+            else:
+                rule_name = f"neural_model (confidence={confidence:.2%})"
+
             if label == "Safe":
                 action = "forward"
             elif label == "Recon":
@@ -359,11 +381,11 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
                 "label": label,
                 "confidence": confidence,
                 "action": action,
-                "rule": f"neural_model (confidence={confidence:.2%})",
-                "mitre_tactics": [],  # Neural model doesn't provide these directly
-                "severity_max": 0,
+                "rule": rule_name,
+                "mitre_tactics": explanation.get("mitre_tactics", []),
+                "severity_max": explanation.get("severity_max", 0),
                 "http_findings": http_findings,
-                "neural_confidence": confidence,
+                "neural_confidence": neural_result[2],
                 "neural_probs": probs,
                 "extracted_command": synthetic_cmd,
             }
@@ -375,20 +397,18 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
             )
 
     # --- Stage 3: MITRE rule-based fallback ---
-    pred_id, label, explanation = hybrid_classifier.classify(full_command)
-
-    if label == "Safe":
+    if rule_label == "Safe":
         action = "forward"
-    elif label == "Recon":
+    elif rule_label == "Recon":
         action = "forward_and_log"
-    elif label in ("Downloader", "Exploit"):
+    elif rule_label in ("Downloader", "Exploit"):
         action = "redirect_to_decoy"
     else:
         action = "drop_and_block"
 
     result = {
-        "class_id": pred_id,
-        "label": label,
+        "class_id": rule_id,
+        "label": rule_label,
         "confidence": 1.0,
         "action": action,
         "rule": explanation.get("rule_matched"),
@@ -406,6 +426,7 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
 
     result["extracted_command"] = synthetic_cmd
     return result
+
 
 # ---------------------------------------------------------------------------
 # SSH Guard Integration
@@ -426,12 +447,26 @@ def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict
             "severity_max": 0,
         }
 
+    # Run MITRE rules classification first to get rule_id, rule_label, and explanation
+    rule_id, rule_label, explanation = hybrid_classifier.classify(command)
+
     # Stage 2: Neural Inference
     neural_result = _classify_neural(command) if _neural_model is not None else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result
         if confidence >= CONFIDENCE_THRESHOLD:
+            # Check for safeguard override
+            if rule_id > pred_id:
+                logger.info(
+                    "Safeguard override (SSH): Neural predicted '%s' (conf=%.2f%%) but rules detected '%s'. Overriding to rules.",
+                    label, confidence * 100, rule_label
+                )
+                pred_id, label, confidence = rule_id, rule_label, 1.0
+                rule_name = explanation.get("rule_matched")
+            else:
+                rule_name = f"neural_model (confidence={confidence:.2%})"
+
             # We don't have redirect_to_decoy mid-session for SSH, so we drop_and_block for exploits too.
             if label == "Safe":
                 action = "forward"
@@ -445,26 +480,24 @@ def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict
                 "label": label,
                 "confidence": confidence,
                 "action": action,
-                "rule": f"neural_model (confidence={confidence:.2%})",
-                "mitre_tactics": [],
-                "severity_max": 0,
-                "neural_confidence": confidence,
+                "rule": rule_name,
+                "mitre_tactics": explanation.get("mitre_tactics", []),
+                "severity_max": explanation.get("severity_max", 0),
+                "neural_confidence": neural_result[2],
                 "neural_probs": probs,
             }
 
     # Stage 3: MITRE Fallback
-    pred_id, label, explanation = hybrid_classifier.classify(command)
-    
-    if label == "Safe":
+    if rule_label == "Safe":
         action = "forward"
-    elif label == "Recon":
+    elif rule_label == "Recon":
         action = "forward_and_log"
     else:
         action = "drop_and_block"
 
     result = {
-        "class_id": pred_id,
-        "label": label,
+        "class_id": rule_id,
+        "label": rule_label,
         "confidence": 1.0,
         "action": action,
         "rule": explanation.get("rule_matched"),
