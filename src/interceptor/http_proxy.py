@@ -116,33 +116,50 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         session_id = store.get_or_create_session(src_ip)
         
-        # Fetch command history for context-aware classification
-        command_history = store.get_command_history(session_id)
-        decision = classify_http_request(classifier, context, command_history=command_history)
-        
-        # Update command history with the current extracted command
-        extracted_cmd = decision.get("extracted_command", "")
-        if extracted_cmd and extracted_cmd != "/":
-            store.append_command_history(session_id, extracted_cmd)
+        ctx = store._get_context(session_id)
+        if ctx.get("redirected_to_decoy"):
+            target = ctx.get("decoy_base_url")
+            decision = {
+                "class_id": ctx.get("decoy_class_id", 3),
+                "label": ctx.get("decoy_label", "Exploit"),
+                "confidence": 1.0,
+                "action": "redirect_to_decoy",
+                "rule": ctx.get("decoy_rule", "Session pinned to decoy"),
+                "mitre_tactics": ctx.get("decoy_mitre_tactics", []),
+                "severity_max": ctx.get("decoy_severity_max", 0),
+                "extracted_command": "",
+            }
+        else:
+            # Fetch command history for context-aware classification
+            command_history = store.get_command_history(session_id)
+            decision = classify_http_request(classifier, context, command_history=command_history)
+            
+            # Update command history with the current extracted command
+            extracted_cmd = decision.get("extracted_command", "")
+            if extracted_cmd and extracted_cmd != "/":
+                store.append_command_history(session_id, extracted_cmd)
 
-        # Simple brute-force detection for HTTP login endpoints.
-        path_lower = request.url.path.lower()
-        if request.method.upper() == "POST" and any(k in path_lower for k in ["login", "signin", "auth"]):
-            attempts = store.increment_counter(session_id, "login_attempts")
-            if attempts >= brute_force_threshold:
-                decision = {
-                    "class_id": 3,
-                    "label": "Exploit",
-                    "confidence": 1.0,
-                    "action": "drop_and_block",
-                    "rule": "HTTP brute-force threshold exceeded",
-                    "mitre_tactics": ["credential_access"],
-                    "severity_max": 8,
-                    "http_findings": ["brute_force"],
-                }
+            # Simple brute-force detection for HTTP login endpoints.
+            path_lower = request.url.path.lower()
+            if request.method.upper() == "POST" and any(k in path_lower for k in ["login", "signin", "auth"]):
+                attempts = store.increment_counter(session_id, "login_attempts")
+                if attempts >= brute_force_threshold:
+                    decision = {
+                        "class_id": 3,
+                        "label": "Exploit",
+                        "confidence": 1.0,
+                        "action": "drop_and_block",
+                        "rule": "HTTP brute-force threshold exceeded",
+                        "mitre_tactics": ["credential_access"],
+                        "severity_max": 8,
+                        "http_findings": ["brute_force"],
+                    }
 
         action = decision["action"]
-        target = f"http://{real_host}:{real_port}"
+        if ctx.get("redirected_to_decoy"):
+            target = ctx.get("decoy_base_url")
+        else:
+            target = f"http://{real_host}:{real_port}"
         result = None
 
         if action == "drop_and_block":
@@ -159,9 +176,19 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 },
             )
         elif action == "redirect_to_decoy":
-            decoy = decoys.get_or_spawn_http_decoy(session_id)
-            if decoy:
-                target = decoy.base_url
+            if not ctx.get("redirected_to_decoy"):
+                decoy = decoys.get_or_spawn_http_decoy(session_id)
+                if decoy:
+                    target = decoy.base_url
+                    store.update_context(session_id, {
+                        "redirected_to_decoy": True,
+                        "decoy_base_url": target,
+                        "decoy_class_id": decision["class_id"],
+                        "decoy_label": decision["label"],
+                        "decoy_rule": decision.get("rule"),
+                        "decoy_mitre_tactics": decision.get("mitre_tactics", []),
+                        "decoy_severity_max": decision.get("severity_max", 0),
+                    })
             
             # Decoy Cold-Start Fix
             max_retries = 10
@@ -186,6 +213,15 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     decoy = decoys.get_or_spawn_http_decoy(session_id)
                     if decoy:
                         target = decoy.base_url
+                        store.update_context(session_id, {
+                            "redirected_to_decoy": True,
+                            "decoy_base_url": target,
+                            "decoy_class_id": decision["class_id"],
+                            "decoy_label": decision["label"],
+                            "decoy_rule": decision.get("rule") or "Real service offline, fallback to decoy",
+                            "decoy_mitre_tactics": decision.get("mitre_tactics", []),
+                            "decoy_severity_max": decision.get("severity_max", 0),
+                        })
                         try:
                             result = await forward_request(target, request, raw_body)
                         except Exception:

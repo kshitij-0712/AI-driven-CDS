@@ -127,6 +127,7 @@ credentials/
 
 # Temporary files
 data
+verify/
 tmp/
 temp/
 *.tmp
