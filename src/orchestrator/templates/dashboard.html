@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AdaptiveShield // Real-Time Threat Command Center</title>
+    
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-main: hsl(220, 25%, 6%);
+            --bg-card: hsl(220, 20%, 10%);
+            --bg-card-hover: hsl(220, 20%, 14%);
+            --border: hsl(220, 15%, 16%);
+            --text-primary: hsl(0, 0%, 95%);
+            --text-secondary: hsl(220, 10%, 65%);
+            --text-muted: hsl(220, 10%, 45%);
+            
+            /* Status HSL Colors */
+            --color-safe: hsl(145, 65%, 45%);
+            --color-safe-glow: hsla(145, 65%, 45%, 0.15);
+            --color-recon: hsl(195, 85%, 50%);
+            --color-recon-glow: hsla(195, 85%, 50%, 0.15);
+            --color-exploit: hsl(35, 90%, 55%);
+            --color-exploit-glow: hsla(35, 90%, 55%, 0.15);
+            --color-destructive: hsl(355, 80%, 55%);
+            --color-destructive-glow: hsla(355, 80%, 55%, 0.15);
+            --color-insider: hsl(280, 80%, 60%);
+            --color-insider-glow: hsla(280, 80%, 60%, 0.15);
+            
+            --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            line-height: 1.5;
+            overflow-x: hidden;
+        }
+
+        h1, h2, h3, h4 {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        /* Layout */
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 2rem;
+            gap: 2rem;
+        }
+
+        /* Header styling */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1.5rem;
+        }
+
+        .logo-section h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, hsl(0, 0%, 100%) 0%, hsl(220, 20%, 70%) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-section span.badge {
+            font-size: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            border: 1px solid var(--border);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            color: var(--text-secondary);
+            font-weight: normal;
+        }
+
+        .system-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            background: hsl(220, 20%, 8%);
+            border: 1px solid var(--border);
+            padding: 0.5rem 1rem;
+            border-radius: 99px;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--color-safe);
+            box-shadow: 0 0 12px var(--color-safe);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.5; }
+            50% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 16px var(--color-safe); }
+            100% { transform: scale(0.9); opacity: 0.5; }
+        }
+
+        /* Grid counters */
+        .counters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .counter-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            transition: var(--transition);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .counter-card:hover {
+            transform: translateY(-2px);
+            border-color: hsl(220, 15%, 24%);
+            background-color: var(--bg-card-hover);
+        }
+
+        .counter-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background-color: var(--theme-color, var(--text-muted));
+        }
+
+        .counter-card.safe { --theme-color: var(--color-safe); }
+        .counter-card.recon { --theme-color: var(--color-recon); }
+        .counter-card.destructive { --theme-color: var(--color-destructive); }
+        .counter-card.insider { --theme-color: var(--color-insider); }
+
+        .counter-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .counter-value {
+            font-size: 2.25rem;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        /* Core Panel Layout */
+        .workspace-panel {
+            display: grid;
+            grid-template-columns: 1fr 450px;
+            gap: 2rem;
+            min-height: 550px;
+        }
+
+        @media (max-width: 1024px) {
+            .workspace-panel {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel-container {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-header h2 {
+            font-size: 1.25rem;
+            color: var(--text-primary);
+        }
+
+        /* Events list scrollbar */
+        .events-list {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 600px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .event-item {
+            background-color: hsl(220, 20%, 7%);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem;
+            display: grid;
+            grid-template-columns: 80px 100px 1fr 120px;
+            align-items: center;
+            gap: 1rem;
+            cursor: pointer;
+            transition: var(--transition);
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .event-item:hover, .event-item.active {
+            border-color: var(--theme-color, var(--border));
+            background-color: var(--bg-card-hover);
+        }
+
+        .event-time {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .event-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            text-align: center;
+            text-transform: uppercase;
+        }
+
+        .badge-safe { background-color: var(--color-safe-glow); color: var(--color-safe); border: 1px solid hsla(145, 65%, 45%, 0.3); }
+        .badge-recon { background-color: var(--color-recon-glow); color: var(--color-recon); border: 1px solid hsla(195, 85%, 50%, 0.3); }
+        .badge-downloader { background-color: var(--color-recon-glow); color: var(--color-recon); border: 1px solid hsla(195, 85%, 50%, 0.3); }
+        .badge-exploit { background-color: var(--color-exploit-glow); color: var(--color-exploit); border: 1px solid hsla(35, 90%, 55%, 0.3); }
+        .badge-destructive { background-color: var(--color-destructive-glow); color: var(--color-destructive); border: 1px solid hsla(355, 80%, 55%, 0.3); }
+        .badge-apt { background-color: var(--color-destructive-glow); color: var(--color-destructive); border: 1px solid hsla(355, 80%, 55%, 0.3); }
+        .badge-insider { background-color: var(--color-insider-glow); color: var(--color-insider); border: 1px solid hsla(280, 80%, 60%, 0.3); }
+
+        .event-item.type-safe { --theme-color: var(--color-safe); }
+        .event-item.type-recon { --theme-color: var(--color-recon); }
+        .event-item.type-downloader { --theme-color: var(--color-recon); }
+        .event-item.type-exploit { --theme-color: var(--color-exploit); }
+        .event-item.type-destructive { --theme-color: var(--color-destructive); }
+        .event-item.type-apt { --theme-color: var(--color-destructive); }
+        .event-item.type-insider { --theme-color: var(--color-insider); }
+
+        .event-meta {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .event-title {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .event-subtitle {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .event-action-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-align: right;
+            color: var(--text-secondary);
+        }
+
+        /* Detail Panel */
+        .detail-panel {
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            overflow-y: auto;
+            max-height: 600px;
+        }
+
+        .detail-header {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .detail-risk-gauge {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            background: hsl(220, 20%, 7%);
+            border: 1px solid var(--border);
+        }
+
+        .risk-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .risk-value {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            font-size: 1.25rem;
+            color: var(--theme-color, var(--text-primary));
+        }
+
+        .section-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .detail-block {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .detail-card {
+            background-color: hsl(220, 20%, 7%);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+        }
+
+        .detail-card.xai-summary {
+            border-left: 3px solid var(--theme-color, var(--border));
+            font-weight: 500;
+        }
+
+        .detail-card p {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .detail-card.xai-detailed p {
+            white-space: pre-line;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+
+        .detail-card.command-view {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--color-safe);
+            overflow-x: auto;
+        }
+
+        /* Recommendations List */
+        .recs-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .recs-list li {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+
+        .recs-list li::before {
+            content: '→';
+            color: var(--theme-color, var(--text-muted));
+            font-weight: bold;
+        }
+
+        /* Active Blocks Table Section */
+        .blocklist-panel {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.875rem;
+        }
+
+        th, td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            color: var(--text-primary);
+        }
+
+        .btn-unblock {
+            background: none;
+            border: 1px solid var(--color-destructive);
+            color: var(--color-destructive);
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .btn-unblock:hover {
+            background-color: var(--color-destructive);
+            color: var(--text-primary);
+        }
+
+        /* Empty state styling */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            min-height: 300px;
+            color: var(--text-muted);
+            text-align: center;
+            gap: 1rem;
+        }
+
+        .empty-state svg {
+            width: 48px;
+            height: 48px;
+            stroke: currentColor;
+        }
+
+        /* CSS utilities */
+        .pulse-red {
+            animation: pulse-red-anim 1.5s infinite;
+        }
+        @keyframes pulse-red-anim {
+            0% { box-shadow: 0 0 0 0 rgba(255, 85, 85, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 85, 85, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 85, 85, 0); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        
+        <!-- Header -->
+        <header>
+            <div class="logo-section">
+                <h1>AdaptiveShield <span class="badge">V5 ACTIVE-SHIELD</span></h1>
+            </div>
+            <div class="system-status">
+                <div class="status-dot"></div>
+                <span>Real-Time Monitor Online</span>
+            </div>
+        </header>
+
+        <!-- Stats Grid -->
+        <section class="counters-grid">
+            <div class="counter-card" style="--theme-color: var(--text-secondary)">
+                <span class="counter-label">Total Intercepted Requests</span>
+                <span class="counter-value" id="count-total">0</span>
+            </div>
+            <div class="counter-card safe">
+                <span class="counter-label">Safe Transactions (Forwarded)</span>
+                <span class="counter-value" id="count-safe">0</span>
+            </div>
+            <div class="counter-card recon">
+                <span class="counter-label">Decoy Reroutes (Honeypotted)</span>
+                <span class="counter-value" id="count-decoy">0</span>
+            </div>
+            <div class="counter-card destructive">
+                <span class="counter-label">OS Kernel Banned IPs</span>
+                <span class="counter-value" id="count-banned">0</span>
+            </div>
+            <div class="counter-card insider">
+                <span class="counter-label">Malicious Insider Alerts</span>
+                <span class="counter-value" id="count-insider">0</span>
+            </div>
+        </section>
+
+        <!-- Core Split Panel -->
+        <section class="workspace-panel">
+            
+            <!-- Live Feed List -->
+            <div class="panel-container">
+                <div class="panel-header">
+                    <h2>Live Security Event stream</h2>
+                    <span style="font-size: 0.8rem; color: var(--color-safe);">● Live Stream Connected</span>
+                </div>
+                <div class="events-list" id="events-list">
+                    <div class="empty-state" id="list-empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                        <p>Awaiting incoming HTTP or SSH activity...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Context Inspector Panel (Right) -->
+            <div class="panel-container">
+                <div class="panel-header">
+                    <h2>Explainable AI (XAI) Inspector</h2>
+                </div>
+                <div id="inspector-content" style="height: 100%;">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                        <p>Select any event from the stream to inspect the deep AI classification and MITRE ATT&CK mapping.</p>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Firewall Banned IPs Table -->
+        <section class="blocklist-panel">
+            <h2 style="font-size: 1.25rem;">Active Firewall Kernel Bans (`nftables`)</h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>Ban Trigger Reason</th>
+                            <th>Tactic / Category</th>
+                            <th>Timestamp</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="blocklist-body">
+                        <tr id="table-empty-row">
+                            <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No active kernel blocks in the current session.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Live Logic Engine -->
+    <script>
+        const events = [];
+        const blockedIPs = new Set();
+        let selectedEventId = null;
+
+        // Statistics Counters
+        let countTotal = 0;
+        let countSafe = 0;
+        let countDecoy = 0;
+        let countBanned = 0;
+        let countInsider = 0;
+
+        function updateStats() {
+            document.getElementById('count-total').textContent = countTotal;
+            document.getElementById('count-safe').textContent = countSafe;
+            document.getElementById('count-decoy').textContent = countDecoy;
+            document.getElementById('count-banned').textContent = countBanned;
+            document.getElementById('count-insider').textContent = countInsider;
+        }
+
+        function formatTime(timestamp) {
+            // Check if string ISO or unix numeric
+            const date = isNaN(timestamp) ? new Date(timestamp) : new Date(timestamp * 1000);
+            return date.toLocaleTimeString();
+        }
+
+        function getThemeColor(label, isInsider) {
+            if (isInsider) return 'var(--color-insider)';
+            switch(label.toLowerCase()) {
+                case 'safe': return 'var(--color-safe)';
+                case 'recon': return 'var(--color-recon)';
+                case 'downloader': return 'var(--color-recon)';
+                case 'exploit': return 'var(--color-exploit)';
+                default: return 'var(--color-destructive)';
+            }
+        }
+
+        function getBadgeClass(label, isInsider) {
+            if (isInsider) return 'badge-insider';
+            return 'badge-' + label.toLowerCase();
+        }
+
+        function renderEventList() {
+            const listEl = document.getElementById('events-list');
+            const emptyEl = document.getElementById('list-empty-state');
+            
+            if (events.length === 0) {
+                emptyEl.style.display = 'flex';
+                return;
+            } else {
+                emptyEl.style.display = 'none';
+            }
+
+            // Keep scroll height but update items
+            listEl.innerHTML = '';
+            
+            // Render latest first
+            [...events].reverse().forEach(evt => {
+                const item = document.createElement('div');
+                const isInsider = evt.xai_summary && evt.xai_summary.includes("Insider");
+                const color = getThemeColor(evt.label, isInsider);
+                item.className = `event-item type-${isInsider ? 'insider' : evt.label.toLowerCase()} ${selectedEventId === evt.id ? 'active' : ''}`;
+                item.style.setProperty('--theme-color', color);
+                
+                item.onclick = () => selectEvent(evt.id);
+
+                item.innerHTML = `
+                    <span class="event-time">${formatTime(evt.timestamp)}</span>
+                    <span class="event-badge ${getBadgeClass(evt.label, isInsider)}">${isInsider ? 'Insider' : evt.label}</span>
+                    <div class="event-meta">
+                        <span class="event-title">${evt.path || evt.command || 'TCP Session'}</span>
+                        <span class="event-subtitle">${evt.source_ip} // ${evt.method || 'SSH'}</span>
+                    </div>
+                    <span class="event-action-badge" style="color: ${color}">${evt.action.toUpperCase()}</span>
+                `;
+                listEl.appendChild(item);
+            });
+        }
+
+        function selectEvent(id) {
+            selectedEventId = id;
+            renderEventList();
+            
+            const evt = events.find(e => e.id === id);
+            const inspectorEl = document.getElementById('inspector-content');
+            if (!evt) return;
+
+            const isInsider = evt.xai_summary && evt.xai_summary.includes("Insider");
+            const color = getThemeColor(evt.label, isInsider);
+            
+            let commandList = evt.command ? [evt.command] : [];
+            if (evt.query) commandList.push(`Query: ${evt.query}`);
+            
+            inspectorEl.innerHTML = `
+                <div class="detail-panel" style="--theme-color: ${color}">
+                    
+                    <div class="detail-header">
+                        <h3 style="font-size: 1.1rem; color: var(--text-primary); font-family: 'Outfit', sans-serif;">
+                            ${evt.source_ip} // ${evt.method || 'SSH'}
+                        </h3>
+                        <p style="font-size: 0.75rem; color: var(--text-muted);">Session ID: ${evt.session_id}</p>
+                    </div>
+
+                    <div class="detail-risk-gauge">
+                        <span class="risk-label">Model Risk Level</span>
+                        <span class="risk-value" style="color: ${color}">${evt.xai_risk_score ? evt.xai_risk_score.toFixed(1) : '0.0'}%</span>
+                    </div>
+
+                    <div class="detail-block">
+                        <span class="section-title">Narrator Plain-English Explanation</span>
+                        <div class="detail-card xai-summary" style="border-left-color: ${color}">
+                            <p>${evt.xai_summary || 'No explanation generated.'}</p>
+                        </div>
+                    </div>
+
+                    <div class="detail-block">
+                        <span class="section-title">Analyst Audit Log (MITRE ATT&CK Context)</span>
+                        <div class="detail-card xai-detailed">
+                            <p>${evt.xai_detailed || 'No deep audit log generated.'}</p>
+                        </div>
+                    </div>
+
+                    ${commandList.length > 0 ? `
+                        <div class="detail-block">
+                            <span class="section-title">Captured Payload / URL</span>
+                            <div class="detail-card command-view">
+                                ${commandList.join('\n')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="detail-block">
+                        <span class="section-title">Recommended Mitigation Actions</span>
+                        <ul class="recs-list">
+                            ${(evt.xai_recommendations || ['Continue monitoring standard traffic']).map(rec => `
+                                <li>${rec}</li>
+                            `).join('')}
+                        </ul>
+                    </div>
+
+                </div>
+            `;
+        }
+
+        function addBlocklistRow(evt) {
+            const body = document.getElementById('blocklist-body');
+            const emptyRow = document.getElementById('table-empty-row');
+            if (emptyRow) emptyRow.remove();
+
+            const row = document.createElement('tr');
+            row.id = `block-${evt.source_ip}`;
+            row.innerHTML = `
+                <td style="font-family: 'JetBrains Mono', monospace; font-weight: 500;">${evt.source_ip}</td>
+                <td style="color: var(--text-secondary); font-size: 0.8rem;">${evt.rule || 'Malicious insider or severe exploit attempt'}</td>
+                <td><span class="event-badge badge-destructive" style="font-size: 0.7rem;">DESTRUCTIVE</span></td>
+                <td style="font-size: 0.8rem; color: var(--text-muted);">${formatTime(evt.timestamp)}</td>
+                <td>
+                    <button class="btn-unblock" onclick="unblockIP('${evt.source_ip}')">Release</button>
+                </td>
+            `;
+            body.appendChild(row);
+        }
+
+        function unblockIP(ip) {
+            alert(`Triggered nftables release command for IP: ${ip}`);
+            const row = document.getElementById(`block-${ip}`);
+            if (row) row.remove();
+            blockedIPs.delete(ip);
+            
+            if (blockedIPs.size === 0) {
+                const body = document.getElementById('blocklist-body');
+                body.innerHTML = `
+                    <tr id="table-empty-row">
+                        <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No active kernel blocks in the current session.</td>
+                    </tr>
+                `;
+            }
+        }
+
+        // Connect to Live SSE stream
+        function connectSSE() {
+            const sse = new EventSource('/api/events');
+            
+            sse.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                // Add unique local ID
+                data.id = Math.random().toString(36).substring(2, 9);
+                events.push(data);
+                
+                // Increment counters
+                countTotal++;
+                const isInsider = data.xai_summary && data.xai_summary.includes("Insider");
+                
+                if (isInsider) {
+                    countInsider++;
+                }
+                
+                if (data.action === 'forward') {
+                    countSafe++;
+                } else if (data.action === 'redirect_to_decoy') {
+                    countDecoy++;
+                } else if (data.action === 'drop_and_block') {
+                    countBanned++;
+                    if (!blockedIPs.has(data.source_ip)) {
+                        blockedIPs.add(data.source_ip);
+                        addBlocklistRow(data);
+                    }
+                }
+                
+                updateStats();
+                renderEventList();
+                
+                // Automatically select first event if none selected
+                if (!selectedEventId) {
+                    selectEvent(data.id);
+                }
+            };
+
+            sse.onerror = function() {
+                console.log("SSE disconnected, retrying in 5 seconds...");
+                setTimeout(connectSSE, 5000);
+            };
+        }
+
+        // Start SSE stream
+        connectSSE();
+    </script>
+</body>
+</html>

@@ -13,8 +13,14 @@ from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
 from agents.insider.insider_adapter import AdaptiveInsiderDetector
+from agents.xai import AdaptiveXAINarrator
 import ipaddress
 from datetime import datetime
+import asyncio
+from fastapi.responses import StreamingResponse
+
+# Global event queue for the live dashboard
+event_queue = asyncio.Queue()
 
 
 def _is_private_ip(ip: str) -> bool:
@@ -59,6 +65,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
     classifier = build_hybrid_classifier()
     insider_detector = AdaptiveInsiderDetector()
+    xai_detector = AdaptiveXAINarrator()
 
     decoys = DecoyManager(
         http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
@@ -283,12 +290,52 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         # Basic brute-force detector: repeated non-safe attempts from same source.
         if decision["label"] != "Safe" and brute_force_threshold > 0:
-            # Count suspicious events for this session only (simple first cut).
-            # SessionStore request_count already increases per request;
-            # if many suspicious events, escalate.
             if decision["label"] in ("Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"):
-                # Soft marker in log for future XAI module consumption.
                 event["suspicious"] = True
+
+        # Generate XAI Explanation
+        from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+        insider_threat_obj = locals().get("insider_threat")
+        is_insider_active = is_internal and insider_threat_obj is not None
+        
+        xai_features = {}
+        if is_insider_active:
+            xai_features = {
+                "insider_threat": True if insider_threat_obj.recommendation == "TERMINATE_SESSION_AND_BLOCK_IP" else False,
+                "role": request.headers.get("x-user-role", "normal"),
+                "anomaly_factors": insider_threat_obj.anomaly_factors,
+                "risk_score": insider_threat_obj.risk_score
+            }
+
+        xai_event = ClassificationEvent(
+            session_id=session_id,
+            timestamp=datetime.now().isoformat() + "Z",
+            src_ip=src_ip,
+            commands=[decision.get("extracted_command", "")] if decision.get("extracted_command") else [],
+            classification=decision["label"],
+            confidence=decision.get("neural_confidence", 1.0),
+            mitre_techniques=decision.get("mitre_tactics", []),
+            features_used=xai_features
+        )
+        xai_decision = RoutingDecision(
+            session_id=session_id,
+            action=action,
+            target=target,
+            reason=decision.get("rule", "Classification triggered")
+        )
+        
+        explanation = xai_detector.generate_explanation(xai_event, xai_decision)
+        
+        event["xai_summary"] = explanation.summary
+        event["xai_detailed"] = explanation.detailed
+        event["xai_risk_score"] = explanation.risk_score
+        event["xai_recommendations"] = explanation.recommended_actions
+
+        # Push to live dashboard stream queue
+        try:
+            await event_queue.put(event)
+        except Exception:
+            pass
 
         store.write_event(session_id, event)
         with open(threat_log_path, "a", encoding="utf-8") as f:
@@ -296,5 +343,28 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         print(json.dumps(event), flush=True)
 
         return result
+
+    @app.get("/api/events")
+    async def sse_events(request: Request):
+        async def event_generator():
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    event_queue.task_done()
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    from fastapi.responses import HTMLResponse
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def get_dashboard():
+        template_path = os.path.join(os.path.dirname(__file__), "..", "orchestrator", "templates", "dashboard.html")
+        if os.path.exists(template_path):
+            with open(template_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return "Dashboard template not found."
 
     return app

@@ -173,6 +173,44 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         if "neural_confidence" in decision:
             event["neural_confidence"] = decision["neural_confidence"]
 
+        # Generate XAI Explanation
+        try:
+            from agents.xai import AdaptiveXAINarrator
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            from datetime import datetime
+            
+            xai_detector = AdaptiveXAINarrator()
+            
+            xai_event = ClassificationEvent(
+                session_id=self.session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                src_ip=self.src_ip,
+                commands=[cmd] if cmd else [],
+                classification=decision["label"],
+                confidence=decision.get("neural_confidence", 1.0),
+                mitre_techniques=decision.get("mitre_tactics", []),
+                features_used={"protocol": "ssh"}
+            )
+            xai_decision = RoutingDecision(
+                session_id=self.session_id,
+                action=decision["action"],
+                target="decoy" if decision["action"] == "redirect_to_decoy" else ("blocked" if decision["action"] == "drop_and_block" else "real_ssh"),
+                reason=decision.get("rule", "SSH command classification")
+            )
+            
+            explanation = xai_detector.generate_explanation(xai_event, xai_decision)
+            
+            event["xai_summary"] = explanation.summary
+            event["xai_detailed"] = explanation.detailed
+            event["xai_risk_score"] = explanation.risk_score
+            event["xai_recommendations"] = explanation.recommended_actions
+            
+            # Push to the dashboard event queue asynchronously
+            from interceptor.http_proxy import event_queue
+            asyncio.create_task(event_queue.put(event))
+        except Exception as e:
+            logger.error(f"XAI parsing failed for SSH: {e}")
+
         self.store.write_event(self.session_id, event)
         with open("./runtime/logs/threat_events.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
