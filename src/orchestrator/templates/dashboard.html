@@ -637,10 +637,10 @@
             const emptyEl = document.getElementById('list-empty-state');
             
             if (events.length === 0) {
-                emptyEl.style.display = 'flex';
+                if (emptyEl) emptyEl.style.display = 'flex';
                 return;
             } else {
-                emptyEl.style.display = 'none';
+                if (emptyEl) emptyEl.style.display = 'none';
             }
 
             // Keep scroll height but update items
