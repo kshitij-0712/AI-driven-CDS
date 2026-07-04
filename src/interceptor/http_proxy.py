@@ -12,6 +12,17 @@ from agents.decision import build_hybrid_classifier, classify_http_request
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
+from agents.insider.insider_adapter import AdaptiveInsiderDetector
+import ipaddress
+from datetime import datetime
+
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        address = ipaddress.ip_address(ip.strip())
+        return address.is_private or address.is_loopback
+    except ValueError:
+        return False
 
 
 def _request_to_context(request: Request, body: str) -> Dict:
@@ -47,6 +58,8 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     nft.ensure_base_ruleset()
 
     classifier = build_hybrid_classifier()
+    insider_detector = AdaptiveInsiderDetector()
+
     decoys = DecoyManager(
         http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
         max_instances=int(decoy_cfg.get("max_instances", 5)),
@@ -115,6 +128,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             )
 
         session_id = store.get_or_create_session(src_ip)
+        ctx = store._get_context(session_id)
         
         # Fetch command history for context-aware classification
         command_history = store.get_command_history(session_id)
@@ -140,6 +154,46 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "severity_max": 8,
                     "http_findings": ["brute_force"],
                 }
+
+        # Check for Insider Threat if source IP is internal/private
+        is_internal = _is_private_ip(src_ip)
+        if is_internal and not ctx.get("redirected_to_decoy"):
+            from interfaces.insider_contract import UserBehaviorSignal
+            
+            # Extract simulated features from HTTP JSON body if available
+            extra_details = {}
+            if body_str:
+                try:
+                    body_json = json.loads(body_str)
+                    if isinstance(body_json, dict):
+                        extra_details = body_json
+                except Exception:
+                    pass
+            
+            action_details = {
+                "command": extra_details.get("command", decision.get("extracted_command", "")),
+                "file_path": request.url.path,
+                "role": request.headers.get("x-user-role", "normal"),
+                **extra_details
+            }
+            
+            signal = UserBehaviorSignal(
+                user_id=request.headers.get("x-user-id", "unknown_user"),
+                session_id=session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                action_type=request.method,
+                action_details=action_details,
+                source_ip=src_ip,
+                is_internal=True
+            )
+            insider_threat = insider_detector.analyze_signal(signal)
+            
+            # Map insider recommendation to proxy action
+            if insider_threat.recommendation == "TERMINATE_SESSION_AND_BLOCK_IP":
+                decision["action"] = "drop_and_block"
+                decision["rule"] = f"Insider threat detected: {', '.join(insider_threat.anomaly_factors)}"
+                decision["label"] = "Destructive"
+                decision["severity_max"] = 9
 
         action = decision["action"]
         target = f"http://{real_host}:{real_port}"
