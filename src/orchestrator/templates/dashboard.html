@@ -815,8 +815,44 @@
             };
         }
 
-        // Start SSE stream
-        connectSSE();
+        // Load history, then start SSE
+        async function initDashboard() {
+            try {
+                const response = await fetch('/api/events/history');
+                const historyData = await response.json();
+                historyData.forEach(data => {
+                    data.id = Math.random().toString(36).substring(2, 9);
+                    events.push(data);
+                    
+                    countTotal++;
+                    const isInsider = data.xai_summary && data.xai_summary.includes("Insider");
+                    if (isInsider) countInsider++;
+                    
+                    if (data.action === 'forward') {
+                        countSafe++;
+                    } else if (data.action === 'redirect_to_decoy') {
+                        countDecoy++;
+                    } else if (data.action === 'drop_and_block') {
+                        countBanned++;
+                        if (!blockedIPs.has(data.source_ip)) {
+                            blockedIPs.add(data.source_ip);
+                            addBlocklistRow(data);
+                        }
+                    }
+                });
+                updateStats();
+                renderEventList();
+                if (events.length > 0) {
+                    selectEvent(events[events.length - 1].id);
+                }
+            } catch (e) {
+                console.error("Failed to load history:", e);
+            }
+            connectSSE();
+        }
+
+        // Start initialization
+        initDashboard();
     </script>
 </body>
 </html>

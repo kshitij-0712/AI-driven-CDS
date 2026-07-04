@@ -19,8 +19,8 @@ from datetime import datetime
 import asyncio
 from fastapi.responses import StreamingResponse
 
-# Global event queue for the live dashboard
-event_queue = asyncio.Queue()
+# Global event queue will be attached to app.state inside create_http_guard_app
+active_event_queue = None
 
 
 def _is_private_ip(ip: str) -> bool:
@@ -85,6 +85,9 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     app.state.nft = nft
     app.state.classifier = classifier
     app.state.decoys = decoys
+    app.state.event_queue = asyncio.Queue()
+    global active_event_queue
+    active_event_queue = app.state.event_queue
 
     async def forward_request(target_base_url: str, request: Request, body: bytes) -> Response:
         target_url = f"{target_base_url}{request.url.path}"
@@ -125,12 +128,28 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
-                    yield f"data: {json.dumps(event)}\n\n"
-                    event_queue.task_done()
+                    if active_event_queue is not None:
+                        event = await asyncio.wait_for(active_event_queue.get(), timeout=1.0)
+                        yield f"data: {json.dumps(event)}\n\n"
+                        active_event_queue.task_done()
+                    else:
+                        await asyncio.sleep(1.0)
                 except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.get("/api/events/history")
+    async def get_event_history():
+        cur = store.conn.cursor()
+        cur.execute("SELECT details_json FROM request_events ORDER BY id DESC LIMIT 50")
+        rows = cur.fetchall()
+        past_events = []
+        for r in rows:
+            try:
+                past_events.append(json.loads(r[0]))
+            except Exception:
+                pass
+        return past_events[::-1]
 
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
@@ -355,7 +374,8 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         # Push to live dashboard stream queue
         try:
-            await event_queue.put(event)
+            if active_event_queue is not None:
+                await active_event_queue.put(event)
         except Exception:
             pass
 
