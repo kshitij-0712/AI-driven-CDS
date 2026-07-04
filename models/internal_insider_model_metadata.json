@@ -1,0 +1,70 @@
+{
+  "dataset_source": "./data/insider/internal_insider_dataset_base.csv",
+  "training_samples": 32211,
+  "test_samples": 8053,
+  "test_accuracy": 1.0,
+  "feature_names": [
+    "role_admin",
+    "role_finance",
+    "role_developer",
+    "role_hr",
+    "role_normal",
+    "work_after_hours",
+    "work_weekends",
+    "unusual_login_time",
+    "unusual_pc_login",
+    "access_unauthorized_scope",
+    "access_sensitive_dirs",
+    "access_intellectual_property",
+    "access_hr_db",
+    "access_finance_system",
+    "high_volume_download",
+    "download_count",
+    "usb_write_count",
+    "usb_mount_attempt",
+    "cloud_upload_count",
+    "printing_sensitive_files",
+    "log_deletion_attempt",
+    "sudoers_modification",
+    "cron_tampering",
+    "syslog_stop_attempt",
+    "credential_sharing_indicators",
+    "switch_user_count",
+    "command_count",
+    "duration_sec",
+    "command_density",
+    "failed_sudo_count",
+    "obfuscated_command_count",
+    "network_connection_count",
+    "suspicious_process_spawned",
+    "calculated_risk_score",
+    "behavior_deviation_score"
+  ],
+  "test_report": {
+    "0": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 6994.0
+    },
+    "1": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 1059.0
+    },
+    "accuracy": 1.0,
+    "macro avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 8053.0
+    },
+    "weighted avg": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 8053.0
+    }
+  }
+}

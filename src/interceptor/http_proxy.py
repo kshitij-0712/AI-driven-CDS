@@ -196,7 +196,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             insider_threat = insider_detector.analyze_signal(signal)
             
             # Map insider recommendation to proxy action
-            if insider_threat.recommendation == "TERMINATE_SESSION_AND_BLOCK_IP":
+            if insider_threat.recommendation in ("TERMINATE_SESSION_AND_BLOCK_IP", "CHALLENGE_WITH_MFA_OR_THROTTLE"):
                 decision["action"] = "drop_and_block"
                 decision["rule"] = f"Insider threat detected: {', '.join(insider_threat.anomaly_factors)}"
                 decision["label"] = "Destructive"
