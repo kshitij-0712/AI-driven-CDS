@@ -118,6 +118,28 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             "docker_available": decoys.docker_available,
             "real_service": f"http://{real_host}:{real_port}",
         }
+    @app.get("/api/events")
+    async def sse_events(request: Request):
+        async def event_generator():
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    event_queue.task_done()
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    from fastapi.responses import HTMLResponse
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def get_dashboard():
+        template_path = os.path.join(os.path.dirname(__file__), "..", "orchestrator", "templates", "dashboard.html")
+        if os.path.exists(template_path):
+            with open(template_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return "Dashboard template not found."
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
     async def guard(path: str, request: Request):
@@ -343,28 +365,5 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         print(json.dumps(event), flush=True)
 
         return result
-
-    @app.get("/api/events")
-    async def sse_events(request: Request):
-        async def event_generator():
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=1.0)
-                    yield f"data: {json.dumps(event)}\n\n"
-                    event_queue.task_done()
-                except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-    from fastapi.responses import HTMLResponse
-    @app.get("/dashboard", response_class=HTMLResponse)
-    async def get_dashboard():
-        template_path = os.path.join(os.path.dirname(__file__), "..", "orchestrator", "templates", "dashboard.html")
-        if os.path.exists(template_path):
-            with open(template_path, "r", encoding="utf-8") as f:
-                return f.read()
-        return "Dashboard template not found."
 
     return app
