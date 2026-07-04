@@ -851,8 +851,10 @@
             connectSSE();
         }
 
-        // Start initialization
-        initDashboard();
+        // Start initialization after the page has fully loaded to prevent infinite browser loading spinner
+        window.addEventListener('load', () => {
+            setTimeout(initDashboard, 100);
+        });
     </script>
 </body>
 </html>
