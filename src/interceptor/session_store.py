@@ -168,4 +168,19 @@ class SessionStore:
         )
         self.conn.commit()
 
+    def get_session_memory(self, session_id: str) -> dict:
+        """Fetch LLM-based honeypot session state/memory."""
+        ctx = self._get_context(session_id)
+        return ctx.get("galah_memory", {})
+
+    def save_session_memory(self, session_id: str, memory: dict):
+        """Update LLM-based honeypot session state/memory."""
+        ctx = self._get_context(session_id)
+        ctx["galah_memory"] = memory
+        self.conn.execute(
+            "UPDATE sessions SET context_json = ? WHERE id = ?",
+            (json.dumps(ctx), session_id),
+        )
+        self.conn.commit()
+
 

@@ -90,12 +90,12 @@ export:
 deployment:
   mode: "http_guard"
   host: "0.0.0.0"
-  port: 80
+  port: 8000
 
 http_guard:
   enabled: true
-  listen_port: 80
-  listen_port_ssl: 443
+  listen_port: 8000
+  listen_port_ssl: 8443
   real_service_host: "127.0.0.1"
   real_service_port: 8090
   request_timeout_sec: 10
@@ -140,3 +140,20 @@ decoys:
 runtime:
   db_path: "./runtime/adaptiveshield.db"
   threat_log_path: "./runtime/logs/threat_events.jsonl"
+
+galah_honeypot:
+  enabled: true
+  crawler:
+    target_url: "http://127.0.0.1:8090"
+    output_path: "./runtime/app_structure.json"
+    auto_crawl: true
+  llm:
+    default_provider: "gemini"
+    router_policy: "dynamic"
+    gemini_model: "gemini-2.5-flash"
+    ollama_model: "llama3.2:1b"
+    ollama_url: "http://127.0.0.1:11434"
+  cache:
+    enabled: true
+    ttl_seconds: 3600
+

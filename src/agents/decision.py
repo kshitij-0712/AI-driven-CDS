@@ -77,6 +77,13 @@ HTTP_ATTACK_PATTERNS = {
         r"gobuster",
         r"wfuzz",
         r"burp",
+        r"admin",
+        r"config",
+        r"setup",
+        r"backup",
+        r"wp-",
+        r"\.env",
+        r"\.git",
     ],
 }
 

@@ -13,6 +13,7 @@ services:
       - NET_RAW
     environment:
       - PYTHONPATH=/app/src
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./runtime:/app/runtime

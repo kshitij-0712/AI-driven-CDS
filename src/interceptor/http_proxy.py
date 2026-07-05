@@ -12,6 +12,7 @@ from agents.decision import build_hybrid_classifier, classify_http_request
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
+from honeypot import HoneypotGenerator
 
 
 def _request_to_context(request: Request, body: str) -> Dict:
@@ -54,6 +55,9 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         fallback_url=decoy_cfg.get("fallback_url"),
     )
 
+    galah_enabled = bool(config.get("galah_honeypot", {}).get("enabled", False))
+    honeypot_gen = HoneypotGenerator(config, store) if galah_enabled else None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         decoys.pre_pull_images(decoy_cfg.get("pre_pull_images", []))
@@ -65,6 +69,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     app.state.nft = nft
     app.state.classifier = classifier
     app.state.decoys = decoys
+    app.state.honeypot_gen = honeypot_gen
 
     async def forward_request(target_base_url: str, request: Request, body: bytes) -> Response:
         target_url = f"{target_base_url}{request.url.path}"
@@ -175,6 +180,22 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "rule": decision.get("rule"),
                 },
             )
+        elif galah_enabled and decision.get("label") != "Safe":
+            target = "galah_honeypot"
+            try:
+                result = await honeypot_gen.generate_response(request, body_str, decision, session_id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Galah honeypot execution failed: {e}. Falling back to default proxy actions.")
+                decoy = decoys.get_or_spawn_http_decoy(session_id)
+                if decoy:
+                    target = decoy.base_url
+                    result = await forward_request(target, request, raw_body)
+                else:
+                    result = JSONResponse(
+                        status_code=502,
+                        content={"error": "real_service_unreachable"},
+                    )
         elif action == "redirect_to_decoy":
             if not ctx.get("redirected_to_decoy"):
                 decoy = decoys.get_or_spawn_http_decoy(session_id)
