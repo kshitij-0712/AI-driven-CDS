@@ -43,22 +43,23 @@ class SessionStore:
         self.conn.executescript(SCHEMA_SQL)
         self.conn.commit()
 
-    def get_or_create_session(self, src_ip: str) -> str:
+    def get_or_create_session(self, src_ip: str, idle_timeout_sec: int = 900) -> str:
         now = time.time()
         cur = self.conn.cursor()
         cur.execute(
-            "SELECT id FROM sessions WHERE src_ip = ? AND blocked = 0 ORDER BY last_seen_ts DESC LIMIT 1",
+            "SELECT id, last_seen_ts FROM sessions WHERE src_ip = ? AND blocked = 0 ORDER BY last_seen_ts DESC LIMIT 1",
             (src_ip,),
         )
         row = cur.fetchone()
         if row:
-            session_id = row[0]
-            cur.execute(
-                "UPDATE sessions SET last_seen_ts = ?, request_count = request_count + 1 WHERE id = ?",
-                (now, session_id),
-            )
-            self.conn.commit()
-            return session_id
+            session_id, last_seen = row
+            if now - last_seen <= idle_timeout_sec:
+                cur.execute(
+                    "UPDATE sessions SET last_seen_ts = ?, request_count = request_count + 1 WHERE id = ?",
+                    (now, session_id),
+                )
+                self.conn.commit()
+                return session_id
 
         session_id = str(uuid.uuid4())
         cur.execute(

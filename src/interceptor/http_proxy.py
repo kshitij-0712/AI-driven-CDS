@@ -40,6 +40,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     brute_force_threshold = int(http_cfg.get("brute_force_threshold", 8))
     block_duration_minutes = int(http_cfg.get("block_duration_minutes", 60))
     fallback_on_error = bool(http_cfg.get("fallback_on_error", True))
+    session_idle_timeout_sec = int(http_cfg.get("session_idle_timeout_sec", 900))
 
     os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
 
@@ -119,53 +120,46 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
             )
 
-        session_id = store.get_or_create_session(src_ip)
-        
+        session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
         ctx = store._get_context(session_id)
-        if ctx.get("redirected_to_decoy"):
-            target = ctx.get("decoy_base_url")
-            decision = {
-                "class_id": ctx.get("decoy_class_id", 3),
-                "label": ctx.get("decoy_label", "Exploit"),
-                "confidence": 1.0,
-                "action": "redirect_to_decoy",
-                "rule": ctx.get("decoy_rule", "Session pinned to decoy"),
-                "mitre_tactics": ctx.get("decoy_mitre_tactics", []),
-                "severity_max": ctx.get("decoy_severity_max", 0),
-                "extracted_command": "",
-            }
-        else:
-            # Fetch command history for context-aware classification
-            command_history = store.get_command_history(session_id)
-            decision = classify_http_request(classifier, context, command_history=command_history)
-            
-            # Update command history with the current extracted command
-            extracted_cmd = decision.get("extracted_command", "")
-            if extracted_cmd and extracted_cmd != "/":
-                store.append_command_history(session_id, extracted_cmd)
+        
+        # Always fetch command history and classify the current request
+        command_history = store.get_command_history(session_id)
+        decision = classify_http_request(classifier, context, command_history=command_history)
+        
+        # Update command history with the current extracted command
+        extracted_cmd = decision.get("extracted_command", "")
+        if extracted_cmd and extracted_cmd != "/":
+            store.append_command_history(session_id, extracted_cmd)
 
-            # Simple brute-force detection for HTTP login endpoints.
-            path_lower = request.url.path.lower()
-            if request.method.upper() == "POST" and any(k in path_lower for k in ["login", "signin", "auth"]):
-                attempts = store.increment_counter(session_id, "login_attempts")
-                if attempts >= brute_force_threshold:
-                    decision = {
-                        "class_id": 3,
-                        "label": "Exploit",
-                        "confidence": 1.0,
-                        "action": "drop_and_block",
-                        "rule": "HTTP brute-force threshold exceeded",
-                        "mitre_tactics": ["credential_access"],
-                        "severity_max": 8,
-                        "http_findings": ["brute_force"],
-                    }
+        # Simple brute-force detection for HTTP login endpoints.
+        path_lower = request.url.path.lower()
+        if request.method.upper() == "POST" and any(k in path_lower for k in ["login", "signin", "auth"]):
+            attempts = store.increment_counter(session_id, "login_attempts")
+            if attempts >= brute_force_threshold:
+                decision = {
+                    "class_id": 3,
+                    "label": "Exploit",
+                    "confidence": 1.0,
+                    "action": "drop_and_block",
+                    "rule": "HTTP brute-force threshold exceeded",
+                    "mitre_tactics": ["credential_access"],
+                    "severity_max": 8,
+                    "http_findings": ["brute_force"],
+                }
 
         action = decision["action"]
-        if ctx.get("redirected_to_decoy"):
-            target = ctx.get("decoy_base_url")
-        else:
-            target = f"http://{real_host}:{real_port}"
+        target = f"http://{real_host}:{real_port}"
         result = None
+
+        # Determine redirection
+        should_redirect_to_decoy = False
+        if action == "drop_and_block":
+            pass
+        elif ctx.get("redirected_to_decoy"):
+            should_redirect_to_decoy = True
+        elif action == "redirect_to_decoy" or (galah_enabled and decision.get("label") not in ("Safe", "Recon")):
+            should_redirect_to_decoy = True
 
         if action == "drop_and_block":
             target = "blocked"
@@ -180,27 +174,38 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "rule": decision.get("rule"),
                 },
             )
-        elif galah_enabled and decision.get("label") != "Safe":
-            target = "galah_honeypot"
-            try:
-                result = await honeypot_gen.generate_response(request, body_str, decision, session_id)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Galah honeypot execution failed: {e}. Falling back to default proxy actions.")
-                decoy = decoys.get_or_spawn_http_decoy(session_id)
-                if decoy:
-                    target = decoy.base_url
-                    result = await forward_request(target, request, raw_body)
-                else:
-                    result = JSONResponse(
-                        status_code=502,
-                        content={"error": "real_service_unreachable"},
-                    )
-        elif action == "redirect_to_decoy":
-            if not ctx.get("redirected_to_decoy"):
-                decoy = decoys.get_or_spawn_http_decoy(session_id)
-                if decoy:
-                    target = decoy.base_url
+        elif should_redirect_to_decoy:
+            action = "redirect_to_decoy"
+            decoy = decoys.get_or_spawn_http_decoy(session_id)
+            if decoy:
+                target = decoy.base_url
+                
+                # Check for first-time redirection or behavior escalation
+                prev_label = ctx.get("decoy_label")
+                prev_severity = ctx.get("decoy_severity_max", 0)
+                is_escalation = (
+                    not ctx.get("redirected_to_decoy") or 
+                    (decision["label"] != "Safe" and (
+                        decision["label"] != prev_label or 
+                        decision["severity_max"] > prev_severity
+                    ))
+                )
+                
+                if is_escalation and galah_enabled and honeypot_gen:
+                    try:
+                        await honeypot_gen.prepare_decoy_files(
+                            session_id=session_id,
+                            decision=decision,
+                            request=request,
+                            body_str=body_str,
+                            html_dir=decoy.html_dir,
+                            container_id=decoy.container_id,
+                            decoys_manager=decoys
+                        )
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).exception("Failed to prepare decoy files")
+
                     store.update_context(session_id, {
                         "redirected_to_decoy": True,
                         "decoy_base_url": target,
@@ -210,22 +215,27 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                         "decoy_mitre_tactics": decision.get("mitre_tactics", []),
                         "decoy_severity_max": decision.get("severity_max", 0),
                     })
-            
-            # Decoy Cold-Start Fix
-            max_retries = 10
-            for i in range(max_retries):
-                try:
-                    result = await forward_request(target, request, raw_body)
-                    break
-                except Exception as e:
-                    if i == max_retries - 1:
-                        result = JSONResponse(
-                            status_code=502,
-                            content={"error": "upstream_failure", "target": target},
-                        )
-                    else:
-                        import asyncio
-                        await asyncio.sleep(0.1) # Wait 100ms before retrying
+                
+                # Decoy Cold-Start Fix
+                max_retries = 10
+                for i in range(max_retries):
+                    try:
+                        result = await forward_request(target, request, raw_body)
+                        break
+                    except Exception:
+                        if i == max_retries - 1:
+                            result = JSONResponse(
+                                status_code=502,
+                                content={"error": "upstream_failure", "target": target},
+                            )
+                        else:
+                            import asyncio
+                            await asyncio.sleep(0.1)
+            else:
+                result = JSONResponse(
+                    status_code=502,
+                    content={"error": "real_service_unreachable"},
+                )
         else:
             try:
                 result = await forward_request(target, request, raw_body)
@@ -234,6 +244,21 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     decoy = decoys.get_or_spawn_http_decoy(session_id)
                     if decoy:
                         target = decoy.base_url
+                        
+                        if galah_enabled and honeypot_gen:
+                            try:
+                                await honeypot_gen.prepare_decoy_files(
+                                    session_id=session_id,
+                                    decision=decision,
+                                    request=request,
+                                    body_str=body_str,
+                                    html_dir=decoy.html_dir,
+                                    container_id=decoy.container_id,
+                                    decoys_manager=decoys
+                                )
+                            except Exception:
+                                pass
+
                         store.update_context(session_id, {
                             "redirected_to_decoy": True,
                             "decoy_base_url": target,
@@ -284,13 +309,8 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         if "fallback_reason" in decision:
             event["fallback_reason"] = decision["fallback_reason"]
 
-        # Basic brute-force detector: repeated non-safe attempts from same source.
         if decision["label"] != "Safe" and brute_force_threshold > 0:
-            # Count suspicious events for this session only (simple first cut).
-            # SessionStore request_count already increases per request;
-            # if many suspicious events, escalate.
             if decision["label"] in ("Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"):
-                # Soft marker in log for future XAI module consumption.
                 event["suspicious"] = True
 
         store.write_event(session_id, event)

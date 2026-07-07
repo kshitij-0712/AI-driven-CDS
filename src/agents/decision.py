@@ -77,13 +77,6 @@ HTTP_ATTACK_PATTERNS = {
         r"gobuster",
         r"wfuzz",
         r"burp",
-        r"admin",
-        r"config",
-        r"setup",
-        r"backup",
-        r"wp-",
-        r"\.env",
-        r"\.git",
     ],
 }
 
@@ -323,13 +316,20 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
     joined_payload = unquote(joined_payload)
     http_findings = _match_http_patterns(joined_payload)
 
+    # Check path specifically for scanner and sensitive file discovery patterns
+    decoded_path = unquote(path).lower()
+    if re.search(r"^/(admin|dev-admin|config|setup|backup|wp-)", decoded_path):
+        http_findings.append("scanner")
+    if re.search(r"(\.env|\.git)", decoded_path):
+        http_findings.append("sensitive_file_discovery")
+
     stage1_id = None
     if "xss" in http_findings or "sqli" in http_findings or "command_injection" in http_findings:
         stage1_id, stage1_label, stage1_action = 3, "Exploit", "redirect_to_decoy"
         stage1_rule = "HTTP exploit pattern matched"
         stage1_tactics = ["execution", "initial_access"]
         stage1_severity = 9
-    elif "path_traversal" in http_findings or "scanner" in http_findings:
+    elif "path_traversal" in http_findings or "scanner" in http_findings or "sensitive_file_discovery" in http_findings:
         stage1_id, stage1_label, stage1_action = 1, "Recon", "forward_and_log"
         stage1_rule = "HTTP reconnaissance pattern matched"
         stage1_tactics = ["reconnaissance", "discovery"]
