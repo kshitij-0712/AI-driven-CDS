@@ -115,6 +115,7 @@ config/settings.local.yaml
 # Logs
 *.log
 logs/
+runtime/
 
 # Secrets / credentials
 .env
@@ -123,15 +124,17 @@ secrets/
 credentials/
 *.pem
 *.key
+config/ssh_host_rsa_key
 
 # Temporary files
-
+data
+verify/
 tmp/
 temp/
 *.tmp
 *.bak
 .local
-
+*.pid
 # OpenCode session files and config
 session-*.md
 .opencode/

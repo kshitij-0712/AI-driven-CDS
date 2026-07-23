@@ -2,6 +2,57 @@
 
 AdaptiveShield is a portable, multi-agent cyber deception and analysis system. It discovers exposed services, deploys decoys, learns attacker behavior, and explains every decision with XAI.
 
+## One-Shot Deployment (HTTP Guard, Kernel-Aware)
+
+AdaptiveShield now supports HTTP-first runtime deployment on the same host as your real service.
+
+- Incoming traffic on port `80` is inspected in real time using a **3-stage dynamic pipeline**:
+  1. Regex pre-filtering for fast attack matching.
+  2. Neural inference using the `brain_v5_mitre_only` BiLSTM model.
+  3. MITRE rule heuristic fallback (if neural confidence < 55%).
+- Safe traffic is forwarded to your real app (`127.0.0.1:8080` by default).
+- Suspicious and malicious traffic is logged or redirected to decoy containers.
+- High-risk traffic can be blocked with nftables-based IP rules.
+
+### Prerequisites
+
+- Docker + Docker Compose
+- Permission to run container with `NET_ADMIN` and Docker socket access
+- Real HTTP service running on the same host (`127.0.0.1:8080` by default)
+
+### Start
+
+```bash
+docker compose up -d --build
+```
+
+### Verify
+
+```bash
+docker compose ps
+docker compose logs -f adaptiveshield
+curl http://127.0.0.1/health
+```
+
+If your real service is currently bound to `80`, move it to `8080` (or update `http_guard.real_service_port` in `config/settings.yaml`) so AdaptiveShield can sit in front as the guard.
+
+Threat events are written to `runtime/logs/threat_events.jsonl` and runtime state to `runtime/adaptiveshield.db`.
+
+### Runtime Config (HTTP First)
+
+See `config/settings.yaml` sections:
+
+- `deployment`
+- `http_guard`
+- `decoys`
+- `runtime`
+
+Default behavior:
+
+- Listen: `0.0.0.0:80`
+- Forward safe requests to: `127.0.0.1:8080`
+- Pre-pull decoys: `nginx:alpine`, `cowrie/cowrie:latest`, `dinotools/dionaea:latest`
+
 ## What This Repository Contains
 - Agents: Discovery, Deception, Analysis, Decision, XAI
 - Core processing: log ingest, vectorization, malware analysis
@@ -25,8 +76,8 @@ AdaptiveShield is a portable, multi-agent cyber deception and analysis system. I
   python ./src/training/train_model.py
   ```
   Outputs:
-  - Model: `./models/brain_v2_deep.pkl`
-  - Report: `./data/processed/training_report.json`
+  - Model: `./models/brain_v5_mitre_only_semantic_balanced_v2.pt` (and `.pkl` bundle)
+  - Report: `./models/brain_v5_mitre_only_semantic_balanced_v2_results.json`
 
 ### Testing
 - Run inference on real Cowrie sessions:

@@ -335,39 +335,277 @@ class ThreatClassifier(nn.Module):
 def create_model(
     structured_dim: int = 100,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+    model_type: str = 'full',
     **kwargs
-) -> ThreatClassifier:
+) -> nn.Module:
     """
-    Factory function to create a ThreatClassifier with sensible defaults.
+    Factory function to create a threat classifier model.
     
     Args:
         structured_dim: Dimension of structured features (MITRE + binary)
         device: Device to place model on
+        model_type: 'full' (default, 100-dim with binary features) or 
+                   'mitre_only' (21-dim MITRE features only)
         **kwargs: Override default model parameters
     
     Returns:
-        ThreatClassifier model on specified device
+        Threat classifier model on specified device
     """
-    default_config = {
-        'vocab_size': 256,
-        'embed_dim': 64,
-        'lstm_hidden': 128,
-        'lstm_layers': 2,
-        'lstm_dropout': 0.3,
-        'use_attention': True,
-        'structured_dim': structured_dim,
-        'structured_hidden': 128,
-        'structured_output': 64,
-        'structured_dropout': 0.3,
-        'fusion_hidden': 128,
-        'fusion_dropout': 0.3,
-        'num_classes': 6
-    }
+    if model_type == 'mitre_only':
+        # MITRE-only model (21 features)
+        default_config = {
+            'vocab_size': 256,
+            'embed_dim': 64,
+            'lstm_hidden': 128,
+            'lstm_layers': 2,
+            'lstm_dropout': 0.3,
+            'use_attention': True,
+            'mitre_dim': 21,
+            'mitre_hidden': 32,
+            'mitre_output': 32,
+            'mitre_dropout': 0.3,
+            'fusion_hidden': 128,
+            'fusion_dropout': 0.3,
+            'num_classes': 6
+        }
+        
+        # Remove incompatible keys from kwargs if present
+        for key in ['structured_dim', 'structured_hidden', 'structured_output', 'structured_dropout']:
+            kwargs.pop(key, None)
+        
+        # Override with provided kwargs
+        default_config.update(kwargs)
+        
+        model = ThreatClassifierMitreOnly(**default_config)
+    else:
+        # Full model with binary features (100 features)
+        default_config = {
+            'vocab_size': 256,
+            'embed_dim': 64,
+            'lstm_hidden': 128,
+            'lstm_layers': 2,
+            'lstm_dropout': 0.3,
+            'use_attention': True,
+            'structured_dim': structured_dim,
+            'structured_hidden': 128,
+            'structured_output': 64,
+            'structured_dropout': 0.3,
+            'fusion_hidden': 128,
+            'fusion_dropout': 0.3,
+            'num_classes': 6
+        }
+        
+        # Override with provided kwargs
+        default_config.update(kwargs)
+        
+        model = ThreatClassifier(**default_config)
     
-    # Override with provided kwargs
-    default_config.update(kwargs)
-    
-    model = ThreatClassifier(**default_config)
     model = model.to(device)
     
     return model
+
+
+class MitreEncoder(nn.Module):
+    """
+    Encoder for MITRE features only (21 dims).
+    
+    Input: 21-dim vector (14 tactics + 7 severity/coverage metrics)
+    Output: Variable-dim encoded representation
+    """
+    
+    def __init__(
+        self,
+        input_dim: int = 21,  # MITRE features only
+        hidden_dim: int = 64,
+        output_dim: int = 32,
+        dropout: float = 0.3
+    ):
+        super().__init__()
+        
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        
+        # Normalize input features
+        self.batch_norm = nn.BatchNorm1d(input_dim)
+        
+        # Single-layer MLP (lighter than StructuredEncoder)
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: MITRE features [batch, input_dim]
+        Returns:
+            Encoded features [batch, hidden_dim]
+        """
+        x = self.batch_norm(x)
+        return self.encoder(x)
+
+
+class ThreatClassifierMitreOnly(nn.Module):
+    """
+    MITRE-only threat classifier combining BiLSTM and MITRE features only.
+    
+    This model is designed for deployment scenarios where binary analysis
+    is not available. It uses command text patterns + MITRE tactic vectors.
+    
+    Architecture:
+        Commands (text) -> BiLSTM + Attention -> 256-dim
+        MITRE features -> BatchNorm + Dense -> 32-dim
+        Concat -> Dense(128) -> Dense(6) -> Softmax
+    
+    Total parameters: ~370K (less than full model's 706K)
+    """
+    
+    # Class names for interpretability
+    CLASS_NAMES = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
+    NUM_CLASSES = 6
+    
+    def __init__(
+        self,
+        # BiLSTM params
+        vocab_size: int = 256,
+        embed_dim: int = 64,
+        lstm_hidden: int = 128,
+        lstm_layers: int = 2,
+        lstm_dropout: float = 0.3,
+        use_attention: bool = True,
+        # MITRE encoder params (only 21 dims)
+        mitre_dim: int = 21,
+        mitre_hidden: int = 64,
+        mitre_output: int = 32,
+        mitre_dropout: float = 0.3,
+        # Fusion params
+        fusion_hidden: int = 128,
+        fusion_dropout: float = 0.3,
+        # Output
+        num_classes: int = 6
+    ):
+        super().__init__()
+        
+        # Save config for serialization
+        self.config = {
+            'vocab_size': vocab_size,
+            'embed_dim': embed_dim,
+            'lstm_hidden': lstm_hidden,
+            'lstm_layers': lstm_layers,
+            'lstm_dropout': lstm_dropout,
+            'use_attention': use_attention,
+            'mitre_dim': mitre_dim,
+            'mitre_hidden': mitre_hidden,
+            'mitre_output': mitre_output,
+            'mitre_dropout': mitre_dropout,
+            'fusion_hidden': fusion_hidden,
+            'fusion_dropout': fusion_dropout,
+            'num_classes': num_classes,
+            'model_type': 'mitre_only'
+        }
+        
+        # Encoders
+        self.text_encoder = BiLSTMEncoder(
+            vocab_size=vocab_size,
+            embed_dim=embed_dim,
+            hidden_dim=lstm_hidden,
+            num_layers=lstm_layers,
+            dropout=lstm_dropout,
+            use_attention=use_attention
+        )
+        
+        self.mitre_encoder = MitreEncoder(
+            input_dim=mitre_dim,
+            hidden_dim=mitre_hidden,
+            output_dim=mitre_output,
+            dropout=mitre_dropout
+        )
+        
+        # Fusion dimension: BiLSTM output (256) + MITRE output (32) = 288
+        fusion_input_dim = self.text_encoder.output_dim + mitre_output
+        
+        # Fusion and classification layers
+        self.fusion = nn.Sequential(
+            nn.Linear(fusion_input_dim, fusion_hidden),
+            nn.ReLU(),
+            nn.Dropout(fusion_dropout),
+            nn.Linear(fusion_hidden, num_classes)
+        )
+        
+        self.num_classes = num_classes
+    
+    def forward(
+        self,
+        commands: torch.Tensor,
+        mitre: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Args:
+            commands: Character indices [batch, seq_len]
+            mitre: MITRE features [batch, 21]
+            lengths: Original command sequence lengths [batch]
+        Returns:
+            Class logits [batch, num_classes]
+        """
+        # Encode text
+        text_features = self.text_encoder(commands, lengths)
+        
+        # Encode MITRE features
+        mitre_features = self.mitre_encoder(mitre)
+        
+        # Concatenate and classify
+        combined = torch.cat([text_features, mitre_features], dim=1)
+        logits = self.fusion(combined)
+        
+        return logits
+    
+    def predict(
+        self,
+        commands: torch.Tensor,
+        mitre: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get predictions and probabilities.
+        
+        Returns:
+            predictions: Class indices [batch]
+            probabilities: Class probabilities [batch, num_classes]
+        """
+        logits = self.forward(commands, mitre, lengths)
+        probabilities = F.softmax(logits, dim=1)
+        predictions = torch.argmax(probabilities, dim=1)
+        return predictions, probabilities
+    
+    def get_attention_weights(
+        self,
+        commands: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Extract attention weights for interpretability.
+        
+        Returns:
+            Attention weights [batch, seq_len]
+        """
+        if not self.text_encoder.use_attention:
+            raise ValueError("Model not using attention")
+        
+        embedded = self.text_encoder.embedding(commands)
+        
+        if lengths is not None:
+            lengths = lengths.cpu()
+            packed = nn.utils.rnn.pack_padded_sequence(
+                embedded, lengths, batch_first=True, enforce_sorted=False
+            )
+            lstm_out, _ = self.text_encoder.lstm(packed)
+            lstm_out, _ = nn.utils.rnn.pad_packed_sequence(lstm_out, batch_first=True)
+        else:
+            lstm_out, _ = self.text_encoder.lstm(embedded)
+        
+        attn_weights = self.text_encoder.attention(lstm_out)
+        attn_weights = F.softmax(attn_weights, dim=1).squeeze(-1)
+        
+        return attn_weights
