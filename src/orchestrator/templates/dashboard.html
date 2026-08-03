@@ -491,6 +491,169 @@
             70% { box-shadow: 0 0 0 10px rgba(255, 85, 85, 0); }
             100% { box-shadow: 0 0 0 0 rgba(255, 85, 85, 0); }
         }
+
+        /* Simulation Controls CSS */
+        .nav-tabs {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 0.1rem;
+        }
+        .nav-tab {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.25rem;
+            font-weight: 700;
+            cursor: pointer;
+            padding-bottom: 0.75rem;
+            position: relative;
+            transition: var(--transition);
+        }
+        .nav-tab::after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background-color: transparent;
+            transition: var(--transition);
+        }
+        .nav-tab.active {
+            color: var(--text-primary);
+        }
+        .nav-tab.active::after {
+            background-color: var(--color-safe);
+        }
+        .simulator-grid {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+        .simulator-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+        .sim-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.75rem;
+        }
+        .employee-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .employee-item {
+            background-color: hsl(220, 20%, 7%);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: var(--transition);
+            cursor: pointer;
+        }
+        .employee-item.selected {
+            border-color: var(--color-insider);
+            background-color: var(--color-insider-glow);
+        }
+        .employee-info h4 {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        .employee-info p {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+        .sim-btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .sim-section-label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 0.5rem;
+        }
+        .sim-btn {
+            background: linear-gradient(135deg, hsl(220, 15%, 16%), hsl(220, 15%, 20%));
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 0.85rem 1.25rem;
+            border-radius: 8px;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: var(--transition);
+            text-align: left;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .sim-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .sim-btn.btn-safe:hover {
+            border-color: var(--color-safe);
+            background: var(--color-safe-glow);
+        }
+        .sim-btn.btn-recon:hover {
+            border-color: var(--color-recon);
+            background: var(--color-recon-glow);
+        }
+        .sim-btn.btn-destructive:hover {
+            border-color: var(--color-destructive);
+            background: var(--color-destructive-glow);
+        }
+        .sim-btn.btn-insider:hover {
+            border-color: var(--color-insider);
+            background: var(--color-insider-glow);
+        }
+        .sim-console {
+            background-color: hsl(220, 30%, 4%);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            color: hsl(120, 60%, 50%);
+            min-height: 250px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .console-line {
+            margin-bottom: 0.5rem;
+            line-height: 1.4;
+        }
+        .console-input {
+            color: var(--text-primary);
+        }
+        .console-warning {
+            color: var(--color-exploit);
+        }
+        .console-error {
+            color: var(--color-destructive);
+        }
     </style>
 </head>
 <body>
@@ -508,8 +671,15 @@
             </div>
         </header>
 
-        <!-- Stats Grid -->
-        <section class="counters-grid">
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="nav-tab active" id="tab-btn-soc" onclick="switchTab('soc')">Security Operations Center (SOC)</button>
+            <button class="nav-tab" id="tab-btn-simulator" onclick="switchTab('simulator')">Interactive Threat Control Center</button>
+        </div>
+
+        <div id="tab-content-soc" class="tab-content">
+            <!-- Stats Grid -->
+            <section class="counters-grid">
             <div class="counter-card" style="--theme-color: var(--text-secondary)">
                 <span class="counter-label">Total Intercepted Requests</span>
                 <span class="counter-value" id="count-total">0</span>
@@ -586,6 +756,104 @@
                 </table>
             </div>
         </section>
+        </div>
+
+        <!-- Simulator Tab Content -->
+        <div id="tab-content-simulator" class="tab-content" style="display: none;">
+            <div class="simulator-grid">
+                
+                <!-- Left: Organization & Employee Bots -->
+                <div class="simulator-card">
+                    <h3 class="sim-title">Corporate Organization (Initech Corp)</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted);">
+                        Select an employee bot to configure the context for simulated internal requests.
+                    </p>
+                    
+                    <div class="employee-list">
+                        <div class="employee-item selected" onclick="selectEmployee(this, 'dev_01', 'developer')">
+                            <div class="employee-info">
+                                <h4>Rogue Dev (dev_01)</h4>
+                                <p>Role: Developer // Dept: Core Platform</p>
+                            </div>
+                            <span class="event-badge badge-insider" style="font-size: 0.65rem;">SUSPICIOUS</span>
+                        </div>
+                        <div class="employee-item" onclick="selectEmployee(this, 'hr_alice', 'hr_manager')">
+                            <div class="employee-info">
+                                <h4>Alice Smith (hr_alice)</h4>
+                                <p>Role: HR Manager // Dept: Human Resources</p>
+                            </div>
+                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">NORMAL</span>
+                        </div>
+                        <div class="employee-item" onclick="selectEmployee(this, 'sys_charlie', 'system_engineer')">
+                            <div class="employee-info">
+                                <h4>Charlie Brown (sys_charlie)</h4>
+                                <p>Role: System Engineer // Dept: DevOps</p>
+                            </div>
+                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">NORMAL</span>
+                        </div>
+                    </div>
+                    
+                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; font-size: 0.8rem; color: var(--text-muted);">
+                        <p><strong>Active Selected Context:</strong></p>
+                        <p id="active-context-text" style="font-family: 'JetBrains Mono', monospace; margin-top: 0.25rem; color: var(--color-insider);">
+                            User ID: dev_01 | Role: developer
+                        </p>
+                    </div>
+                </div>
+                
+                <!-- Right: Simulation Command Deck -->
+                <div class="simulator-card">
+                    <h3 class="sim-title">Live Threat Simulation Command Deck</h3>
+                    
+                    <div class="sim-btn-group">
+                        <span class="sim-section-label">External Attacker Sim (BiLSTM Model / Decoys)</span>
+                        
+                        <button class="sim-btn btn-safe" onclick="fireSimulation('normal_user')">
+                            <span>1. Launch Safe Traffic (External User)</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Forwarded (200 OK) →</span>
+                        </button>
+                        
+                        <button class="sim-btn btn-recon" onclick="fireSimulation('external_recon')">
+                            <span>2. Launch Sneaky Recon Scan (Hacker)</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Trapped in Decoy →</span>
+                        </button>
+                        
+                        <button class="sim-btn btn-destructive" onclick="fireSimulation('external_destructive')">
+                            <span>3. Launch Destructive APT Exploit</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Banned in Kernel (403) →</span>
+                        </button>
+                        
+                        <span class="sim-section-label">Malicious Insider Sim (Random Forest Model)</span>
+                        
+                        <button class="sim-btn btn-insider" onclick="fireSimulation('insider_normal')">
+                            <span>A. Insider Normal Check-In</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Score: 0% →</span>
+                        </button>
+                        
+                        <button class="sim-btn btn-insider" onclick="fireSimulation('insider_recon')">
+                            <span>B. Insider Unauthorized DB Query</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Score: 28% →</span>
+                        </button>
+                        
+                        <button class="sim-btn btn-insider" onclick="fireSimulation('insider_sabotage')">
+                            <span>C. Insider Exfiltration + tampering</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Blocked & Terminated (403) →</span>
+                        </button>
+                    </div>
+                </div>
+                
+            </div>
+            
+            <!-- Bottom: Simulator Console Output -->
+            <div class="simulator-card" style="gap: 0.75rem;">
+                <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.1rem; color: var(--text-primary);">
+                    Real-Time Simulation Command Console
+                </h4>
+                <div class="sim-console" id="sim-console">
+                    <div class="console-line">[SIMULATOR] System initialized. Ready to launch threat vectors.</div>
+                </div>
+            </div>
+        </div>
 
     </div>
 
@@ -813,6 +1081,69 @@
                 console.log("SSE disconnected, retrying in 5 seconds...");
                 setTimeout(connectSSE, 5000);
             };
+        }
+
+        let activeUserId = "dev_01";
+        let activeUserRole = "developer";
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('.nav-tab').forEach(el => {
+                el.classList.remove('active');
+            });
+
+            if (tabName === 'soc') {
+                document.getElementById('tab-content-soc').style.display = 'block';
+                document.getElementById('tab-btn-soc').classList.add('active');
+            } else {
+                document.getElementById('tab-content-simulator').style.display = 'block';
+                document.getElementById('tab-btn-simulator').classList.add('active');
+            }
+        }
+
+        function selectEmployee(el, userId, role) {
+            document.querySelectorAll('.employee-item').forEach(item => item.classList.remove('selected'));
+            el.classList.add('selected');
+            activeUserId = userId;
+            activeUserRole = role;
+            document.getElementById('active-context-text').textContent = `User ID: ${userId} | Role: ${role}`;
+            document.getElementById('active-context-text').style.color = userId === 'dev_01' ? 'var(--color-insider)' : 'var(--color-safe)';
+            writeConsole(`[SIMULATOR] Switched context to Employee Profile: ${userId} (${role})`);
+        }
+
+        function writeConsole(text, type='info') {
+            const consoleEl = document.getElementById('sim-console');
+            const line = document.createElement('div');
+            line.className = `console-line console-${type}`;
+            line.textContent = `${new Date().toLocaleTimeString()} ${text}`;
+            consoleEl.appendChild(line);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        async function fireSimulation(scenario) {
+            writeConsole(`[SIMULATOR] Dispatched vector: ${scenario}...`, 'warning');
+            try {
+                const response = await fetch('/api/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        scenario: scenario,
+                        role: activeUserRole,
+                        user_id: activeUserId
+                    })
+                });
+                const res = await response.json();
+                if (res.status === 'simulation_fired') {
+                    writeConsole(`[SIMULATOR] Request successfully processed by Gateway Proxy.`, 'info');
+                    setTimeout(() => {
+                        switchTab('soc');
+                    }, 800);
+                } else {
+                    writeConsole(`[SIMULATOR] Error: Failed to dispatch simulation vector.`, 'error');
+                }
+            } catch (e) {
+                writeConsole(`[SIMULATOR] Connection Error: ${e.message}`, 'error');
+            }
         }
 
         // Load history, then start SSE

