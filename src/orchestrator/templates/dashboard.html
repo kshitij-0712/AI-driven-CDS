@@ -675,6 +675,7 @@
         <div class="nav-tabs">
             <button class="nav-tab active" id="tab-btn-soc" onclick="switchTab('soc')">Security Operations Center (SOC)</button>
             <button class="nav-tab" id="tab-btn-simulator" onclick="switchTab('simulator')">Interactive Threat Control Center</button>
+            <button class="nav-tab" id="tab-btn-guide" onclick="switchTab('guide')">Project Presentation Guide</button>
         </div>
 
         <div id="tab-content-soc" class="tab-content">
@@ -764,12 +765,12 @@
                 
                 <!-- Left: Organization & Employee Bots -->
                 <div class="simulator-card">
-                    <h3 class="sim-title">Corporate Organization (Initech Corp)</h3>
+                    <h3 class="sim-title">Corporate Organization & Bot Manager</h3>
                     <p style="font-size: 0.85rem; color: var(--text-muted);">
-                        Select an employee bot to configure the context for simulated internal requests.
+                        Configure and select employee bot contexts to test insider threat detection.
                     </p>
                     
-                    <div class="employee-list">
+                    <div class="employee-list" id="employee-list-container">
                         <div class="employee-item selected" onclick="selectEmployee(this, 'dev_01', 'developer')">
                             <div class="employee-info">
                                 <h4>Rogue Dev (dev_01)</h4>
@@ -784,16 +785,25 @@
                             </div>
                             <span class="event-badge badge-safe" style="font-size: 0.65rem;">NORMAL</span>
                         </div>
-                        <div class="employee-item" onclick="selectEmployee(this, 'sys_charlie', 'system_engineer')">
-                            <div class="employee-info">
-                                <h4>Charlie Brown (sys_charlie)</h4>
-                                <p>Role: System Engineer // Dept: DevOps</p>
-                            </div>
-                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">NORMAL</span>
+                    </div>
+
+                    <!-- Bot Creation Form -->
+                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 0.5rem;">
+                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 0.95rem; margin-bottom: 0.75rem;">Create Custom Employee Bot</h4>
+                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                            <input type="text" id="new-emp-name" placeholder="Employee Name" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;">
+                            <input type="text" id="new-emp-id" placeholder="User ID (e.g., fin_bob)" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;">
+                            <select id="new-emp-role" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;">
+                                <option value="developer">Role: Developer</option>
+                                <option value="hr_manager">Role: HR Manager</option>
+                                <option value="finance_analyst">Role: Finance Analyst</option>
+                                <option value="sys_admin">Role: System Administrator</option>
+                            </select>
+                            <button class="sim-btn" onclick="createNewBot()" style="padding: 0.5rem; text-align: center; justify-content: center; background: linear-gradient(135deg, var(--color-safe-glow), transparent); border-color: var(--color-safe); font-size: 0.85rem;">Add Bot to Org</button>
                         </div>
                     </div>
                     
-                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; font-size: 0.8rem; color: var(--text-muted);">
+                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">
                         <p><strong>Active Selected Context:</strong></p>
                         <p id="active-context-text" style="font-family: 'JetBrains Mono', monospace; margin-top: 0.25rem; color: var(--color-insider);">
                             User ID: dev_01 | Role: developer
@@ -851,6 +861,61 @@
                 </h4>
                 <div class="sim-console" id="sim-console">
                     <div class="console-line">[SIMULATOR] System initialized. Ready to launch threat vectors.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Project Presentation Guide Tab Content -->
+        <div id="tab-content-guide" class="tab-content" style="display: none;">
+            <div class="simulator-card" style="gap: 1.5rem;">
+                <h3 class="sim-title">AdaptiveShield Presenter Scenario Guide</h3>
+                
+                <div style="display: flex; flex-direction: column; gap: 1.5rem; line-height: 1.6;">
+                    
+                    <div style="border-left: 3px solid var(--color-safe); padding-left: 1rem;">
+                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-safe); margin-bottom: 0.25rem;">Scenario 1: Normal Client Traffic (Safe)</h4>
+                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                            <strong>Presentation Script:</strong> "First, we demonstrate standard client activity. We click 'Launch Safe Traffic'. The gateway routes it to our BiLSTM model, flags it as safe, and forwards it to the primary backend server with sub-millisecond response latency."
+                        </p>
+                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
+                            <li><strong>Trigger:</strong> Click "1. Launch Safe Traffic" button on the Simulator Deck.</li>
+                            <li><strong>Observation:</strong> SOC Dashboard updates -> Total Intercepted +1, Safe Transactions +1.</li>
+                        </ul>
+                    </div>
+
+                    <div style="border-left: 3px solid var(--color-recon); padding-left: 1rem;">
+                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-recon); margin-bottom: 0.25rem;">Scenario 2: External Recon Scan (Honeypot Trap)</h4>
+                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                            <strong>Presentation Script:</strong> "Next, we simulate a sneaky external attacker trying to run directory scans to find server secrets. Our BiLSTM model flags the malicious intent as 'Reconnaissance'. Instantly, the Deception Agent pulls and deploys a Docker honeypot container on-the-fly and reroutes the attacker's TCP connection into it silently. The hacker thinks they are in, but they are trapped in a decoy sandbox."
+                        </p>
+                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
+                            <li><strong>Trigger:</strong> Click "2. Launch Sneaky Recon Scan" button.</li>
+                            <li><strong>Observation:</strong> Reroutes +1. Inspect the event: XAI Narrator displays full MITRE T1083 / T1595 mapping and logs honeypot redirection.</li>
+                        </ul>
+                    </div>
+
+                    <div style="border-left: 3px solid var(--color-destructive); padding-left: 1rem;">
+                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-destructive); margin-bottom: 0.25rem;">Scenario 3: Severe APT Attack (OS Kernel Banning)</h4>
+                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                            <strong>Presentation Script:</strong> "What if the threat is highly destructive, like an APT script or remote system tampering? The risk is too high to engage. The system instantly bypasses the proxy and registers the attacker's IP with `nftables` in the OS Kernel, dropping all packets instantly."
+                        </p>
+                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
+                            <li><strong>Trigger:</strong> Click "3. Launch Destructive APT Exploit" button.</li>
+                            <li><strong>Observation:</strong> Banned IPs +1. The IP address is dynamically appended to the firewall block list table at the bottom of the SOC dashboard.</li>
+                        </ul>
+                    </div>
+
+                    <div style="border-left: 3px solid var(--color-insider); padding-left: 1rem;">
+                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-insider); margin-bottom: 0.25rem;">Scenario 4: Malicious Insider Activity</h4>
+                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                            <strong>Presentation Script:</strong> "Finally, we demonstrate insider threats. We select a Developer bot from the organization structure. Step A is a normal query (Safe). In Step B, the employee queries private HR databases (risk score increments). In Step C, they attempt file exfiltration and Tampering cover-up. The RandomForest classifier (trained on CERT logs) flags the aggregate anomalous profile, terminates the session, and triggers AD credentials revocation."
+                        </p>
+                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
+                            <li><strong>Trigger:</strong> Execute Steps A, B, and C under the Insider Sim deck.</li>
+                            <li><strong>Observation:</strong> Insider Alerts +1. Inspect the exfiltration event to see the RandomForest scoring metrics and the plain-English forensic recommendations.</li>
+                        </ul>
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -1095,9 +1160,12 @@
             if (tabName === 'soc') {
                 document.getElementById('tab-content-soc').style.display = 'block';
                 document.getElementById('tab-btn-soc').classList.add('active');
-            } else {
+            } else if (tabName === 'simulator') {
                 document.getElementById('tab-content-simulator').style.display = 'block';
                 document.getElementById('tab-btn-simulator').classList.add('active');
+            } else if (tabName === 'guide') {
+                document.getElementById('tab-content-guide').style.display = 'block';
+                document.getElementById('tab-btn-guide').classList.add('active');
             }
         }
 
@@ -1144,6 +1212,42 @@
             } catch (e) {
                 writeConsole(`[SIMULATOR] Connection Error: ${e.message}`, 'error');
             }
+        }
+
+        function createNewBot() {
+            const name = document.getElementById('new-emp-name').value.trim();
+            const id = document.getElementById('new-emp-id').value.trim();
+            const role = document.getElementById('new-emp-role').value;
+            
+            if (!name || !id) {
+                alert("Please specify both name and employee ID.");
+                return;
+            }
+
+            const container = document.getElementById('employee-list-container');
+            const item = document.createElement('div');
+            item.className = 'employee-item';
+            
+            let roleText = role.replace('_', ' ').toUpperCase();
+            
+            item.onclick = function() {
+                selectEmployee(this, id, role);
+            };
+            
+            item.innerHTML = `
+                <div class="employee-info">
+                    <h4>${name} (${id})</h4>
+                    <p>Role: ${roleText} // Dept: Custom Bot</p>
+                </div>
+                <span class="event-badge badge-safe" style="font-size: 0.65rem;">NORMAL</span>
+            `;
+            
+            container.appendChild(item);
+            document.getElementById('new-emp-name').value = '';
+            document.getElementById('new-emp-id').value = '';
+            
+            writeConsole(`[SIMULATOR] Successfully added custom employee bot: ${name} (${id})`);
+            selectEmployee(item, id, role);
         }
 
         // Load history, then start SSE
