@@ -23,3 +23,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  dummy-backend:
+    image: python:3.11-slim
+    container_name: adaptiveshield-dummy-backend
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python dummy_app/server.py
