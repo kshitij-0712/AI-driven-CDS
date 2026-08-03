@@ -851,11 +851,17 @@
                         </button>
                         
                         <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem;">
-                            <span class="sim-section-label" style="margin-top: 0;">Interactive Insider Terminal (Custom Analysis)</span>
+                            <span class="sim-section-label" style="margin-top: 0;">Interactive Threat Simulation Terminal (Custom Input)</span>
+                            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.25rem;">
+                                <select id="terminal-traffic-origin" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;" onchange="updateTerminalStyle()">
+                                    <option value="internal">Source: Internal Employee (RandomForest Anomaly Model)</option>
+                                    <option value="external">Source: External Attacker (BiLSTM Neural Model & Decoys)</option>
+                                </select>
+                            </div>
                             <div style="display: flex; gap: 0.5rem;">
-                                <span style="font-family: 'JetBrains Mono', monospace; align-self: center; color: var(--color-insider); font-size: 0.9rem;">$</span>
-                                <input type="text" id="terminal-command-input" placeholder="Type custom employee command (e.g. cat /etc/shadow)" style="flex: 1; background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.6rem; border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;" onkeydown="if(event.key==='Enter') executeCustomCommand()">
-                                <button class="sim-btn" onclick="executeCustomCommand()" style="width: auto; padding: 0.6rem 1.2rem; background: linear-gradient(135deg, var(--color-insider-glow), transparent); border-color: var(--color-insider);">Run</button>
+                                <span id="terminal-prompt-char" style="font-family: 'JetBrains Mono', monospace; align-self: center; color: var(--color-insider); font-size: 0.9rem;">$</span>
+                                <input type="text" id="terminal-command-input" placeholder="Type custom command (e.g. cat /etc/shadow)" style="flex: 1; background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.6rem; border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;" onkeydown="if(event.key==='Enter') executeCustomCommand()">
+                                <button class="sim-btn" id="terminal-run-btn" onclick="executeCustomCommand()" style="width: auto; padding: 0.6rem 1.2rem; background: linear-gradient(135deg, var(--color-insider-glow), transparent); border-color: var(--color-insider);">Run</button>
                             </div>
                         </div>
                     </div>
@@ -1223,12 +1229,30 @@
             }
         }
 
+        function updateTerminalStyle() {
+            const origin = document.getElementById('terminal-traffic-origin').value;
+            const prompt = document.getElementById('terminal-prompt-char');
+            const runBtn = document.getElementById('terminal-run-btn');
+            
+            if (origin === 'internal') {
+                prompt.style.color = 'var(--color-insider)';
+                runBtn.style.background = 'linear-gradient(135deg, var(--color-insider-glow), transparent)';
+                runBtn.style.borderColor = 'var(--color-insider)';
+            } else {
+                prompt.style.color = 'var(--color-destructive)';
+                runBtn.style.background = 'linear-gradient(135deg, var(--color-destructive-glow), transparent)';
+                runBtn.style.borderColor = 'var(--color-destructive)';
+            }
+        }
+
         async function executeCustomCommand() {
             const inputEl = document.getElementById('terminal-command-input');
+            const originEl = document.getElementById('terminal-traffic-origin');
             const cmd = inputEl.value.trim();
             if (!cmd) return;
             
-            writeConsole(`[TERMINAL] Executing command: "${cmd}" as employee: ${activeUserId}...`, 'warning');
+            const origin = originEl.value;
+            writeConsole(`[TERMINAL] Executing command: "${cmd}" [Origin: ${origin.toUpperCase()}]...`, 'warning');
             
             try {
                 const response = await fetch('/api/simulate', {
@@ -1236,6 +1260,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         scenario: "custom_command",
+                        origin: origin,
                         command: cmd,
                         role: activeUserRole,
                         user_id: activeUserId

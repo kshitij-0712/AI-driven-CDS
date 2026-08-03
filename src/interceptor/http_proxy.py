@@ -217,17 +217,26 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     pass
             elif scenario == "custom_command":
                 cmd = payload.get("command", "")
-                headers = {
-                    "x-mock-ip": "192.168.1.75",
-                    "x-user-id": user_id,
-                    "x-user-role": role
-                }
-                try:
-                    await client.post(f"{base_url}/custom_insider_command", headers=headers, json={
-                        "command": cmd
-                    })
-                except Exception:
-                    pass
+                origin = payload.get("origin", "internal")
+                if origin == "external":
+                    import urllib.parse
+                    headers = {"x-mock-ip": "84.22.12.19"}
+                    try:
+                        await client.get(f"{base_url}/admin/shell?cmd={urllib.parse.quote(cmd)}", headers=headers)
+                    except Exception:
+                        pass
+                else:
+                    headers = {
+                        "x-mock-ip": "192.168.1.75",
+                        "x-user-id": user_id,
+                        "x-user-role": role
+                    }
+                    try:
+                        await client.post(f"{base_url}/custom_insider_command", headers=headers, json={
+                            "command": cmd
+                        })
+                    except Exception:
+                        pass
         return {"status": "simulation_fired"}
 
     from fastapi.responses import HTMLResponse
