@@ -239,6 +239,15 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                         pass
         return {"status": "simulation_fired"}
 
+    @app.post("/api/unblock")
+    async def release_blocked_ip(request: Request):
+        payload = await request.json()
+        ip = payload.get("ip")
+        if ip:
+            store.unblock_ip(ip)
+            nft.unblock_ip(ip)
+        return {"status": "unblocked", "ip": ip}
+
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
     async def get_dashboard():

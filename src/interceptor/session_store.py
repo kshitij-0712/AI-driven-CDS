@@ -80,6 +80,13 @@ class SessionStore:
         )
         self.conn.commit()
 
+    def unblock_ip(self, src_ip: str):
+        self.conn.execute(
+            "UPDATE sessions SET blocked = 0, blocked_until_ts = 0 WHERE src_ip = ?",
+            (src_ip,),
+        )
+        self.conn.commit()
+
     def get_blocked_until(self, src_ip: str) -> Optional[float]:
         cur = self.conn.cursor()
         cur.execute(

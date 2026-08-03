@@ -1101,8 +1101,21 @@
             body.appendChild(row);
         }
 
-        function unblockIP(ip) {
-            alert(`Triggered nftables release command for IP: ${ip}`);
+        async function unblockIP(ip) {
+            try {
+                const response = await fetch('/api/unblock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: ip })
+                });
+                const res = await response.json();
+                if (res.status === 'unblocked') {
+                    writeConsole(`[FIREWALL] Released block for IP: ${ip}`, 'info');
+                }
+            } catch (e) {
+                console.error("Failed to unblock IP:", e);
+            }
+            
             const row = document.getElementById(`block-${ip}`);
             if (row) row.remove();
             blockedIPs.delete(ip);
