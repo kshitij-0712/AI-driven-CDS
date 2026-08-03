@@ -32,13 +32,14 @@ def _is_private_ip(ip: str) -> bool:
 
 
 def _request_to_context(request: Request, body: str) -> Dict:
+    source_ip = request.headers.get("x-mock-ip") or request.headers.get("x-forwarded-for") or (request.client.host if request.client else "unknown")
     return {
         "method": request.method,
         "path": request.url.path,
         "query": str(request.url.query or ""),
         "body": body,
         "headers": dict(request.headers),
-        "source_ip": request.client.host if request.client else "unknown",
+        "source_ip": source_ip,
     }
 
 
