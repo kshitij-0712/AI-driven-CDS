@@ -923,11 +923,11 @@
                     <div style="border-left: 3px solid var(--color-insider); padding-left: 1rem;">
                         <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-insider); margin-bottom: 0.25rem;">Scenario 4: Malicious Insider Activity</h4>
                         <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                            <strong>Presentation Script:</strong> "Finally, we demonstrate insider threats. We select a Developer bot from the organization structure. Step A is a normal query (Safe). In Step B, the employee queries private HR databases (risk score increments). In Step C, they attempt file exfiltration and Tampering cover-up. The RandomForest classifier (trained on CERT logs) flags the aggregate anomalous profile, terminates the session, and triggers AD credentials revocation."
+                            <strong>Presentation Script:</strong> "Finally, we demonstrate insider threats. We can use the Simulator tab, or open our live Employee Workspace page at `/workspace`. The evaluator selects the Finance Analyst role and runs: `curl http://10.0.0.1/src/main.py`. Because the role is Finance Analyst, attempting to access developer source files triggers an immediate Role Scope Violation. My RandomForest model evaluates the behavior, flags the alert, and logs it dynamically to the SOC Dashboard."
                         </p>
                         <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
-                            <li><strong>Trigger:</strong> Execute Steps A, B, and C under the Insider Sim deck.</li>
-                            <li><strong>Observation:</strong> Insider Alerts +1. Inspect the exfiltration event to see the RandomForest scoring metrics and the plain-English forensic recommendations.</li>
+                            <li><strong>Trigger:</strong> Open `http://localhost:8000/workspace` in a new window, select Finance Analyst, type: `curl http://10.0.0.1/src/main.py` and run.</li>
+                            <li><strong>Observation:</strong> Open `/dashboard` ➡️ Insider Alerts +1. Observe the matched MITRE T1105 technique and the XAI narrator credentials lock recommendations.</li>
                         </ul>
                     </div>
 

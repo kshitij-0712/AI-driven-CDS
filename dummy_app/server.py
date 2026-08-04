@@ -316,5 +316,107 @@ async def admin(request: Request):
     """ + get_html_footer()
     return HTMLResponse(content=content)
 
+@app.get("/workspace", response_class=HTMLResponse)
+async def workspace():
+    content = get_html_header("Employee Workspace Portal") + """
+        <div class="card" style="grid-column: 1 / -1; border-color: rgba(139, 92, 246, 0.4);">
+            <h3>Initech Corp: Employee Work Console <span class="badge" style="background: #8b5cf6;">INTERNAL ONLY</span></h3>
+            <p style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 20px;">
+                Use this portal to execute administrative shell commands and utility tasks. The security gateway monitors all session parameters.
+            </p>
+            
+            <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+                <div style="flex: 1;">
+                    <label style="display: block; font-size: 0.85rem; margin-bottom: 8px; color: #94a3b8;">Choose Employee Identity:</label>
+                    <select id="emp-identity" style="width: 100%; background: #1e293b; border: 1px solid rgba(255,255,255,0.1); padding: 10px; border-radius: 8px; color: white;">
+                        <option value="developer|dev_alice">Alice Smith (Role: Developer // Dept: Platform)</option>
+                        <option value="hr_manager|hr_bob">Bob Jones (Role: HR Manager // Dept: HR)</option>
+                        <option value="finance_analyst|fin_charlie">Charlie Brown (Role: Finance Analyst // Dept: Finance)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="background: #090d16; border-radius: 8px; padding: 20px; border: 1px solid rgba(139, 92, 246, 0.2); font-family: monospace;">
+                <div style="color: #a7f3d0; margin-bottom: 15px;">$ Corporate Console Active. Connection Origin: 192.168.1.75</div>
+                
+                <div style="display: flex; gap: 10px;">
+                    <span style="color: #8b5cf6; font-weight: bold; align-self: center;">&gt;</span>
+                    <input type="text" id="cmd-input" placeholder="Type corporate shell command (e.g. git status, cat /etc/passwd)..." 
+                           style="flex: 1; background: transparent; border: none; outline: none; color: white; font-family: inherit; font-size: 1rem;"
+                           onkeydown="if(event.key==='Enter') runConsoleCommand()">
+                    <button onclick="runConsoleCommand()" style="width: auto; padding: 6px 15px;">Execute</button>
+                </div>
+            </div>
+
+            <div id="result-box-container" style="display: none; margin-top: 20px;">
+                <h4 style="margin: 0 0 10px 0;">Execution Output:</h4>
+                <div id="cmd-output" class="result-box"></div>
+            </div>
+        </div>
+
+        <script>
+            async function runConsoleCommand() {
+                const cmd = document.getElementById('cmd-input').value.trim();
+                const identity = document.getElementById('emp-identity').value.split('|');
+                const role = identity[0];
+                const userId = identity[1];
+                
+                if(!cmd) return;
+
+                const resultContainer = document.getElementById('result-box-container');
+                const outputEl = document.getElementById('cmd-output');
+                
+                resultContainer.style.display = 'block';
+                outputEl.textContent = 'Executing...';
+                outputEl.style.color = '#a7f3d0';
+
+                try {
+                    const response = await fetch('/workspace/run', {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'x-mock-ip': '192.168.1.75',
+                            'x-user-id': userId,
+                            'x-user-role': role
+                        },
+                        body: JSON.stringify({
+                            command: cmd,
+                            role: role,
+                            user_id: userId
+                        })
+                    });
+                    
+                    if (response.status === 403) {
+                        const errData = await response.json();
+                        outputEl.textContent = `CRITICAL ALERT: ACCESS DENIED\\nReason: ${errData.reason || errData.error}\\nStatus: 403 Forbidden. Session terminated.`;
+                        outputEl.style.color = '#f87171';
+                        return;
+                    }
+
+                    const data = await response.json();
+                    outputEl.textContent = data.output || 'Command completed with exit code 0.';
+                    outputEl.style.color = '#a7f3d0';
+                } catch(e) {
+                    outputEl.textContent = 'Connection Error: ' + e.message;
+                    outputEl.style.color = '#f87171';
+                }
+            }
+        </script>
+    """ + get_html_footer()
+    return HTMLResponse(content=content)
+
+@app.post("/workspace/run")
+async def run_workspace_command(request: Request):
+    payload = await request.json()
+    command = payload.get("command", "")
+    role = payload.get("role", "normal")
+    user_id = payload.get("user_id", "unknown")
+    
+    # Return simulated console response
+    if "passwd" in command.lower() or "shadow" in command.lower() or "upload" in command.lower():
+        return JSONResponse(status_code=403, content={"error": "Access Denied", "reason": "unauthorized_scope_tampering"})
+    
+    return {"status": "success", "output": f"Success: Command '{command}' completed. Context verified for {user_id} ({role})."}
+
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8090)
