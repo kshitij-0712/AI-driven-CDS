@@ -68,7 +68,7 @@ class AdaptiveXAINarrator:
         recommended_actions = []
 
         # Check for Insider Threat Alerts first (since they are special)
-        is_insider_threat = "insider_threat" in event.features_used or "Insider threat detected" in decision.reason
+        is_insider_threat = event.features_used.get("insider_threat", False) or "Insider threat detected" in decision.reason
         
         if is_insider_threat:
             role = event.features_used.get("role", "employee")
