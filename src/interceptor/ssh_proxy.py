@@ -206,8 +206,9 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             event["xai_recommendations"] = explanation.recommended_actions
             
             # Push to the dashboard event queue asynchronously
-            from interceptor.http_proxy import event_queue
-            asyncio.create_task(event_queue.put(event))
+            from interceptor.http_proxy import active_event_queue
+            if active_event_queue is not None:
+                asyncio.create_task(active_event_queue.put(event))
         except Exception as e:
             logger.error(f"XAI parsing failed for SSH: {e}")
 
