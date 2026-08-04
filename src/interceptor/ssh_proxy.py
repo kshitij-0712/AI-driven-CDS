@@ -10,6 +10,7 @@ from agents.decision import classify_ssh_command, build_hybrid_classifier
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
+from honeypot.ssh_decoy_builder import SSHDecoyBuilder
 
 logger = logging.getLogger(__name__)
 logging.getLogger("asyncssh").setLevel(logging.DEBUG)
@@ -183,12 +184,13 @@ class SSHGuardSession(asyncssh.SSHServerSession):
 
 
 class AdaptiveSSHServer(asyncssh.SSHServer):
-    def __init__(self, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, config: Dict):
+    def __init__(self, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, config: Dict, builder: SSHDecoyBuilder):
         self.store = store
         self.nft = nft
         self.classifier = classifier
         self.decoy_mgr = decoy_mgr
         self.config = config
+        self.builder = builder
         
         self.brute_force_threshold = int(config.get("brute_force_threshold", 20))
         self.real_host = config.get("real_service_host", "127.0.0.1")
@@ -220,6 +222,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                 self.route_to_decoy = True
                 self.auth_username = username
                 self.auth_password = password
+                
+                decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+                if decoy:
+                     await self.builder.prepare_decoy_files(
+                         self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                     )
+                     
                 print("Accepting password (routed to decoy)")
                 return True
             else:
@@ -257,6 +266,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                 self.route_to_decoy = True
                 self.auth_username = username
                 self.auth_password = password
+                
+                decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+                if decoy:
+                     await self.builder.prepare_decoy_files(
+                         self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                     )
+                     
                 return True
             return False
 
@@ -270,6 +286,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
             self.route_to_decoy = True
             self.auth_username = username
             self.auth_password = "password" # Cowrie default
+            
+            decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+            if decoy:
+                 await self.builder.prepare_decoy_files(
+                     self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                 )
+                 
             return True
             
         allowed_keys_path = self.config.get("allowed_keys_path", "./config/authorized_keys")
@@ -316,6 +339,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
             self.route_to_decoy = True
             self.auth_username = username
             self.auth_password = "password"
+            
+            decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+            if decoy:
+                 await self.builder.prepare_decoy_files(
+                     self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                 )
+                 
             return True
         return False
 
@@ -357,8 +387,10 @@ async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManage
     port = int(ssh_cfg.get("listen_port", 22))
     server_key = ssh_cfg.get("server_key_path", "./config/ssh_host_rsa_key.key")
     
+    builder = SSHDecoyBuilder(config, store)
+    
     def server_factory():
-        return AdaptiveSSHServer(store, nft, classifier, decoy_mgr, ssh_cfg)
+        return AdaptiveSSHServer(store, nft, classifier, decoy_mgr, ssh_cfg, builder)
 
     await asyncssh.create_server(
         server_factory, '', port,

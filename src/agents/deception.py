@@ -25,7 +25,7 @@ class DecoyInstance:
     decoy_type: str
     last_used_ts: float
     session_id: str = ""
-    html_dir: str = ""
+    host_dir: str = ""
 
 
 class DecoyManager:
@@ -81,16 +81,16 @@ class DecoyManager:
                 
                 # Get volume mappings
                 mounts = container.attrs.get("Mounts", [])
-                html_dir = ""
+                host_dir = ""
                 for m in mounts:
                     if m.get("Destination") == "/usr/share/nginx/html":
                         host_source = m.get("Source")
                         # Translate host source path back to local path inside core container
                         if "runtime/" in host_source:
                             rel_part = host_source.split("runtime/", 1)[1]
-                            html_dir = os.path.abspath(os.path.join("./runtime", rel_part))
+                            host_dir = os.path.abspath(os.path.join("./runtime", rel_part))
                         else:
-                            html_dir = host_source
+                            host_dir = host_source
                         break
 
                 if decoy_type == "http":
@@ -104,7 +104,7 @@ class DecoyManager:
                                 decoy_type="http",
                                 last_used_ts=now,
                                 session_id=session_id,
-                                html_dir=html_dir,
+                                host_dir=host_dir,
                             )
                             self._active_http[container.id] = instance
                 elif decoy_type == "ssh":
@@ -118,6 +118,7 @@ class DecoyManager:
                                 decoy_type="ssh",
                                 last_used_ts=now,
                                 session_id=session_id,
+                                host_dir=host_dir,
                             )
                             self._active_ssh[container.id] = instance
         except Exception:
@@ -224,7 +225,7 @@ class DecoyManager:
                 decoy_type="http",
                 last_used_ts=now,
                 session_id=session_id,
-                html_dir=html_dir,
+                host_dir=html_dir,
             )
             self._active_http[container.id] = instance
             return instance
@@ -277,10 +278,45 @@ class DecoyManager:
             return None
 
         try:
+            actual_session_id = session_id
+
+            # Local paths inside core container for writing files
+            local_base_dir = os.path.abspath(f"./runtime/decoy_ssh/{actual_session_id}")
+            txtcmds_dir = os.path.join(local_base_dir, "txtcmds")
+            honeyfs_dir = os.path.join(local_base_dir, "honeyfs")
+            os.makedirs(txtcmds_dir, exist_ok=True)
+            os.makedirs(honeyfs_dir, exist_ok=True)
+
+            # Determine host paths for Docker mounting (Docker-in-Docker path translation)
+            host_runtime_dir = "/home/me/data/AdaptiveShield/runtime"
+            try:
+                # Find our own container and get host source of /app/runtime
+                containers = self._docker.containers.list(filters={"name": "adaptiveshield-core"})
+                if containers:
+                    for m in containers[0].attrs.get("Mounts", []):
+                        if m.get("Destination") == "/app/runtime":
+                            host_runtime_dir = m.get("Source")
+                            break
+            except Exception:
+                pass
+
+            host_txtcmds_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "txtcmds")
+            host_honeyfs_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "honeyfs")
+            host_cowrie_cfg = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "cowrie.cfg")
+
+            # Create empty cowrie.cfg so it can be mounted
+            with open(os.path.join(local_base_dir, "cowrie.cfg"), "w") as f:
+                f.write("")
+
             container = self._docker.containers.run(
                 self.ssh_image,
                 detach=True,
                 ports={"2222/tcp": None},
+                volumes={
+                    host_txtcmds_dir: {"bind": "/cowrie/cowrie-git/share/cowrie/txtcmds", "mode": "ro"},
+                    host_honeyfs_dir: {"bind": "/cowrie/cowrie-git/honeyfs", "mode": "ro"},
+                    host_cowrie_cfg: {"bind": "/cowrie/cowrie-git/etc/cowrie.cfg", "mode": "ro"},
+                },
                 labels={
                     "adaptiveshield.decoy": "true",
                     "adaptiveshield.decoy_type": "ssh",
@@ -305,6 +341,7 @@ class DecoyManager:
                 decoy_type="ssh",
                 last_used_ts=now,
                 session_id=session_id,
+                host_dir=local_base_dir,
             )
             self._active_ssh[container.id] = instance
             return instance
@@ -314,6 +351,12 @@ class DecoyManager:
     def get_or_spawn_ssh_decoy(self, session_id: str) -> Optional[DecoyInstance]:
         """Return an SSH decoy instance."""
         self.cleanup_idle_decoys()
+        
+        # 1. Look for a container already running for this session
+        for instance in self._active_ssh.values():
+            if instance.session_id == session_id:
+                instance.last_used_ts = time.time()
+                return instance
 
         existing = self._pick_existing_ssh_decoy()
         if existing:
@@ -349,8 +392,8 @@ class DecoyManager:
                 self._active_ssh.pop(container_id, None)
 
             # Cleanup directories on host
-            if instance and instance.html_dir:
-                base_dir = os.path.dirname(instance.html_dir)
+            if instance and instance.host_dir:
+                base_dir = os.path.dirname(instance.host_dir) if decoy_type == "http" else instance.host_dir
                 if os.path.exists(base_dir):
                     try:
                         shutil.rmtree(base_dir)
@@ -372,8 +415,8 @@ class DecoyManager:
             self._active_ssh.pop(container_id, None)
 
             # Cleanup directories on host
-            if instance and instance.html_dir:
-                base_dir = os.path.dirname(instance.html_dir)
+            if instance and instance.host_dir:
+                base_dir = os.path.dirname(instance.host_dir) if instance.decoy_type == "http" else instance.host_dir
                 if os.path.exists(base_dir):
                     try:
                         shutil.rmtree(base_dir)
