@@ -20,6 +20,10 @@ class AdaptiveInsiderDetector:
         # In-memory session tracking for live user state
         self.session_states: Dict[str, Dict[str, Any]] = {}
 
+    def reset_session_state(self, session_id: str):
+        if session_id in self.session_states:
+            del self.session_states[session_id]
+
     def _get_or_create_session_state(self, signal: UserBehaviorSignal) -> Dict[str, Any]:
         session_id = signal.session_id
         if session_id not in self.session_states:

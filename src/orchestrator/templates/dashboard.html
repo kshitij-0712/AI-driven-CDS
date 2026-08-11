@@ -1121,8 +1121,32 @@
                         </ul>
                     </div>
 
+                    <div class="detail-block" style="margin-top: 20px;">
+                        <button onclick="resetSessionRisk('${evt.session_id}')" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; width: 100%; font-family: 'Outfit', sans-serif;">
+                            🔄 Reset Session Risk to 0% (Demo Mode)
+                        </button>
+                    </div>
+
                 </div>
             `;
+        }
+
+        async function resetSessionRisk(sessionId) {
+            try {
+                const response = await fetch('/api/reset_session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                const res = await response.json();
+                if (res.status === 'success') {
+                    writeConsole(`[DEMO] Reset session memory and risk score for session: ${sessionId}`, 'info');
+                    alert("Session risk score and history have been reset back to 0%. You can now execute a new command from the workspace portal.");
+                    location.reload();
+                }
+            } catch (e) {
+                console.error("Failed to reset session risk:", e);
+            }
         }
 
         function addBlocklistRow(evt) {

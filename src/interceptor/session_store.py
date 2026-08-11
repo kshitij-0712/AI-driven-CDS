@@ -100,6 +100,12 @@ class SessionStore:
         self.conn.commit()
 
     @thread_safe
+    def reset_session(self, session_id: str):
+        self.conn.execute("DELETE FROM request_events WHERE session_id = ?", (session_id,))
+        self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        self.conn.commit()
+
+    @thread_safe
     def get_blocked_until(self, src_ip: str) -> Optional[float]:
         cur = self.conn.cursor()
         cur.execute(

@@ -254,6 +254,25 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             nft.unblock_ip(ip)
         return {"status": "unblocked", "ip": ip}
 
+    @app.post("/api/reset_session")
+    async def reset_session_risk(request: Request):
+        payload = await request.json()
+        session_id = payload.get("session_id")
+        if session_id:
+            # Unblock IP if it was blocked
+            cur = store.conn.cursor()
+            cur.execute("SELECT src_ip FROM sessions WHERE id = ?", (session_id,))
+            row = cur.fetchone()
+            if row:
+                ip = row[0]
+                store.unblock_ip(ip)
+                nft.unblock_ip(ip)
+            
+            # Clear database and in-memory states
+            store.reset_session(session_id)
+            insider_detector.reset_session_state(session_id)
+        return {"status": "success", "session_id": session_id}
+
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
     async def get_dashboard():
@@ -389,7 +408,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         risk_score = base_risk_score
         insider_threat = None
         
-        if is_internal and not ctx.get("redirected_to_decoy"):
+        if is_internal:
             from interfaces.insider_contract import UserBehaviorSignal
             
             # Extract simulated features from HTTP JSON body if available
