@@ -157,6 +157,14 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         
         decision = classify_ssh_command(self.classifier, full_command, context)
         
+        import ipaddress
+        is_insider = False
+        try:
+            addr = ipaddress.ip_address(self.src_ip.strip())
+            is_insider = addr.is_private or addr.is_loopback
+        except ValueError:
+            pass
+
         event = {
             "timestamp": time.time(),
             "session_id": self.session_id,
@@ -168,6 +176,7 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             "rule": decision.get("rule"),
             "mitre_tactics": decision.get("mitre_tactics", []),
             "severity_max": decision.get("severity_max", 0),
+            "is_insider": is_insider,
         }
         
         if "neural_confidence" in decision:

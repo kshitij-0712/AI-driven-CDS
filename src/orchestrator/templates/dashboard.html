@@ -665,9 +665,15 @@
             <div class="logo-section">
                 <h1>AdaptiveShield <span class="badge">V5 ACTIVE-SHIELD</span></h1>
             </div>
-            <div class="system-status">
-                <div class="status-dot"></div>
-                <span>Real-Time Monitor Online</span>
+            <div style="display: flex; gap: 20px; align-items: center;">
+                <div class="system-status">
+                    <div class="status-dot"></div>
+                    <span>Real-Time Monitor Online</span>
+                </div>
+                <div class="system-status" style="border-left: 1px solid rgba(255,255,255,0.15); padding-left: 20px;">
+                    <div class="status-dot" id="deception-status-dot" style="background: #94a3b8;"></div>
+                    <span id="deception-status-text">Deception Engine: Checking...</span>
+                </div>
             </div>
         </header>
 
@@ -1334,8 +1340,31 @@
             selectEmployee(item, id, role);
         }
 
+        async function checkDeceptionStatus() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                const dot = document.getElementById('deception-status-dot');
+                const txt = document.getElementById('deception-status-text');
+                if (data.docker_available) {
+                    dot.style.background = 'var(--color-safe)';
+                    txt.textContent = 'Deception Engine: ACTIVE';
+                } else {
+                    dot.style.background = 'var(--color-exploit)';
+                    txt.textContent = 'Deception Engine: OFFLINE (Fallback Mode)';
+                }
+            } catch (e) {
+                console.error("Failed to fetch deception health status:", e);
+                const dot = document.getElementById('deception-status-dot');
+                const txt = document.getElementById('deception-status-text');
+                dot.style.background = 'var(--color-exploit)';
+                txt.textContent = 'Deception Engine: OFFLINE (Unreachable)';
+            }
+        }
+
         // Load history, then start SSE
         async function initDashboard() {
+            checkDeceptionStatus();
             try {
                 const response = await fetch('/api/events/history');
                 const historyData = await response.json();
