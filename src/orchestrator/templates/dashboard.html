@@ -997,7 +997,7 @@
             // Render latest first
             [...events].reverse().forEach(evt => {
                 const item = document.createElement('div');
-                const isInsider = evt.xai_summary && evt.xai_summary.includes("Insider");
+                const isInsider = evt.is_insider || (evt.xai_summary && evt.xai_summary.includes("Insider"));
                 const color = getThemeColor(evt.label, isInsider);
                 item.className = `event-item type-${isInsider ? 'insider' : evt.label.toLowerCase()} ${selectedEventId === evt.id ? 'active' : ''}`;
                 item.style.setProperty('--theme-color', color);
@@ -1111,6 +1111,10 @@
                 const res = await response.json();
                 if (res.status === 'unblocked') {
                     writeConsole(`[FIREWALL] Released block for IP: ${ip}`, 'info');
+                    if (countBanned > 0) {
+                        countBanned--;
+                        updateStats();
+                    }
                 }
             } catch (e) {
                 console.error("Failed to unblock IP:", e);

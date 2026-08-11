@@ -62,6 +62,19 @@ class AdaptiveXAINarrator:
         if "risk_score" in event.features_used:
             risk_score = float(event.features_used["risk_score"])
 
+        # Check if already blocked in firewall
+        if event.features_used.get("already_blocked"):
+            return ExplanationReport(
+                summary=f"Access Blocked: IP {src_ip} is banned in kernel firewall.",
+                detailed=f"The incoming connection from {src_ip} was dropped instantly. This IP address is banned in the nftables firewall due to previous high-risk activity. The security gateway blocks all traffic from this source until released by the security team.",
+                risk_score=100.0,
+                recommended_actions=[
+                    "Maintain active firewall ban.",
+                    "Review historical audit logs for IP: " + src_ip,
+                    "Verify if source machine is compromised by external attackers."
+                ]
+            )
+
         # 2. Build explanation summary and detailed text based on scenarios
         summary = ""
         detailed_points = []

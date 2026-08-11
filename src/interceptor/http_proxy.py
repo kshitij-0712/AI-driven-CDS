@@ -273,6 +273,70 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         blocked_until = store.get_blocked_until(src_ip)
         if blocked_until and blocked_until > time.time():
+            # Log blocked attempt event to the dashboard
+            session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
+            
+            event = {
+                "timestamp": time.time(),
+                "session_id": session_id,
+                "source_ip": src_ip,
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query or ""),
+                "label": "Destructive",
+                "action": "drop_and_block",
+                "target": "blocked",
+                "rule": "IP is banned in kernel firewall",
+                "mitre_tactics": ["defense_evasion"],
+                "severity_max": 10,
+                "response_status": 403,
+                "is_insider": _is_private_ip(src_ip),
+                "login_attempts": store.get_counter(session_id, "login_attempts"),
+            }
+            
+            # Generate XAI Explanation
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            xai_features = {
+                "already_blocked": True,
+                "risk_score": 100.0,
+                "role": request.headers.get("x-user-role", "attacker")
+            }
+            xai_event = ClassificationEvent(
+                session_id=session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                src_ip=src_ip,
+                commands=[body_str] if body_str else [],
+                classification="Destructive",
+                confidence=1.0,
+                mitre_techniques=["T1000"],
+                features_used=xai_features
+            )
+            xai_decision = RoutingDecision(
+                session_id=session_id,
+                action="drop_and_block",
+                target="blocked",
+                reason="IP is already blocked in firewall"
+            )
+            explanation = xai_detector.generate_explanation(xai_event, xai_decision)
+            
+            event["xai_summary"] = explanation.summary
+            event["xai_detailed"] = explanation.detailed
+            event["xai_risk_score"] = explanation.risk_score
+            event["xai_recommendations"] = explanation.recommended_actions
+            
+            try:
+                if active_event_queue is not None:
+                    await active_event_queue.put(event)
+            except Exception:
+                pass
+            
+            store.write_event(session_id, event)
+            try:
+                with open(threat_log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(event) + "\n")
+            except Exception:
+                pass
+            
             return JSONResponse(
                 status_code=403,
                 content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
@@ -499,6 +563,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             "severity_max": decision.get("severity_max", 0),
             "response_status": result.status_code if result else 500,
             "login_attempts": store.get_counter(session_id, "login_attempts"),
+            "is_insider": is_internal,
         }
 
         # Include neural model metadata when available
