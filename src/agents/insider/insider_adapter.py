@@ -127,21 +127,24 @@ class AdaptiveInsiderDetector:
 
         # 3. File accesses and Exfiltration details
         file_path = signal.action_details.get("file_path", "").lower()
-        if file_path:
+        command = signal.action_details.get("command", "")
+        cmd_lower = command.lower() if command else ""
+        combined_path = f"{file_path} {cmd_lower}"
+        if combined_path:
             # Sensitive directories
-            if any(k in file_path for k in ["/etc/shadow", "/etc/passwd", "/payroll", "/var/log"]):
+            if any(k in combined_path for k in ["/etc/shadow", "/etc/passwd", "/payroll", "/var/log"]):
                 state["access_sensitive_dirs"] = 1
                 
             # Intellectual property
-            if any(k in file_path for k in ["/src/", "/git/", "/repo/", "/design/", "/patent"]):
+            if any(k in combined_path for k in ["/src/", "/git/", "/repo/", "/design/", "/patent"]):
                 state["access_intellectual_property"] = 1
                 
             # HR database
-            if any(k in file_path for k in ["/hr/", "/employee/", "/pii/"]):
+            if any(k in combined_path for k in ["/hr/", "/employee/", "/pii/"]):
                 state["access_hr_db"] = 1
                 
             # Finance system
-            if any(k in file_path for k in ["/billing/", "/accounting/", "/ledger/"]):
+            if any(k in combined_path for k in ["/billing/", "/accounting/", "/ledger/"]):
                 state["access_finance_system"] = 1
 
         # USB writes / mounts
