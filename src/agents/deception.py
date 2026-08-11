@@ -1,4 +1,7 @@
 import time
+import os
+import shutil
+import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -21,6 +24,8 @@ class DecoyInstance:
     base_url: str
     decoy_type: str
     last_used_ts: float
+    session_id: str = ""
+    html_dir: str = ""
 
 
 class DecoyManager:
@@ -72,7 +77,22 @@ class DecoyManager:
                 container.reload()
                 port_bindings = container.attrs.get("NetworkSettings", {}).get("Ports", {})
                 decoy_type = container.labels.get("adaptiveshield.decoy_type", "http")
+                session_id = container.labels.get("adaptiveshield.session_id", "")
                 
+                # Get volume mappings
+                mounts = container.attrs.get("Mounts", [])
+                html_dir = ""
+                for m in mounts:
+                    if m.get("Destination") == "/usr/share/nginx/html":
+                        host_source = m.get("Source")
+                        # Translate host source path back to local path inside core container
+                        if "runtime/" in host_source:
+                            rel_part = host_source.split("runtime/", 1)[1]
+                            html_dir = os.path.abspath(os.path.join("./runtime", rel_part))
+                        else:
+                            html_dir = host_source
+                        break
+
                 if decoy_type == "http":
                     binding = port_bindings.get("80/tcp")
                     if binding:
@@ -83,6 +103,8 @@ class DecoyManager:
                                 base_url=f"http://127.0.0.1:{host_port}",
                                 decoy_type="http",
                                 last_used_ts=now,
+                                session_id=session_id,
+                                html_dir=html_dir,
                             )
                             self._active_http[container.id] = instance
                 elif decoy_type == "ssh":
@@ -95,6 +117,7 @@ class DecoyManager:
                                 base_url=host_port,
                                 decoy_type="ssh",
                                 last_used_ts=now,
+                                session_id=session_id,
                             )
                             self._active_ssh[container.id] = instance
         except Exception:
@@ -126,10 +149,57 @@ class DecoyManager:
             return None
 
         try:
+            actual_session_id = session_id
+            if session_id == "prewarm":
+                actual_session_id = f"prewarm_{uuid.uuid4().hex[:8]}"
+
+            # Local paths inside core container for writing files
+            local_base_dir = os.path.abspath(f"./runtime/decoy_http/{actual_session_id}")
+            html_dir = os.path.join(local_base_dir, "html")
+            conf_dir = os.path.join(local_base_dir, "conf")
+            os.makedirs(html_dir, exist_ok=True)
+            os.makedirs(conf_dir, exist_ok=True)
+
+            # Write initial default.conf
+            default_conf = """server {
+    listen 80;
+    server_name localhost;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        try_files $uri $uri.html $uri/ /index.html =404;
+        error_page 405 =200 $uri;
+    }
+}
+"""
+            with open(os.path.join(conf_dir, "default.conf"), "w") as f:
+                f.write(default_conf)
+
+            # Determine host paths for Docker mounting (Docker-in-Docker path translation)
+            host_runtime_dir = "/home/me/data/AdaptiveShield/runtime"
+            try:
+                # Find our own container and get host source of /app/runtime
+                containers = self._docker.containers.list(filters={"name": "adaptiveshield-core"})
+                if containers:
+                    for m in containers[0].attrs.get("Mounts", []):
+                        if m.get("Destination") == "/app/runtime":
+                            host_runtime_dir = m.get("Source")
+                            break
+            except Exception:
+                pass
+
+            host_html_dir = os.path.join(host_runtime_dir, "decoy_http", actual_session_id, "html")
+            host_conf_dir = os.path.join(host_runtime_dir, "decoy_http", actual_session_id, "conf")
+
             container = self._docker.containers.run(
                 self.http_image,
                 detach=True,
                 ports={"80/tcp": None},
+                volumes={
+                    host_html_dir: {"bind": "/usr/share/nginx/html", "mode": "rw"},
+                    host_conf_dir: {"bind": "/etc/nginx/conf.d", "mode": "ro"},
+                },
                 labels={
                     "adaptiveshield.decoy": "true",
                     "adaptiveshield.decoy_type": "http",
@@ -153,6 +223,8 @@ class DecoyManager:
                 base_url=f"http://127.0.0.1:{host_port}",
                 decoy_type="http",
                 last_used_ts=now,
+                session_id=session_id,
+                html_dir=html_dir,
             )
             self._active_http[container.id] = instance
             return instance
@@ -163,11 +235,21 @@ class DecoyManager:
         """Return an HTTP decoy endpoint suitable for redirect/proxy."""
         self.cleanup_idle_decoys()
 
-        existing = self._pick_existing_http_decoy()
-        if existing:
-            existing.last_used_ts = time.time()
-            return existing
+        # 1. Look for a container already running for this session
+        for instance in self._active_http.values():
+            if instance.session_id == session_id:
+                instance.last_used_ts = time.time()
+                return instance
 
+        # 2. Check for a "prewarm" container that has no assigned session
+        for instance in self._active_http.values():
+            if instance.session_id == "prewarm":
+                # Assign it to this session
+                instance.session_id = session_id
+                instance.last_used_ts = time.time()
+                return instance
+
+        # 3. Spawn a new container for this session
         spawned = self._spawn_http_decoy(session_id)
         if spawned:
             return spawned
@@ -179,6 +261,7 @@ class DecoyManager:
                 base_url=self.fallback_url,
                 decoy_type="http",
                 last_used_ts=now,
+                session_id=session_id,
             )
 
         return None
@@ -218,9 +301,10 @@ class DecoyManager:
             now = time.time()
             instance = DecoyInstance(
                 container_id=container.id,
-                base_url=host_port, # Using base_url to store host_port for SSH
+                base_url=host_port,
                 decoy_type="ssh",
                 last_used_ts=now,
+                session_id=session_id,
             )
             self._active_ssh[container.id] = instance
             return instance
@@ -242,7 +326,6 @@ class DecoyManager:
 
         return None
 
-
     def cleanup_idle_decoys(self):
         if not self.docker_available:
             return
@@ -254,6 +337,7 @@ class DecoyManager:
                 to_remove.append((container_id, instance.decoy_type))
 
         for container_id, decoy_type in to_remove:
+            instance = self._active_http.get(container_id) or self._active_ssh.get(container_id)
             try:
                 container = self._docker.containers.get(container_id)
                 container.remove(force=True)
@@ -264,11 +348,21 @@ class DecoyManager:
             else:
                 self._active_ssh.pop(container_id, None)
 
+            # Cleanup directories on host
+            if instance and instance.html_dir:
+                base_dir = os.path.dirname(instance.html_dir)
+                if os.path.exists(base_dir):
+                    try:
+                        shutil.rmtree(base_dir)
+                    except Exception:
+                        pass
+
     def shutdown_all_decoys(self):
         """Stop and remove all active decoy containers."""
         if not self.docker_available:
             return
         for container_id in list(self._active_http.keys()) + list(self._active_ssh.keys()):
+            instance = self._active_http.get(container_id) or self._active_ssh.get(container_id)
             try:
                 container = self._docker.containers.get(container_id)
                 container.remove(force=True)
@@ -276,3 +370,12 @@ class DecoyManager:
                 pass
             self._active_http.pop(container_id, None)
             self._active_ssh.pop(container_id, None)
+
+            # Cleanup directories on host
+            if instance and instance.html_dir:
+                base_dir = os.path.dirname(instance.html_dir)
+                if os.path.exists(base_dir):
+                    try:
+                        shutil.rmtree(base_dir)
+                    except Exception:
+                        pass

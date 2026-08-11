@@ -124,9 +124,11 @@ secrets/
 credentials/
 *.pem
 *.key
+config/ssh_host_rsa_key
 
 # Temporary files
 data
+verify/
 tmp/
 temp/
 *.tmp

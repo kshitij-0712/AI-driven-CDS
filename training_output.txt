@@ -1,0 +1,6 @@
+/mnt/c/Users/likit/OneDrive/Desktop/AI- CDS/AI-driven-CDS/src/training/neural/train_neural.py:2: SyntaxWarning: invalid escape sequence '\S'
+  """
+Traceback (most recent call last):
+  File "/mnt/c/Users/likit/OneDrive/Desktop/AI- CDS/AI-driven-CDS/src/training/neural/train_neural.py", line 23, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'

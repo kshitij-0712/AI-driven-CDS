@@ -13,13 +13,14 @@ services:
       - NET_RAW
     environment:
       - PYTHONPATH=/app/src
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./runtime:/app/runtime
       - ./config:/app/config
       - ./models:/app/models:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/health"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3

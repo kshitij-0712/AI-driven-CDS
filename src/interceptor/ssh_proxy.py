@@ -325,7 +325,7 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                                 self.real_conn = await asyncssh.connect(
                                     self.real_host, port=self.real_port,
                                     known_hosts=None, username=username,
-                                    client_keys=[self.config.get("server_key_path", "./config/ssh_host_rsa_key")]
+                                    client_keys=[self.config.get("server_key_path", "./config/ssh_host_rsa_key.key")]
                                 )
                                 self.route_to_decoy = False
                                 self.auth_username = username
@@ -394,7 +394,7 @@ async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManage
         return
         
     port = int(ssh_cfg.get("listen_port", 22))
-    server_key = ssh_cfg.get("server_key_path", "./config/ssh_host_rsa_key")
+    server_key = ssh_cfg.get("server_key_path", "./config/ssh_host_rsa_key.key")
     
     def server_factory():
         return AdaptiveSSHServer(store, nft, classifier, decoy_mgr, ssh_cfg)

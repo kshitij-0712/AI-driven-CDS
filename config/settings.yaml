@@ -102,7 +102,7 @@ deployment:
 http_guard:
   enabled: true
   listen_port: 8000
-  listen_port_ssl: 443
+  listen_port_ssl: 8443
   real_service_host: "127.0.0.1"
   real_service_port: 8090
   request_timeout_sec: 10
@@ -130,7 +130,7 @@ ssh_guard:
   real_service_host: "127.0.0.1"
   real_service_port: 2200
   brute_force_threshold: 5  # Change it to 20 for real world scenarios
-  server_key_path: "./config/ssh_host_rsa_key"
+  server_key_path: "./config/ssh_host_rsa_key.key"
   allowed_keys_path: "./config/authorized_keys"
 
 decoys:
@@ -147,3 +147,20 @@ decoys:
 runtime:
   db_path: "./runtime/adaptiveshield.db"
   threat_log_path: "./runtime/logs/threat_events.jsonl"
+
+galah_honeypot:
+  enabled: true
+  crawler:
+    target_url: "http://127.0.0.1:8090"
+    output_path: "./runtime/app_structure.json"
+    auto_crawl: true
+  llm:
+    default_provider: "gemini"
+    router_policy: "dynamic"
+    gemini_model: "gemini-2.5-flash"
+    ollama_model: "llama3.2:1b"
+    ollama_url: "http://127.0.0.1:11434"
+  cache:
+    enabled: true
+    ttl_seconds: 3600
+

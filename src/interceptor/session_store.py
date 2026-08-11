@@ -43,22 +43,23 @@ class SessionStore:
         self.conn.executescript(SCHEMA_SQL)
         self.conn.commit()
 
-    def get_or_create_session(self, src_ip: str) -> str:
+    def get_or_create_session(self, src_ip: str, idle_timeout_sec: int = 900) -> str:
         now = time.time()
         cur = self.conn.cursor()
         cur.execute(
-            "SELECT id FROM sessions WHERE src_ip = ? AND blocked = 0 ORDER BY last_seen_ts DESC LIMIT 1",
+            "SELECT id, last_seen_ts FROM sessions WHERE src_ip = ? AND blocked = 0 ORDER BY last_seen_ts DESC LIMIT 1",
             (src_ip,),
         )
         row = cur.fetchone()
         if row:
-            session_id = row[0]
-            cur.execute(
-                "UPDATE sessions SET last_seen_ts = ?, request_count = request_count + 1 WHERE id = ?",
-                (now, session_id),
-            )
-            self.conn.commit()
-            return session_id
+            session_id, last_seen = row
+            if now - last_seen <= idle_timeout_sec:
+                cur.execute(
+                    "UPDATE sessions SET last_seen_ts = ?, request_count = request_count + 1 WHERE id = ?",
+                    (now, session_id),
+                )
+                self.conn.commit()
+                return session_id
 
         session_id = str(uuid.uuid4())
         cur.execute(
@@ -164,4 +165,30 @@ class SessionStore:
             )
             self.conn.commit()
         return "; ".join(history)
+
+    def update_context(self, session_id: str, updates: dict):
+        """Merges dict updates into context_json for a session."""
+        ctx = self._get_context(session_id)
+        ctx.update(updates)
+        self.conn.execute(
+            "UPDATE sessions SET context_json = ? WHERE id = ?",
+            (json.dumps(ctx), session_id),
+        )
+        self.conn.commit()
+
+    def get_session_memory(self, session_id: str) -> dict:
+        """Fetch LLM-based honeypot session state/memory."""
+        ctx = self._get_context(session_id)
+        return ctx.get("galah_memory", {})
+
+    def save_session_memory(self, session_id: str, memory: dict):
+        """Update LLM-based honeypot session state/memory."""
+        ctx = self._get_context(session_id)
+        ctx["galah_memory"] = memory
+        self.conn.execute(
+            "UPDATE sessions SET context_json = ? WHERE id = ?",
+            (json.dumps(ctx), session_id),
+        )
+        self.conn.commit()
+
 

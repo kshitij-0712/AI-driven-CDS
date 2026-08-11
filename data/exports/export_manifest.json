@@ -1,0 +1,244 @@
+{
+  "description": "AdaptiveShield portable dataset export",
+  "generated": "2026-03-15T12:08:30.243384+00:00",
+  "source": "VM binary analysis environment (VirtualBox)",
+  "target": "Host machine for neural model training (RTX 3050, 16GB RAM)",
+  "files": {
+    "sessions.csv": {
+      "rows": 78504,
+      "description": "All sessions with commands, timestamps, IPs",
+      "key_column": "session_id"
+    },
+    "downloads.csv": {
+      "rows": 50520,
+      "description": "All Cowrie download/upload events linking sessions to SHA256s",
+      "key_columns": [
+        "session_id",
+        "sha256"
+      ]
+    },
+    "binary_features.csv": {
+      "rows": 185,
+      "columns": 104,
+      "description": "All binary SHA256s with triage+Ghidra+angr+script features",
+      "key_column": "sha256",
+      "feature_groups": {
+        "triage": "Phase 1 lightweight static analysis",
+        "ghidra": "Phase 2 deep static analysis (Ghidra headless)",
+        "angr": "Phase 3 symbolic execution",
+        "script": "Shell script behavioral analysis",
+        "deep/has": "Derived cross-source features"
+      }
+    },
+    "session_labels.csv": {
+      "rows": 78504,
+      "description": "Per-session labels derived from binary analysis",
+      "label_distribution": {
+        "Safe": 78304,
+        "Downloader": 24,
+        "Destructive": 127,
+        "ADVANCED_APT": 49
+      },
+      "label_scheme": {
+        "0": "Safe - no malware indicators",
+        "1": "Recon - reconnaissance/scanning",
+        "2": "Downloader - malware download/dropper/miner",
+        "3": "Exploit - credential theft/RAT/packed",
+        "4": "Destructive - ransomware/data destruction",
+        "5": "ADVANCED_APT - multi-capability Go binary APT"
+      }
+    },
+    "sessions_mitre.csv": {
+      "rows": 78504,
+      "columns": 24,
+      "description": "MITRE ATT&CK annotations per session (21 numeric features + metadata)",
+      "feature_columns": [
+        "mitre_tactic_reconnaissance",
+        "mitre_tactic_resource_development",
+        "mitre_tactic_initial_access",
+        "mitre_tactic_execution",
+        "mitre_tactic_persistence",
+        "mitre_tactic_privilege_escalation",
+        "mitre_tactic_defense_evasion",
+        "mitre_tactic_credential_access",
+        "mitre_tactic_discovery",
+        "mitre_tactic_lateral_movement",
+        "mitre_tactic_collection",
+        "mitre_tactic_command_and_control",
+        "mitre_tactic_exfiltration",
+        "mitre_tactic_impact",
+        "mitre_severity_max",
+        "mitre_severity_mean",
+        "mitre_severity_weighted",
+        "mitre_kill_chain_score",
+        "mitre_unique_technique_count",
+        "mitre_total_commands",
+        "mitre_matched_commands"
+      ],
+      "severity_distribution": {
+        "none": 4499,
+        "medium": 1309,
+        "low": 33379,
+        "critical": 37717,
+        "high": 1473,
+        "emergency": 127
+      },
+      "kill_chain_distribution": {
+        "0": 4499,
+        "1": 34690,
+        "2": 36706,
+        "4": 2390,
+        "7": 70,
+        "3": 93,
+        "8": 49,
+        "5": 7
+      }
+    },
+    "sessions_complete.csv": {
+      "rows": 78504,
+      "columns": 111,
+      "description": "COMPLETE training-ready dataset: commands + MITRE features + binary features + labels",
+      "column_groups": {
+        "session_meta": [
+          "session_id",
+          "src_ip",
+          "num_commands",
+          "duration_sec"
+        ],
+        "raw_text": [
+          "commands"
+        ],
+        "mitre_features": [
+          "mitre_tactic_reconnaissance",
+          "mitre_tactic_resource_development",
+          "mitre_tactic_initial_access",
+          "mitre_tactic_execution",
+          "mitre_tactic_persistence",
+          "mitre_tactic_privilege_escalation",
+          "mitre_tactic_defense_evasion",
+          "mitre_tactic_credential_access",
+          "mitre_tactic_discovery",
+          "mitre_tactic_lateral_movement",
+          "mitre_tactic_collection",
+          "mitre_tactic_command_and_control",
+          "mitre_tactic_exfiltration",
+          "mitre_tactic_impact",
+          "mitre_severity_max",
+          "mitre_severity_mean",
+          "mitre_severity_weighted",
+          "mitre_kill_chain_score",
+          "mitre_unique_technique_count",
+          "mitre_total_commands",
+          "mitre_matched_commands"
+        ],
+        "binary_deep_features": [
+          "triage_file_size",
+          "triage_entropy",
+          "triage_priority",
+          "triage_is_go",
+          "triage_is_packed",
+          "triage_is_stripped",
+          "triage_is_dll",
+          "triage_is_static",
+          "triage_score_mining",
+          "triage_score_botnet",
+          "triage_score_recon",
+          "triage_score_destructive",
+          "ghidra_function_count",
+          "ghidra_total_instructions",
+          "ghidra_total_basic_blocks",
+          "ghidra_max_function_size",
+          "ghidra_avg_callers",
+          "ghidra_max_callers",
+          "ghidra_mining_pool_count",
+          "ghidra_crypto_wallet_count",
+          "ghidra_ip_count",
+          "ghidra_url_count",
+          "ghidra_shell_cmd_count",
+          "ghidra_file_path_count",
+          "ghidra_imports_file_io",
+          "ghidra_imports_process",
+          "ghidra_imports_network",
+          "ghidra_imports_crypto",
+          "ghidra_imports_evasion",
+          "ghidra_has_aes_sbox",
+          "ghidra_has_sha256_constants",
+          "ghidra_has_rc4_state",
+          "ghidra_has_xor_loop",
+          "ghidra_go_user_functions",
+          "ghidra_go_runtime_functions",
+          "angr_basic_blocks",
+          "angr_edges",
+          "angr_functions_recovered",
+          "angr_cyclomatic_complexity",
+          "angr_function_count",
+          "angr_user_functions_listed",
+          "angr_syscalls_network",
+          "angr_syscalls_file_io",
+          "angr_syscalls_process",
+          "angr_syscalls_memory",
+          "angr_ip_count",
+          "angr_url_count",
+          "angr_mining_indicator_count",
+          "angr_shell_cmd_count",
+          "angr_has_network",
+          "angr_has_file_manipulation",
+          "angr_has_process_control",
+          "angr_has_crypto",
+          "angr_has_mining",
+          "angr_has_persistence",
+          "angr_has_evasion",
+          "angr_has_shell_execution",
+          "angr_complexity_tier",
+          "angr_is_partial",
+          "angr_loaded_as_blob",
+          "script_line_count",
+          "script_url_count",
+          "script_download_count",
+          "script_arch_count",
+          "script_is_downloader",
+          "script_is_multi_arch",
+          "script_is_miner",
+          "script_has_persistence",
+          "script_has_anti_forensics",
+          "has_ghidra_results",
+          "has_angr_results",
+          "has_script_results",
+          "deep_func_ratio_angr_ghidra",
+          "deep_mining_signal_count",
+          "deep_total_network_indicators",
+          "deep_total_crypto_indicators",
+          "deep_max_complexity",
+          "deep_total_evasion_indicators",
+          "deep_is_go_consensus"
+        ],
+        "labels": [
+          "label_id",
+          "label_name"
+        ]
+      }
+    },
+    "mitre_knowledge_base.json": {
+      "patterns": 76,
+      "description": "Portable MITRE ATT&CK pattern-to-technique mapping"
+    }
+  },
+  "data_provenance": {
+    "honeypot_duration_days": 63,
+    "cowrie_log_files": 64,
+    "total_sessions": 78504,
+    "sessions_with_commands": 78504,
+    "total_download_events": 50520,
+    "unique_binaries": 185,
+    "binaries_with_ghidra": 41,
+    "binaries_with_angr": 41
+  },
+  "recommended_next_steps": [
+    "Load sessions_complete.csv on host machine",
+    "Build character/token embedding -> BiLSTM for command text",
+    "Concatenate MITRE tactic vector (14d) + binary features (79d) as structured input",
+    "Use cost-sensitive loss: higher penalty for missing APT/Destructive classes",
+    "Train with PyTorch on RTX 3050 (CUDA available)",
+    "Consider class 0 (Safe) downsampling or focal loss to handle 95% class imbalance"
+  ]
+}

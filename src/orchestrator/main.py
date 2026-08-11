@@ -1,5 +1,14 @@
 import argparse
+import os
 from pathlib import Path
+
+# Load .env manually if it exists
+if os.path.exists(".env"):
+    with open(".env", "r") as f:
+        for line in f:
+            if line.strip() and not line.startswith("#") and "=" in line:
+                key, val = line.strip().split("=", 1)
+                os.environ[key] = val
 
 import uvicorn
 import yaml
