@@ -166,12 +166,12 @@ class AdaptiveInsiderDetector:
             state["printing_sensitive_files"] = 1
 
         # Check scope anomalies
-        role = state["role"]
-        if role == "finance" and (state["access_intellectual_property"] or state["access_hr_db"]):
+        role = state["role"].lower()
+        if "finance" in role and (state["access_intellectual_property"] or state["access_hr_db"]):
             state["access_unauthorized_scope"] = 1
-        elif role == "developer" and (state["access_hr_db"] or state["access_finance_system"]):
+        elif "developer" in role and (state["access_hr_db"] or state["access_finance_system"]):
             state["access_unauthorized_scope"] = 1
-        elif role == "hr" and (state["access_intellectual_property"] or state["access_finance_system"]):
+        elif "hr" in role and (state["access_intellectual_property"] or state["access_finance_system"]):
             state["access_unauthorized_scope"] = 1
         elif role == "normal" and (state["access_sensitive_dirs"] or state["access_hr_db"] or state["access_finance_system"] or state["access_intellectual_property"]):
             state["access_unauthorized_scope"] = 1

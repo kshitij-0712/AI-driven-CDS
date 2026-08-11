@@ -92,6 +92,13 @@ def extract_features(session: Dict[str, Any]) -> Dict[str, float]:
             risk_score += weight
     features["calculated_risk_score"] = min(risk_score, 100.0)
 
+    # Progressive risk accumulator: if accessing unauthorized scope, override risk based on command history size
+    if features.get("access_unauthorized_scope", 0) > 0:
+        if features.get("command_count", 1) <= 1:
+            features["calculated_risk_score"] = 70.0
+        else:
+            features["calculated_risk_score"] = 95.0
+
     # Behavior deviation
     features["behavior_deviation_score"] = float(session.get("behavior_deviation_score", features["calculated_risk_score"] / 100.0))
 
