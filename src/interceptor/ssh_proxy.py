@@ -157,6 +157,21 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         
         decision = classify_ssh_command(self.classifier, full_command, context)
         
+        # Determine base risk score from external neural network classification
+        confidence = decision.get("neural_confidence", 1.0)
+        ext_label = decision["label"].lower()
+        if decision.get("action") == "drop_and_block":
+            base_risk_score = 100.0
+        elif ext_label == "safe":
+            base_risk_score = confidence * 10.0
+        elif ext_label == "recon":
+            base_risk_score = 30.0 + (confidence * 20.0)
+        elif ext_label in ("downloader", "exploit"):
+            base_risk_score = 50.0 + (confidence * 25.0)
+        else: # Destructive, APT
+            base_risk_score = 75.0 + (confidence * 25.0)
+
+        # Check for Insider Threat if source IP is internal/private
         import ipaddress
         is_insider = False
         try:
@@ -165,6 +180,50 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         except ValueError:
             pass
 
+        risk_score = base_risk_score
+        insider_threat = None
+
+        if is_insider:
+            from interfaces.insider_contract import UserBehaviorSignal
+            from agents.insider.insider_adapter import AdaptiveInsiderDetector
+            from datetime import datetime
+            
+            action_details = {
+                "command": cmd,
+                "file_path": f"ssh://{self.src_ip}",
+                "role": "sys_admin",
+            }
+            signal = UserBehaviorSignal(
+                user_id=self.auth_username or "ssh_user",
+                session_id=self.session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                action_type="EXEC",
+                action_details=action_details,
+                source_ip=self.src_ip,
+                is_internal=True
+            )
+            insider_detector = AdaptiveInsiderDetector()
+            insider_threat = insider_detector.analyze_signal(signal)
+            risk_score = max(insider_threat.risk_score, base_risk_score)
+
+        # Policy Engine Decides
+        if risk_score <= 30.0:
+            policy_decision = "NORMAL"
+            action = "forward"
+        elif risk_score <= 60.0:
+            policy_decision = "MONITOR"
+            action = "forward"
+            decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
+        elif risk_score <= 80.0:
+            policy_decision = "ALERT"
+            action = "redirect_to_decoy"
+            decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
+        else:
+            policy_decision = "CONTAIN"
+            action = "drop_and_block"
+            decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
+            decision["label"] = "Destructive"
+
         event = {
             "timestamp": time.time(),
             "session_id": self.session_id,
@@ -172,13 +231,18 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             "protocol": "ssh",
             "command": cmd,
             "label": decision["label"],
-            "action": decision["action"],
+            "action": action,
             "rule": decision.get("rule"),
             "mitre_tactics": decision.get("mitre_tactics", []),
             "severity_max": decision.get("severity_max", 0),
             "is_insider": is_insider,
+            "risk_score": risk_score,
+            "policy_decision": policy_decision,
         }
         
+        if is_insider and insider_threat:
+            event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
+
         if "neural_confidence" in decision:
             event["neural_confidence"] = decision["neural_confidence"]
 
@@ -190,6 +254,19 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             
             xai_detector = AdaptiveXAINarrator()
             
+            xai_features = {
+                "risk_score": risk_score,
+                "policy_decision": policy_decision,
+                "protocol": "ssh"
+            }
+            if is_insider and insider_threat:
+                xai_features.update({
+                    "insider_threat": True if action == "drop_and_block" else False,
+                    "role": "sys_admin",
+                    "anomaly_factors": insider_threat.anomaly_factors,
+                    "evidence_features": insider_threat.features
+                })
+
             xai_event = ClassificationEvent(
                 session_id=self.session_id,
                 timestamp=datetime.now().isoformat() + "Z",
@@ -198,12 +275,12 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 classification=decision["label"],
                 confidence=decision.get("neural_confidence", 1.0),
                 mitre_techniques=decision.get("mitre_tactics", []),
-                features_used={"protocol": "ssh"}
+                features_used=xai_features
             )
             xai_decision = RoutingDecision(
                 session_id=self.session_id,
-                action=decision["action"],
-                target="decoy" if decision["action"] == "redirect_to_decoy" else ("blocked" if decision["action"] == "drop_and_block" else "real_ssh"),
+                action=action,
+                target="decoy" if action == "redirect_to_decoy" else ("blocked" if action == "drop_and_block" else "real_ssh"),
                 reason=decision.get("rule", "SSH command classification")
             )
             

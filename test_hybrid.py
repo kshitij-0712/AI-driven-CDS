@@ -25,11 +25,11 @@ print("Testing Hybrid Classifier on Demo Cases:")
 print("=" * 70)
 for expected, commands in demo_tests:
     mitre_analysis = annotate_session(commands)
-    pred_class, pred_name = classifier.classify(commands, mitre_analysis)
+    pred_class, pred_name, _ = classifier.classify(commands, mitre_analysis)
     is_correct = (pred_name == expected)
     correct += is_correct
-    status = "✓" if is_correct else "✗"
-    print(f"{status} {expected:15} -> {pred_name:15} | Commands: {commands[:50]}...")
+    status = "[OK]" if is_correct else "[FAIL]"
+    print(f"{status:6} {expected:15} -> {pred_name:15} | Commands: {commands[:50]}...")
 
 print("=" * 70)
 print(f"Accuracy: {correct}/{total} ({100*correct/total:.1f}%)")

@@ -370,8 +370,25 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "http_findings": ["brute_force"],
                 }
 
+        # Determine base risk score from external neural network classification
+        confidence = decision.get("neural_confidence", 1.0)
+        ext_label = decision["label"].lower()
+        if decision.get("action") == "drop_and_block":
+            base_risk_score = 100.0
+        elif ext_label == "safe":
+            base_risk_score = confidence * 10.0
+        elif ext_label == "recon":
+            base_risk_score = 30.0 + (confidence * 20.0)
+        elif ext_label in ("downloader", "exploit"):
+            base_risk_score = 50.0 + (confidence * 25.0)
+        else: # Destructive, APT
+            base_risk_score = 75.0 + (confidence * 25.0)
+
         # Check for Insider Threat if source IP is internal/private
         is_internal = _is_private_ip(src_ip)
+        risk_score = base_risk_score
+        insider_threat = None
+        
         if is_internal and not ctx.get("redirected_to_decoy"):
             from interfaces.insider_contract import UserBehaviorSignal
             
@@ -402,15 +419,28 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 is_internal=True
             )
             insider_threat = insider_detector.analyze_signal(signal)
-            
-            # Map insider recommendation to proxy action
-            if insider_threat.recommendation in ("TERMINATE_SESSION_AND_BLOCK_IP", "CHALLENGE_WITH_MFA_OR_THROTTLE"):
-                decision["action"] = "drop_and_block"
-                decision["rule"] = f"Insider threat detected: {', '.join(insider_threat.anomaly_factors)}"
-                decision["label"] = "Destructive"
-                decision["severity_max"] = 9
+            # Combine external and internal threat risk scores
+            risk_score = max(insider_threat.risk_score, base_risk_score)
 
-        action = decision["action"]
+        # Policy Engine Decides
+        if risk_score <= 30.0:
+            policy_decision = "NORMAL"
+            action = "forward"
+        elif risk_score <= 60.0:
+            policy_decision = "MONITOR"
+            action = "forward"
+            decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
+        elif risk_score <= 80.0:
+            policy_decision = "ALERT"
+            action = "redirect_to_decoy"
+            decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
+        else:
+            policy_decision = "CONTAIN"
+            action = "drop_and_block"
+            decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
+            decision["label"] = "Destructive"
+
+        decision["action"] = action
         target = f"http://{real_host}:{real_port}"
         result = None
 
@@ -578,17 +608,24 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         # Generate XAI Explanation
         from interfaces.xai_contract import ClassificationEvent, RoutingDecision
-        insider_threat_obj = locals().get("insider_threat")
-        is_insider_active = is_internal and insider_threat_obj is not None
+        is_insider_active = is_internal and insider_threat is not None
         
-        xai_features = {}
+        event["risk_score"] = risk_score
+        event["policy_decision"] = policy_decision
         if is_insider_active:
-            xai_features = {
-                "insider_threat": True if insider_threat_obj.recommendation == "TERMINATE_SESSION_AND_BLOCK_IP" else False,
+            event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
+
+        xai_features = {
+            "risk_score": risk_score,
+            "policy_decision": policy_decision
+        }
+        if is_insider_active:
+            xai_features.update({
+                "insider_threat": True if action == "drop_and_block" else False,
                 "role": request.headers.get("x-user-role", "normal"),
-                "anomaly_factors": insider_threat_obj.anomaly_factors,
-                "risk_score": insider_threat_obj.risk_score
-            }
+                "anomaly_factors": insider_threat.anomaly_factors,
+                "evidence_features": insider_threat.features
+            })
 
         xai_event = ClassificationEvent(
             session_id=session_id,

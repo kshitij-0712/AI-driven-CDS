@@ -114,6 +114,9 @@ class SessionStore:
     @thread_safe
     def write_event(self, session_id: str, event: Dict):
         now = time.time()
+        if "incident_id" not in event:
+            import random
+            event["incident_id"] = f"INC-{random.randint(1000, 9999)}"
         self.conn.execute(
             """
             INSERT INTO request_events(session_id, ts, method, path, label, action, rule, details_json)

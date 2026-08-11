@@ -86,9 +86,21 @@ class AdaptiveXAINarrator:
         if is_insider_threat:
             role = event.features_used.get("role", "employee")
             anomaly_factors = event.features_used.get("anomaly_factors", ["Scope access violation"])
+            policy = event.features_used.get("policy_decision", "CONTAIN")
             
-            summary = f"Insider Threat Alert: Session terminated and IP {src_ip} blocked."
-            detailed_points.append(f"Internal employee logged in as role '{role}' exhibited high-risk anomalous behavior.")
+            summary = f"Insider Threat Alert [{policy}]: Session blocked and IP {src_ip} restricted."
+            detailed_points.append(f"Identity Verification: User role '{role}' detected on internal network.")
+            detailed_points.append(f"Security Policy Engine Action: {policy} (Risk Score: {risk_score}%)")
+            
+            evidence_features = event.features_used.get("evidence_features")
+            if evidence_features:
+                detailed_points.append("Deterministic Anomaly Evidence:")
+                for feat, val in evidence_features.items():
+                    if val > 0:
+                        # Clean feature name for presentation readability
+                        clean_feat = feat.replace('_', ' ').title()
+                        detailed_points.append(f" • {clean_feat}: {val}")
+            
             detailed_points.append(f"Anomalous factors detected: {', '.join(anomaly_factors)}")
             
             if mitre_matches:

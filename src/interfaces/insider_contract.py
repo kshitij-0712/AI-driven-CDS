@@ -19,3 +19,4 @@ class InsiderThreatScore:
     risk_score: float
     anomaly_factors: List[str]
     recommendation: str
+    features: Dict[str, Any] = None

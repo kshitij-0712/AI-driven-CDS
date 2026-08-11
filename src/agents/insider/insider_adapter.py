@@ -207,5 +207,6 @@ class AdaptiveInsiderDetector:
             user_id=signal.user_id,
             risk_score=risk_score,
             anomaly_factors=explanation,
-            recommendation=recommendation
+            recommendation=recommendation,
+            features=result.get("features", {})
         )
