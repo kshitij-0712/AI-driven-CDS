@@ -666,6 +666,9 @@
                 <h1>AdaptiveShield <span class="badge">V5 ACTIVE-SHIELD</span></h1>
             </div>
             <div style="display: flex; gap: 20px; align-items: center;">
+                <button onclick="resetAllSessions()" style="background: rgba(239, 68, 68, 0.2); border: 1px solid var(--color-destructive); color: var(--color-destructive); padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.8rem; font-family: 'Outfit', sans-serif; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.background='rgba(239, 68, 68, 0.4)'" onmouseout="this.style.background='rgba(239, 68, 68, 0.2)'">
+                    🧹 Clear All Logs & Blocks
+                </button>
                 <div class="system-status">
                     <div class="status-dot"></div>
                     <span>Real-Time Monitor Online</span>
@@ -1234,6 +1237,24 @@
                 console.log("SSE disconnected, retrying in 5 seconds...");
                 setTimeout(connectSSE, 5000);
             };
+        }
+
+        async function resetAllSessions() {
+            if (!confirm("Are you sure you want to clear all session history and unblock all simulated IPs?")) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/reset_all', { method: 'POST' });
+                if (res.ok) {
+                    alert("Lab cleared successfully! All blocks and history have been removed.");
+                    location.reload();
+                } else {
+                    alert("Failed to reset lab.");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Error connecting to reset API.");
+            }
         }
 
         let activeUserId = "dev_alice";

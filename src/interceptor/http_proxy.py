@@ -258,6 +258,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             insider_detector.reset_session_state(session_id)
         return {"status": "success", "session_id": session_id}
 
+    @app.post("/api/reset_all")
+    async def reset_all_sessions(request: Request):
+        store.conn.execute("DELETE FROM request_events")
+        store.conn.execute("DELETE FROM sessions")
+        store.conn.commit()
+        insider_detector.session_states.clear()
+        return {"status": "success", "message": "All sessions and blocks cleared successfully."}
+
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
     async def get_dashboard():
