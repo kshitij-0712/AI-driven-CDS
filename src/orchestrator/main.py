@@ -1,5 +1,11 @@
-import argparse
+import sys
 import os
+# Add 'src' directory to Python path automatically to prevent import failures
+src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+import argparse
 from pathlib import Path
 
 # Load .env manually if it exists
