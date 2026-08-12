@@ -64,7 +64,8 @@ class AdaptiveXAINarrator:
 
         # Check if already blocked in firewall
         if event.features_used.get("already_blocked"):
-            return ExplanationReport(
+            return XAIExplanation(
+                session_id=event.session_id,
                 summary=f"Access Blocked: IP {src_ip} is banned in kernel firewall.",
                 detailed=f"The incoming connection from {src_ip} was dropped instantly. This IP address is banned in the nftables firewall due to previous high-risk activity. The security gateway blocks all traffic from this source until released by the security team.",
                 risk_score=100.0,
