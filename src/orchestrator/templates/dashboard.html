@@ -680,8 +680,7 @@
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
             <button class="nav-tab active" id="tab-btn-soc" onclick="switchTab('soc')">Security Operations Center (SOC)</button>
-            <button class="nav-tab" id="tab-btn-simulator" onclick="switchTab('simulator')">Interactive Threat Control Center</button>
-            <button class="nav-tab" id="tab-btn-guide" onclick="switchTab('guide')">Project Presentation Guide</button>
+            <button class="nav-tab" id="tab-btn-simulator" onclick="switchTab('simulator')">Insider Risk Investigation Lab</button>
         </div>
 
         <div id="tab-content-soc" class="tab-content">
@@ -769,104 +768,126 @@
         <div id="tab-content-simulator" class="tab-content" style="display: none;">
             <div class="simulator-grid">
                 
-                <!-- Left: Organization & Employee Bots -->
+                <!-- Left: Insider Risk Investigation Lab - Identity Context -->
                 <div class="simulator-card">
-                    <h3 class="sim-title">Corporate Organization & Bot Manager</h3>
-                    <p style="font-size: 0.85rem; color: var(--text-muted);">
-                        Configure and select employee bot contexts to test insider threat detection.
+                    <h3 class="sim-title">Insider Identity & Context Workspace</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                        Select an active employee identity profile to configure the target entity workspace.
                     </p>
                     
                     <div class="employee-list" id="employee-list-container">
-                        <div class="employee-item selected" onclick="selectEmployee(this, 'dev_01', 'developer')">
+                        <div class="employee-item selected" onclick="selectEmployee(this, 'dev_alice', 'developer')">
                             <div class="employee-info">
-                                <h4>Rogue Dev (dev_01)</h4>
-                                <p>Role: Developer // Dept: Core Platform</p>
+                                <h4>Alice Smith (dev_alice)</h4>
+                                <p>Role: Developer // Dept: Core Systems</p>
                             </div>
-                            <span class="event-badge badge-insider" style="font-size: 0.65rem;">SUSPICIOUS</span>
+                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">ACTIVE</span>
                         </div>
-                        <div class="employee-item" onclick="selectEmployee(this, 'hr_alice', 'hr_manager')">
+                        <div class="employee-item" onclick="selectEmployee(this, 'fin_charlie', 'finance_analyst')">
                             <div class="employee-info">
-                                <h4>Alice Smith (hr_alice)</h4>
+                                <h4>Charlie Brown (fin_charlie)</h4>
+                                <p>Role: Finance Analyst // Dept: Financial Operations</p>
+                            </div>
+                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">ACTIVE</span>
+                        </div>
+                        <div class="employee-item" onclick="selectEmployee(this, 'hr_bob', 'hr_manager')">
+                            <div class="employee-info">
+                                <h4>Bob Jones (hr_bob)</h4>
                                 <p>Role: HR Manager // Dept: Human Resources</p>
                             </div>
-                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">NORMAL</span>
+                            <span class="event-badge badge-safe" style="font-size: 0.65rem;">ACTIVE</span>
                         </div>
                     </div>
 
-                    <!-- Bot Creation Form -->
-                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 0.5rem;">
-                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 0.95rem; margin-bottom: 0.75rem;">Create Custom Employee Bot</h4>
-                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                            <input type="text" id="new-emp-name" placeholder="Employee Name" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;">
-                            <input type="text" id="new-emp-id" placeholder="User ID (e.g., fin_bob)" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;">
-                            <select id="new-emp-role" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;">
-                                <option value="developer">Role: Developer</option>
-                                <option value="hr_manager">Role: HR Manager</option>
-                                <option value="finance_analyst">Role: Finance Analyst</option>
-                                <option value="sys_admin">Role: System Administrator</option>
-                            </select>
-                            <button class="sim-btn" onclick="createNewBot()" style="padding: 0.5rem; text-align: center; justify-content: center; background: linear-gradient(135deg, var(--color-safe-glow), transparent); border-color: var(--color-safe); font-size: 0.85rem;">Add Bot to Org</button>
+                    <!-- Selected Profile Investigation Details -->
+                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 0.25rem;">Entity Investigation Telemetry</h4>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;">
+                            <div style="background: rgba(255,255,255,0.03); padding: 0.5rem; border-radius: 4px; border: 1px solid var(--border);">
+                                <span style="display:block; color: var(--text-secondary); font-size: 0.7rem;">Identity:</span>
+                                <span id="telemetry-id" style="color: var(--text-primary);">dev_alice</span>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.03); padding: 0.5rem; border-radius: 4px; border: 1px solid var(--border);">
+                                <span style="display:block; color: var(--text-secondary); font-size: 0.7rem;">Role Class:</span>
+                                <span id="telemetry-role" style="color: var(--text-primary);">developer</span>
+                            </div>
                         </div>
-                    </div>
-                    
-                    <div style="border-top: 1px solid var(--border); padding-top: 1rem; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">
-                        <p><strong>Active Selected Context:</strong></p>
-                        <p id="active-context-text" style="font-family: 'JetBrains Mono', monospace; margin-top: 0.25rem; color: var(--color-insider);">
-                            User ID: dev_01 | Role: developer
-                        </p>
+                        
+                        <!-- Evidence Checklist -->
+                        <div style="margin-top: 0.5rem; background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); font-size: 0.8rem;">
+                            <span style="font-weight: 600; display: block; margin-bottom: 0.5rem; color: var(--text-primary);">Security Indicators Summary</span>
+                            <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>✓ Context Match</span>
+                                    <span id="ind-context" style="color: var(--color-safe);">Normal</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>⚠ Scope violations</span>
+                                    <span id="ind-scope" style="color: var(--text-muted);">None</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>⚠ Directory accesses</span>
+                                    <span id="ind-dirs" style="color: var(--text-muted);">None</span>
+                                </div>
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span>⚠ Cloud Transfers</span>
+                                    <span id="ind-cloud" style="color: var(--text-muted);">None</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
-                <!-- Right: Simulation Command Deck -->
+                <!-- Right: Simulation Scenario Deck -->
                 <div class="simulator-card">
-                    <h3 class="sim-title">Live Threat Simulation Command Deck</h3>
+                    <h3 class="sim-title">Threat Scenario Command & Execution Deck</h3>
                     
                     <div class="sim-btn-group">
-                        <span class="sim-section-label">External Attacker Sim (BiLSTM Model / Decoys)</span>
+                        <span class="sim-section-label">External Threat Simulation (Perimeter BiLSTM / Deception Router)</span>
                         
                         <button class="sim-btn btn-safe" onclick="fireSimulation('normal_user')">
-                            <span>1. Launch Safe Traffic (External User)</span>
+                            <span>1. Safe Portal Traffic</span>
                             <span style="font-size: 0.75rem; opacity: 0.7;">Forwarded (200 OK) →</span>
                         </button>
                         
                         <button class="sim-btn btn-recon" onclick="fireSimulation('external_recon')">
-                            <span>2. Launch Sneaky Recon Scan (Hacker)</span>
-                            <span style="font-size: 0.75rem; opacity: 0.7;">Trapped in Decoy →</span>
+                            <span>2. External Reconnaissance Scan</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Redirected to Decoy Honeypot →</span>
                         </button>
                         
                         <button class="sim-btn btn-destructive" onclick="fireSimulation('external_destructive')">
-                            <span>3. Launch Destructive APT Exploit</span>
-                            <span style="font-size: 0.75rem; opacity: 0.7;">Banned in Kernel (403) →</span>
+                            <span>3. APT Destructive Exploit</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Banned in Kernel via nftables →</span>
                         </button>
                         
-                        <span class="sim-section-label">Malicious Insider Sim (Random Forest Model)</span>
+                        <span class="sim-section-label">Insider Threat Scenarios (Random Forest & Aggregator Pipeline)</span>
                         
                         <button class="sim-btn btn-insider" onclick="fireSimulation('insider_normal')">
-                            <span>A. Insider Normal Check-In</span>
-                            <span style="font-size: 0.75rem; opacity: 0.7;">Score: 0% →</span>
+                            <span>Scenario A: Baseline Employee Activity</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Expected: Safe / Normal (Forwarded) →</span>
                         </button>
                         
                         <button class="sim-btn btn-insider" onclick="fireSimulation('insider_recon')">
-                            <span>B. Insider Unauthorized DB Query</span>
-                            <span style="font-size: 0.75rem; opacity: 0.7;">Score: 28% →</span>
+                            <span>Scenario B: Unauthorized Scope Violation</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Expected: Alert / Monitor (Reroute) →</span>
                         </button>
                         
                         <button class="sim-btn btn-insider" onclick="fireSimulation('insider_sabotage')">
-                            <span>C. Insider Exfiltration + tampering</span>
-                            <span style="font-size: 0.75rem; opacity: 0.7;">Blocked & Terminated (403) →</span>
+                            <span>Scenario C: Dynamic Exfiltration & Lockout</span>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Expected: Contain / Banned (403 Blocked) →</span>
                         </button>
                         
                         <div style="border-top: 1px solid var(--border); padding-top: 1rem; margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem;">
-                            <span class="sim-section-label" style="margin-top: 0;">Interactive Threat Simulation Terminal (Custom Input)</span>
+                            <span class="sim-section-label" style="margin-top: 0;">Interactive Custom Command Console</span>
                             <div style="display: flex; gap: 0.5rem; margin-bottom: 0.25rem;">
                                 <select id="terminal-traffic-origin" style="background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.5rem; border-radius: 6px; color: var(--text-primary); font-size: 0.85rem;" onchange="updateTerminalStyle()">
-                                    <option value="internal">Source: Internal Employee (RandomForest Anomaly Model)</option>
-                                    <option value="external">Source: External Attacker (BiLSTM Neural Model & Decoys)</option>
+                                    <option value="internal">Source: Internal Entity (RandomForest Model)</option>
+                                    <option value="external">Source: External Attacker (BiLSTM Classifier)</option>
                                 </select>
                             </div>
                             <div style="display: flex; gap: 0.5rem;">
                                 <span id="terminal-prompt-char" style="font-family: 'JetBrains Mono', monospace; align-self: center; color: var(--color-insider); font-size: 0.9rem;">$</span>
-                                <input type="text" id="terminal-command-input" placeholder="Type custom command (e.g. cat /etc/shadow)" style="flex: 1; background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.6rem; border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;" onkeydown="if(event.key==='Enter') executeCustomCommand()">
+                                <input type="text" id="terminal-command-input" placeholder="Type custom command (e.g. cat /etc/passwd)" style="flex: 1; background: hsl(220, 20%, 7%); border: 1px solid var(--border); padding: 0.6rem; border-radius: 6px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;" onkeydown="if(event.key==='Enter') executeCustomCommand()">
                                 <button class="sim-btn" id="terminal-run-btn" onclick="executeCustomCommand()" style="width: auto; padding: 0.6rem 1.2rem; background: linear-gradient(135deg, var(--color-insider-glow), transparent); border-color: var(--color-insider);">Run</button>
                             </div>
                         </div>
@@ -886,60 +907,7 @@
             </div>
         </div>
 
-        <!-- Project Presentation Guide Tab Content -->
-        <div id="tab-content-guide" class="tab-content" style="display: none;">
-            <div class="simulator-card" style="gap: 1.5rem;">
-                <h3 class="sim-title">AdaptiveShield Presenter Scenario Guide</h3>
-                
-                <div style="display: flex; flex-direction: column; gap: 1.5rem; line-height: 1.6;">
-                    
-                    <div style="border-left: 3px solid var(--color-safe); padding-left: 1rem;">
-                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-safe); margin-bottom: 0.25rem;">Scenario 1: Normal Client Traffic (Safe)</h4>
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                            <strong>Presentation Script:</strong> "First, we demonstrate standard client activity. We click 'Launch Safe Traffic'. The gateway routes it to our BiLSTM model, flags it as safe, and forwards it to the primary backend server with sub-millisecond response latency."
-                        </p>
-                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
-                            <li><strong>Trigger:</strong> Click "1. Launch Safe Traffic" button on the Simulator Deck.</li>
-                            <li><strong>Observation:</strong> SOC Dashboard updates -> Total Intercepted +1, Safe Transactions +1.</li>
-                        </ul>
-                    </div>
 
-                    <div style="border-left: 3px solid var(--color-recon); padding-left: 1rem;">
-                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-recon); margin-bottom: 0.25rem;">Scenario 2: External Recon Scan (Honeypot Trap)</h4>
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                            <strong>Presentation Script:</strong> "Next, we simulate a sneaky external attacker trying to run directory scans to find server secrets. Our BiLSTM model flags the malicious intent as 'Reconnaissance'. Instantly, the Deception Agent pulls and deploys a Docker honeypot container on-the-fly and reroutes the attacker's TCP connection into it silently. The hacker thinks they are in, but they are trapped in a decoy sandbox."
-                        </p>
-                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
-                            <li><strong>Trigger:</strong> Click "2. Launch Sneaky Recon Scan" button.</li>
-                            <li><strong>Observation:</strong> Reroutes +1. Inspect the event: XAI Narrator displays full MITRE T1083 / T1595 mapping and logs honeypot redirection.</li>
-                        </ul>
-                    </div>
-
-                    <div style="border-left: 3px solid var(--color-destructive); padding-left: 1rem;">
-                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-destructive); margin-bottom: 0.25rem;">Scenario 3: Severe APT Attack (OS Kernel Banning)</h4>
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                            <strong>Presentation Script:</strong> "What if the threat is highly destructive, like an APT script or remote system tampering? The risk is too high to engage. The system instantly bypasses the proxy and registers the attacker's IP with `nftables` in the OS Kernel, dropping all packets instantly."
-                        </p>
-                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
-                            <li><strong>Trigger:</strong> Click "3. Launch Destructive APT Exploit" button.</li>
-                            <li><strong>Observation:</strong> Banned IPs +1. The IP address is dynamically appended to the firewall block list table at the bottom of the SOC dashboard.</li>
-                        </ul>
-                    </div>
-
-                    <div style="border-left: 3px solid var(--color-insider); padding-left: 1rem;">
-                        <h4 style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--color-insider); margin-bottom: 0.25rem;">Scenario 4: Malicious Insider Activity</h4>
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                            <strong>Presentation Script:</strong> "Finally, we demonstrate insider threats. We can use the Simulator tab, or open our live Employee Workspace page at `/workspace`. The evaluator selects the Finance Analyst role and runs: `curl http://10.0.0.1/src/main.py`. Because the role is Finance Analyst, attempting to access developer source files triggers an immediate Role Scope Violation. My RandomForest model evaluates the behavior, flags the alert, and logs it dynamically to the SOC Dashboard."
-                        </p>
-                        <ul style="font-size: 0.85rem; padding-left: 1.2rem; color: var(--text-muted);">
-                            <li><strong>Trigger:</strong> Open `http://localhost:8000/workspace` in a new window, select Finance Analyst, type: `curl http://10.0.0.1/src/main.py` and run.</li>
-                            <li><strong>Observation:</strong> Open `/dashboard` ➡️ Insider Alerts +1. Observe the matched MITRE T1105 technique and the XAI narrator credentials lock recommendations.</li>
-                        </ul>
-                    </div>
-
-                </div>
-            </div>
-        </div>
 
     </div>
 
@@ -1235,6 +1203,27 @@
                 updateStats();
                 renderEventList();
                 
+                // Update active telemetry indicators if this event is an insider trace
+                if (data.is_insider && data.evidence_features) {
+                    const features = data.evidence_features;
+                    document.getElementById('ind-scope').textContent = features.access_unauthorized_scope > 0 ? "Violated" : "None";
+                    document.getElementById('ind-scope').style.color = features.access_unauthorized_scope > 0 ? "var(--color-insider)" : "var(--text-muted)";
+                    
+                    document.getElementById('ind-dirs').textContent = features.access_sensitive_dirs > 0 ? "Accessed" : "None";
+                    document.getElementById('ind-dirs').style.color = features.access_sensitive_dirs > 0 ? "var(--color-exploit)" : "var(--text-muted)";
+                    
+                    document.getElementById('ind-cloud').textContent = features.cloud_upload_count > 0 ? `${features.cloud_upload_count} Transfer(s)` : "None";
+                    document.getElementById('ind-cloud').style.color = features.cloud_upload_count > 0 ? "var(--color-destructive)" : "var(--text-muted)";
+                    
+                    if (data.risk_score > 30) {
+                        document.getElementById('ind-context').textContent = data.risk_score > 80 ? "CONTAIN" : "Suspicious";
+                        document.getElementById('ind-context').style.color = data.risk_score > 80 ? "var(--color-destructive)" : "var(--color-insider)";
+                    } else {
+                        document.getElementById('ind-context').textContent = "Normal";
+                        document.getElementById('ind-context').style.color = "var(--color-safe)";
+                    }
+                }
+                
                 // Automatically select first event if none selected
                 if (!selectedEventId) {
                     selectEvent(data.id);
@@ -1247,7 +1236,7 @@
             };
         }
 
-        let activeUserId = "dev_01";
+        let activeUserId = "dev_alice";
         let activeUserRole = "developer";
 
         function switchTab(tabName) {
@@ -1262,9 +1251,6 @@
             } else if (tabName === 'simulator') {
                 document.getElementById('tab-content-simulator').style.display = 'block';
                 document.getElementById('tab-btn-simulator').classList.add('active');
-            } else if (tabName === 'guide') {
-                document.getElementById('tab-content-guide').style.display = 'block';
-                document.getElementById('tab-btn-guide').classList.add('active');
             }
         }
 
@@ -1273,8 +1259,21 @@
             el.classList.add('selected');
             activeUserId = userId;
             activeUserRole = role;
-            document.getElementById('active-context-text').textContent = `User ID: ${userId} | Role: ${role}`;
-            document.getElementById('active-context-text').style.color = userId === 'dev_01' ? 'var(--color-insider)' : 'var(--color-safe)';
+            
+            // Update telemetry panel details
+            document.getElementById('telemetry-id').textContent = userId;
+            document.getElementById('telemetry-role').textContent = role;
+            
+            // Clear telemetry summary indicators
+            document.getElementById('ind-context').textContent = "Normal";
+            document.getElementById('ind-context').style.color = "var(--color-safe)";
+            document.getElementById('ind-scope').textContent = "None";
+            document.getElementById('ind-scope').style.color = "var(--text-muted)";
+            document.getElementById('ind-dirs').textContent = "None";
+            document.getElementById('ind-dirs').style.color = "var(--text-muted)";
+            document.getElementById('ind-cloud').textContent = "None";
+            document.getElementById('ind-cloud').style.color = "var(--text-muted)";
+            
             writeConsole(`[SIMULATOR] Switched context to Employee Profile: ${userId} (${role})`);
         }
 

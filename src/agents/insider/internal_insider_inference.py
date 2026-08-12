@@ -51,10 +51,14 @@ def predict_session_risk(session: Dict[str, Any], model_bundle: Optional[Dict[st
     if not explanation:
         explanation.append(f"Normal behavior. ML score={ml_score:.3f}")
 
+    # Blended risk aggregation formula: (ML RF probability * 40) + Contextual Violation Score
+    blended_risk = (ml_score * 40.0) + features["calculated_risk_score"]
+    risk_score = min(blended_risk, 100.0)
+
     return {
         "session_id": session.get("session_id", "unknown"),
         "role": session.get("role", "normal"),
-        "risk_score": max(features["calculated_risk_score"], ml_score * 100.0),
+        "risk_score": risk_score,
         "label": final_label,
         "explanation": explanation,
         "features": features

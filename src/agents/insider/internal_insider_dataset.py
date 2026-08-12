@@ -73,13 +73,13 @@ def extract_features(session: Dict[str, Any]) -> Dict[str, float]:
 
     # Dynamic risk calculations
     risk_score = 0.0
-    # Weights for risk scoring
+    # Weights for risk scoring based on policy violations
     weights = {
-        "access_unauthorized_scope": 15,
-        "access_sensitive_dirs": 10,
+        "access_unauthorized_scope": 30,
+        "access_sensitive_dirs": 20,
         "usb_write_count": 10,
-        "cloud_upload_count": 10,
-        "log_deletion_attempt": 15,
+        "cloud_upload_count": 25,
+        "log_deletion_attempt": 20,
         "syslog_stop_attempt": 15,
         "sudoers_modification": 15,
         "failed_sudo_count": 5,
@@ -91,13 +91,6 @@ def extract_features(session: Dict[str, Any]) -> Dict[str, float]:
         if features.get(key, 0) > 0:
             risk_score += weight
     features["calculated_risk_score"] = min(risk_score, 100.0)
-
-    # Progressive risk accumulator: if accessing unauthorized scope, override risk based on command history size
-    if features.get("access_unauthorized_scope", 0) > 0:
-        if features.get("command_count", 1) <= 1:
-            features["calculated_risk_score"] = 70.0
-        else:
-            features["calculated_risk_score"] = 95.0
 
     # Behavior deviation
     features["behavior_deviation_score"] = float(session.get("behavior_deviation_score", features["calculated_risk_score"] / 100.0))
