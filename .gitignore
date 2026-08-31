@@ -109,7 +109,8 @@ models/*.pkl
 data/processed/ghidra_features/
 
 # Local configuration overrides
-config/settings.local.yaml
+config/authorized_keys
+config/ssh_host_rsa_key.pub
 *.local.yaml
 
 # Logs
@@ -124,7 +125,6 @@ secrets/
 credentials/
 *.pem
 *.key
-config/ssh_host_rsa_key
 
 # Temporary files
 data

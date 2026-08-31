@@ -474,11 +474,13 @@ def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict
             else:
                 rule_name = f"neural_model (confidence={confidence:.2%})"
 
-            # We don't have redirect_to_decoy mid-session for SSH, so we drop_and_block for exploits too.
+            # Mirror HTTP behavior: let Exploit/Downloader continue inside the decoy
             if label == "Safe":
                 action = "forward"
             elif label == "Recon":
                 action = "forward_and_log"
+            elif label in ("Exploit", "Downloader"):
+                action = "redirect_to_decoy"
             else:
                 action = "drop_and_block"
 
@@ -499,6 +501,8 @@ def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict
         action = "forward"
     elif rule_label == "Recon":
         action = "forward_and_log"
+    elif rule_label in ("Exploit", "Downloader"):
+        action = "redirect_to_decoy"
     else:
         action = "drop_and_block"
 

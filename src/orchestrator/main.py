@@ -1,7 +1,8 @@
 import argparse
 import os
 from pathlib import Path
-
+import logging
+logging.basicConfig(level=logging.INFO)
 # Load .env manually if it exists
 if os.path.exists(".env"):
     with open(".env", "r") as f:
@@ -22,7 +23,6 @@ def load_config(path: str):
 
 
 import asyncio
-import logging
 from interceptor.ssh_proxy import start_ssh_proxy
 
 def run(config_path: str):

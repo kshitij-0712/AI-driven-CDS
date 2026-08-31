@@ -1,6 +1,7 @@
 import time
 import os
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -50,7 +51,7 @@ class DecoyManager:
         self.max_instances = max_instances
         self.idle_timeout_sec = idle_timeout_sec
         self.fallback_url = fallback_url
-
+        self.prewarm_count = 1
         self._active_http: Dict[str, DecoyInstance] = {}
         self._active_ssh: Dict[str, DecoyInstance] = {}
         self._docker = None
@@ -98,12 +99,21 @@ class DecoyManager:
                     if binding:
                         host_port = binding[0].get("HostPort")
                         if host_port:
+                            persisted_session_id = session_id
+                            if host_dir:
+                                sid_file = os.path.join(os.path.dirname(host_dir), "session_id.txt")
+                                if os.path.exists(sid_file):
+                                    try:
+                                        with open(sid_file, "r") as _f:
+                                            persisted_session_id = _f.read().strip() or session_id
+                                    except Exception:
+                                        pass
                             instance = DecoyInstance(
                                 container_id=container.id,
                                 base_url=f"http://127.0.0.1:{host_port}",
                                 decoy_type="http",
                                 last_used_ts=now,
-                                session_id=session_id,
+                                session_id=persisted_session_id,
                                 host_dir=host_dir,
                             )
                             self._active_http[container.id] = instance
@@ -112,12 +122,21 @@ class DecoyManager:
                     if binding:
                         host_port = binding[0].get("HostPort")
                         if host_port:
+                            persisted_session_id = session_id
+                            if host_dir:
+                                sid_file = os.path.join(host_dir, "session_id.txt")
+                                if os.path.exists(sid_file):
+                                    try:
+                                        with open(sid_file, "r") as _f:
+                                            persisted_session_id = _f.read().strip() or session_id
+                                    except Exception:
+                                        pass
                             instance = DecoyInstance(
                                 container_id=container.id,
                                 base_url=host_port,
                                 decoy_type="ssh",
                                 last_used_ts=now,
-                                session_id=session_id,
+                                session_id=persisted_session_id,
                                 host_dir=host_dir,
                             )
                             self._active_ssh[container.id] = instance
@@ -152,7 +171,8 @@ class DecoyManager:
         try:
             actual_session_id = session_id
             if session_id == "prewarm":
-                actual_session_id = f"prewarm_{uuid.uuid4().hex[:8]}"
+                actual_session_id = f"prewarm_{self.prewarm_count}"
+                self.prewarm_count += 1
 
             # Local paths inside core container for writing files
             local_base_dir = os.path.abspath(f"./runtime/decoy_http/{actual_session_id}")
@@ -160,6 +180,9 @@ class DecoyManager:
             conf_dir = os.path.join(local_base_dir, "conf")
             os.makedirs(html_dir, exist_ok=True)
             os.makedirs(conf_dir, exist_ok=True)
+
+            with open(os.path.join(local_base_dir, "session_id.txt"), "w") as _f:
+                _f.write(session_id)
 
             # Write initial default.conf
             default_conf = """server {
@@ -248,6 +271,22 @@ class DecoyManager:
                 # Assign it to this session
                 instance.session_id = session_id
                 instance.last_used_ts = time.time()
+                
+                if instance.host_dir:
+                    sid_file = os.path.join(os.path.dirname(instance.host_dir), "session_id.txt")
+                    try:
+                        with open(sid_file, "w") as _f:
+                            _f.write(session_id)
+                    except Exception:
+                        pass
+                
+                # Auto-replenish: spawn a replacement prewarm in the background
+                # so the next attacker also gets zero cold-start latency.
+                threading.Thread(
+                    target=self._spawn_http_decoy,
+                    args=("prewarm",),
+                    daemon=True,
+                ).start()
                 return instance
 
         # 3. Spawn a new container for this session
@@ -279,13 +318,18 @@ class DecoyManager:
 
         try:
             actual_session_id = session_id
-
+            if session_id == "prewarm":
+                actual_session_id = f"prewarm_{self.prewarm_count}"
+                self.prewarm_count += 1
             # Local paths inside core container for writing files
             local_base_dir = os.path.abspath(f"./runtime/decoy_ssh/{actual_session_id}")
             txtcmds_dir = os.path.join(local_base_dir, "txtcmds")
             honeyfs_dir = os.path.join(local_base_dir, "honeyfs")
             os.makedirs(txtcmds_dir, exist_ok=True)
             os.makedirs(honeyfs_dir, exist_ok=True)
+
+            with open(os.path.join(local_base_dir, "session_id.txt"), "w") as _f:
+                _f.write(session_id)
 
             # Determine host paths for Docker mounting (Docker-in-Docker path translation)
             host_runtime_dir = "/home/me/data/AdaptiveShield/runtime"
@@ -358,6 +402,28 @@ class DecoyManager:
                 instance.last_used_ts = time.time()
                 return instance
 
+        # 2. Check for a prewarm container and claim it, then replenish
+        for instance in self._active_ssh.values():
+            if instance.session_id == "prewarm":
+                instance.session_id = session_id
+                instance.last_used_ts = time.time()
+
+                if instance.host_dir:
+                    sid_file = os.path.join(instance.host_dir, "session_id.txt")
+                    try:
+                        with open(sid_file, "w") as _f:
+                            _f.write(session_id)
+                    except Exception:
+                        pass
+
+                # Auto-replenish: spawn a replacement prewarm in the background.
+                threading.Thread(
+                    target=self._spawn_ssh_decoy,
+                    args=("prewarm",),
+                    daemon=True,
+                ).start()
+                return instance
+
         existing = self._pick_existing_ssh_decoy()
         if existing:
             existing.last_used_ts = time.time()
@@ -376,6 +442,10 @@ class DecoyManager:
         to_remove = []
 
         for container_id, instance in list(self._active_http.items()) + list(self._active_ssh.items()):
+            # Never clean up prewarm containers — they are intentionally kept
+            # warm and idle, waiting for the next attacker to claim them.
+            if instance.session_id == "prewarm":
+                continue
             if now - instance.last_used_ts > self.idle_timeout_sec:
                 to_remove.append((container_id, instance.decoy_type))
 

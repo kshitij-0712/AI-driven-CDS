@@ -72,7 +72,7 @@ class SSHDecoyBuilder:
             raw_response = await self.router.generate(
                 intent_label=intent,
                 system_instruction="You are a honeypot configuration generator. Output strictly JSON.",
-                user_prompt=prompt
+                prompt=prompt
             )
             
             # Simple JSON parsing

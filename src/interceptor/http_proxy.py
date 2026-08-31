@@ -191,14 +191,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     ))
                 )
                 
-                if is_escalation and galah_enabled and honeypot_gen:
+                if is_escalation and honeypot_gen:
                     try:
                         await honeypot_gen.prepare_decoy_files(
                             session_id=session_id,
                             decision=decision,
                             request=request,
                             body_str=body_str,
-                            html_dir=decoy.html_dir,
+                            html_dir=decoy.host_dir,
                             container_id=decoy.container_id,
                             decoys_manager=decoys
                         )
@@ -240,51 +240,10 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             try:
                 result = await forward_request(target, request, raw_body)
             except Exception:
-                if fallback_on_error:
-                    decoy = decoys.get_or_spawn_http_decoy(session_id)
-                    if decoy:
-                        target = decoy.base_url
-                        
-                        if galah_enabled and honeypot_gen:
-                            try:
-                                await honeypot_gen.prepare_decoy_files(
-                                    session_id=session_id,
-                                    decision=decision,
-                                    request=request,
-                                    body_str=body_str,
-                                    html_dir=decoy.html_dir,
-                                    container_id=decoy.container_id,
-                                    decoys_manager=decoys
-                                )
-                            except Exception:
-                                pass
-
-                        store.update_context(session_id, {
-                            "redirected_to_decoy": True,
-                            "decoy_base_url": target,
-                            "decoy_class_id": decision["class_id"],
-                            "decoy_label": decision["label"],
-                            "decoy_rule": decision.get("rule") or "Real service offline, fallback to decoy",
-                            "decoy_mitre_tactics": decision.get("mitre_tactics", []),
-                            "decoy_severity_max": decision.get("severity_max", 0),
-                        })
-                        try:
-                            result = await forward_request(target, request, raw_body)
-                        except Exception:
-                            result = JSONResponse(
-                                status_code=502,
-                                content={"error": "upstream_failure", "target": target},
-                            )
-                    else:
-                        result = JSONResponse(
-                            status_code=502,
-                            content={"error": "real_service_unreachable"},
-                        )
-                else:
-                    result = JSONResponse(
-                        status_code=502,
-                        content={"error": "real_service_unreachable"},
-                    )
+                result = JSONResponse(
+                    status_code=502,
+                    content={"error": "real_service_unreachable"},
+                )
 
         event = {
             "timestamp": time.time(),

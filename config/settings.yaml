@@ -102,7 +102,6 @@ http_guard:
   session_idle_timeout_sec: 900
   brute_force_threshold: 8
   block_duration_minutes: 60
-  fallback_on_error: true
 
 ssh_guard:
   enabled: true
@@ -135,7 +134,6 @@ decoys:
   pre_pull_images:
     - "nginx:alpine"
     - "cowrie/cowrie:latest"
-    - "dinotools/dionaea:latest"
 
 runtime:
   db_path: "./runtime/adaptiveshield.db"
@@ -150,7 +148,7 @@ galah_honeypot:
   llm:
     default_provider: "gemini"
     router_policy: "dynamic"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.1-flash-lite"
     ollama_model: "llama3.2:1b"
     ollama_url: "http://127.0.0.1:11434"
   cache:

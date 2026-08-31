@@ -50,18 +50,28 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         self.backend_chan = None
         self.cmd_buffer = ""
 
-    def connection_made(self, chan):
-        self.chan = chan
-
     def pty_requested(self, term_type, term_size, term_modes):
         self._term_type = term_type
         self._term_size = term_size
         self._term_modes = term_modes
         return True
 
+    def connection_made(self, chan):
+        self.chan = chan
+
     def shell_requested(self):
         asyncio.create_task(self._proxy_shell())
         return True
+
+    def session_started(self):
+        # Disable asyncssh's built-in line editor and echo now that the session has started.
+        # This prevents the double-echo issue since the backend PTY handles its own echoing.
+        if self.chan:
+            try:
+                self.chan.set_line_mode(False)
+                self.chan.set_echo(False)
+            except AssertionError:
+                pass
 
     def exec_requested(self, command):
         self.cmd_buffer = command
@@ -120,10 +130,7 @@ class SSHGuardSession(asyncssh.SSHServerSession):
     def data_received(self, data, datatype):
         # Forward keystrokes to backend
         if self.backend_chan and not self.backend_chan.is_closing():
-            if isinstance(data, str):
-                self.backend_chan.write(data.replace('\r', '\r\n'))
-            else:
-                self.backend_chan.write(data.replace(b'\r', b'\r\n'))
+            self.backend_chan.write(data)
 
         # Buffer for command reconstruction
         if isinstance(data, bytes):
@@ -181,6 +188,12 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         if decision["action"] == "drop_and_block":
             self.nft.block_ip(self.src_ip, reason=decision.get("rule"))
             self.chan.close()
+        elif decision["action"] == "redirect_to_decoy":
+            # Attacker is already inside Cowrie — just log the escalation, let them continue
+            logger.info(
+                "SSH exploit detected in decoy session %s: %s (letting attacker continue in sandbox)",
+                self.session_id, cmd
+            )
 
 
 class AdaptiveSSHServer(asyncssh.SSHServer):
