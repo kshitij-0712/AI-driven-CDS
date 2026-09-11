@@ -146,7 +146,10 @@ class NeuralTrainer:
             # Move to device
             commands = batch['commands'].to(self.device)
             lengths = batch['lengths'].to(self.device)
-            structured = batch['structured'].to(self.device)
+            mitre = batch['mitre'].to(self.device)
+            changes = batch['changes'].to(self.device)
+            triage = batch['triage'].to(self.device)
+            modality_mask = batch['modality_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
             
             self.optimizer.zero_grad()
@@ -154,7 +157,7 @@ class NeuralTrainer:
             # Forward pass with AMP
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
-                    logits = self.model(commands, structured, lengths)
+                    logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
                     loss = self.loss_fn(logits, labels)
                 
                 self.scaler.scale(loss).backward()
@@ -163,7 +166,7 @@ class NeuralTrainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                logits = self.model(commands, structured, lengths)
+                logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
                 loss = self.loss_fn(logits, labels)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
@@ -207,15 +210,18 @@ class NeuralTrainer:
         for batch in data_loader:
             commands = batch['commands'].to(self.device)
             lengths = batch['lengths'].to(self.device)
-            structured = batch['structured'].to(self.device)
+            mitre = batch['mitre'].to(self.device)
+            changes = batch['changes'].to(self.device)
+            triage = batch['triage'].to(self.device)
+            modality_mask = batch['modality_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
             
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
-                    logits = self.model(commands, structured, lengths)
+                    logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
                     loss = self.loss_fn(logits, labels)
             else:
-                logits = self.model(commands, structured, lengths)
+                logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
                 loss = self.loss_fn(logits, labels)
             
             total_loss += loss.item() * labels.size(0)

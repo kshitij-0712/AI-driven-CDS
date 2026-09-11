@@ -193,7 +193,7 @@ def main():
     model = create_model(
         structured_dim=structured_dim,
         device=device,
-        model_type='mitre_only' if args.mitre_only else 'full',
+        model_type='unified',
         embed_dim=args.embed_dim,
         lstm_hidden=args.lstm_hidden,
         lstm_layers=args.lstm_layers,
@@ -259,6 +259,56 @@ def main():
     # Test set evaluation
     test_metrics = trainer.print_classification_report(test_loader, "Test Set Results")
     
+    # ---------------------------------------------------------
+    # LLM Active Learning & Edge Case Generation
+    # ---------------------------------------------------------
+    print(f"\n{'='*60}")
+    print(" LLM Active Learning & Edge Cases")
+    print('='*60)
+    
+    if not args.no_synthetic:
+        import asyncio
+        import yaml
+        from training.neural.llm_synthetic import llm_review_misclassifications, llm_generate_edge_cases
+        
+        try:
+            with open("config/settings.yaml", "r") as f:
+                app_config = yaml.safe_load(f)
+                
+            print("\n1. LLM reviewing misclassifications and low-confidence predictions...")
+            class_names = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
+            reviews = asyncio.run(llm_review_misclassifications(
+                config=app_config,
+                model=model,
+                val_loader=val_loader,
+                class_names=class_names,
+                max_reviews=5
+            ))
+            
+            for i, rev in enumerate(reviews):
+                print(f"\n[Review {i+1}] Predicted: {rev['predicted_label']} (True: {rev['true_label']}, Conf: {rev['confidence']:.2f})")
+                print(f"Explanation: {rev['llm_explanation'][:200]}...")
+                
+            print("\n2. LLM generating adversarial edge cases for weak classes...")
+            # We target Exploit (3) as an example weak class for adversarial generation
+            edge_cases_df = asyncio.run(llm_generate_edge_cases(
+                config=app_config,
+                weak_class=3,
+                n_samples=2
+            ))
+            
+            if not edge_cases_df.empty:
+                edge_file = "data/exports/active_learning_edges.csv"
+                import os
+                if os.path.isfile(edge_file):
+                    edge_cases_df.to_csv(edge_file, mode='a', header=False, index=False)
+                else:
+                    edge_cases_df.to_csv(edge_file, index=False)
+                print(f"Successfully generated {len(edge_cases_df)} adversarial Exploit samples and saved to {edge_file} for the next training run.")
+                
+        except Exception as e:
+            print(f"LLM Active Learning failed (Make sure Ollama is running): {e}")
+
     # Save model and results
     save_training_results(
         model=model,

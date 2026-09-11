@@ -25,15 +25,16 @@ class LLMRouter:
 
         self.default_provider = llm_cfg.get("default_provider", "ollama")
         self.router_policy = llm_cfg.get("router_policy", "dynamic")
-        
+
         gemini_model = llm_cfg.get("gemini_model", "gemini-1.5-flash")
         ollama_model = llm_cfg.get("ollama_model", "llama3.2:1b")
         ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
+        ollama_timeout = llm_cfg.get("ollama_timeout", 180)
 
         self.gemini_key = os.environ.get("GEMINI_API_KEY", "")
-        
+
         self.gemini_client = GeminiClient(api_key=self.gemini_key, model=gemini_model) if self.gemini_key else None
-        self.ollama_client = OllamaClient(base_url=ollama_url, model=ollama_model)
+        self.ollama_client = OllamaClient(base_url=ollama_url, model=ollama_model, timeout=ollama_timeout)
         self.mock_client = MockLLMClient()
 
     def get_client(self, intent_label: str) -> BaseLLMClient:
@@ -83,3 +84,26 @@ class LLMRouter:
             
             logger.info("Falling back to Mock LLM generator...")
             return await self.mock_client.generate_response(system_instruction, prompt)
+
+    async def chat(self, intent_label: str, messages: list) -> str:
+        """Route and execute LLM chat generation with graceful failovers."""
+        client = self.get_client(intent_label)
+        try:
+            # Check if client supports chat_response
+            if hasattr(client, "chat_response"):
+                return await client.chat_response(messages)
+            else:
+                # Mock fallback for chat if unsupported by Gemini/Mock (since we only added to Ollama)
+                return await client.generate_response(messages[0]["content"], messages[-1]["content"])
+        except Exception as e:
+            logger.error(f"Primary LLM chat client failed: {e}. Attempting fallback...")
+            
+            if client == self.gemini_client and hasattr(self.ollama_client, "chat_response"):
+                try:
+                    logger.info("Falling back to Ollama chat...")
+                    return await self.ollama_client.chat_response(messages)
+                except Exception as ex:
+                    logger.error(f"Fallback Ollama chat failed: {ex}")
+            
+            logger.warning("Falling back to Mock LLM generator for chat...")
+            return await self.mock_client.generate_response(messages[0]["content"], messages[-1]["content"])

@@ -174,14 +174,14 @@ def load_neural_model():
 
     try:
         import torch
-        from training.neural.model import ThreatClassifierMitreOnly
+        from training.neural.model import UnifiedThreatClassifier
     except ImportError as exc:
         logger.warning("PyTorch or model module not available: %s", exc)
         return False
 
     # Locate the model file
     model_dir = Path(__file__).parent.parent.parent / "models"
-    model_path = model_dir / "brain_v5_mitre_only_semantic_balanced_v2.pt"
+    model_path = model_dir / "brain_v6_unified.pt"
 
     if not model_path.exists():
         logger.warning("Neural model not found at %s", model_path)
@@ -189,11 +189,7 @@ def load_neural_model():
 
     try:
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-        config = checkpoint["model_config"]
-
-        # Remove 'model_type' key — it's metadata, not a constructor arg
-        constructor_args = {k: v for k, v in config.items() if k != "model_type"}
-        model = ThreatClassifierMitreOnly(**constructor_args)
+        model = UnifiedThreatClassifier()
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
 
@@ -202,7 +198,7 @@ def load_neural_model():
 
         param_count = sum(p.numel() for p in model.parameters())
         logger.info(
-            "Neural model loaded: ThreatClassifierMitreOnly (%s params)", f"{param_count:,}"
+            "Neural model loaded: UnifiedThreatClassifier (%s params)", f"{param_count:,}"
         )
         return True
     except Exception:
@@ -232,10 +228,7 @@ def _extract_mitre_features(commands: str):
 
 
 def _classify_neural(commands: str):
-    """Run neural inference on a command string.
-
-    Returns (class_id, label, confidence, probabilities) or None if model unavailable.
-    """
+    """Run neural inference using UnifiedThreatClassifier."""
     if _neural_model is None:
         return None
 
@@ -244,13 +237,23 @@ def _classify_neural(commands: str):
     # Tokenize
     encoded, lengths = _encode_batch([commands])
 
-    # MITRE features
+    # 1. MITRE features
     mitre_features = _extract_mitre_features(commands)
-    structured = torch.tensor([mitre_features], dtype=torch.float32)
+    mitre = torch.tensor([mitre_features], dtype=torch.float32)
+    
+    # 2. Changes & Triage (Missing at HTTP request time)
+    changes = torch.zeros((1, 20), dtype=torch.float32)
+    triage = torch.zeros((1, 12), dtype=torch.float32)
+    
+    # 3. Modality Mask (True = missing)
+    # [cmd_missing, mitre_missing, changes_missing, triage_missing]
+    modality_mask = torch.tensor([[False, False, True, True]], dtype=torch.bool)
 
     # Inference
     with torch.no_grad():
-        predictions, probabilities = _neural_model.predict(encoded, structured, lengths)
+        predictions, probabilities = _neural_model.predict(
+            encoded, mitre, changes, triage, lengths, modality_mask
+        )
 
     pred_class = predictions[0].item()
     probs = probabilities[0].cpu().numpy()
@@ -310,51 +313,7 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
 
     # Run MITRE rules classification first to get rule_id, rule_label, and explanation
     rule_id, rule_label, explanation = hybrid_classifier.classify(full_command)
-
-    # --- Stage 1: Fast regex pre-filter ---
-    joined_payload = " ".join([path, query, body, user_agent])
-    joined_payload = unquote(joined_payload)
-    http_findings = _match_http_patterns(joined_payload)
-
-    # Check path specifically for scanner and sensitive file discovery patterns
-    decoded_path = unquote(path).lower()
-    if re.search(r"^/(admin|dev-admin|config|setup|backup|wp-)", decoded_path):
-        http_findings.append("scanner")
-    if re.search(r"(\.env|\.git)", decoded_path):
-        http_findings.append("sensitive_file_discovery")
-
-    stage1_id = None
-    if "xss" in http_findings or "sqli" in http_findings or "command_injection" in http_findings:
-        stage1_id, stage1_label, stage1_action = 3, "Exploit", "redirect_to_decoy"
-        stage1_rule = "HTTP exploit pattern matched"
-        stage1_tactics = ["execution", "initial_access"]
-        stage1_severity = 9
-    elif "path_traversal" in http_findings or "scanner" in http_findings or "sensitive_file_discovery" in http_findings:
-        stage1_id, stage1_label, stage1_action = 1, "Recon", "forward_and_log"
-        stage1_rule = "HTTP reconnaissance pattern matched"
-        stage1_tactics = ["reconnaissance", "discovery"]
-        stage1_severity = 6
-
-    if stage1_id is not None:
-        # Check if rules found a higher severity threat than Stage 1 pre-filter
-        if rule_id > stage1_id:
-            logger.info(
-                "Safeguard override (Stage 1): Stage 1 matched '%s' but rules detected '%s'. Overriding to rules.",
-                stage1_label, rule_label
-            )
-            # Fall through to rules result
-        else:
-            return {
-                "class_id": stage1_id,
-                "label": stage1_label,
-                "confidence": 1.0,
-                "action": stage1_action,
-                "rule": stage1_rule,
-                "mitre_tactics": stage1_tactics,
-                "severity_max": stage1_severity,
-                "http_findings": http_findings,
-                "extracted_command": synthetic_cmd,
-            }
+    http_findings = [] # Regex removed
 
     # --- Stage 2: Neural model with confidence thresholding ---
     neural_result = _classify_neural(full_command) if _neural_model is not None else None

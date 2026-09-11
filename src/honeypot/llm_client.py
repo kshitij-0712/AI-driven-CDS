@@ -64,22 +64,23 @@ class GeminiClient(BaseLLMClient):
             raise
 
 class OllamaClient(BaseLLMClient):
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2:1b"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2:1b", timeout: int = 180):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.url = f"{self.base_url}/api/chat"
+        self.url = f"{self.base_url}/api/generate"
+        self.timeout = timeout
 
     async def generate_response(self, system_instruction: str, prompt: str) -> str:
-        messages = []
-        if system_instruction:
-            messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
-
         payload = {
             "model": self.model,
-            "messages": messages,
+            "system": system_instruction,
+            "prompt": prompt,
             "stream": False,
-            "format": "json"
+            "options": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": 4096
+            }
         }
 
         try:
@@ -87,15 +88,44 @@ class OllamaClient(BaseLLMClient):
                 requests.post,
                 self.url,
                 json=payload,
-                timeout=60
+                timeout=self.timeout
             )
             if response.status_code != 200:
                 logger.error(f"Ollama returned error {response.status_code}: {response.text}")
                 raise Exception(f"Ollama error: {response.text}")
             
             resp_json = response.json()
-            message_content = resp_json.get("message", {}).get("content", "")
-            return message_content
+            return resp_json.get("response", "")
         except Exception as e:
             logger.error(f"Ollama client failed: {e}")
+            raise
+
+    async def chat_response(self, messages: list) -> str:
+        chat_url = f"{self.base_url}/api/chat"
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": 4096
+            }
+        }
+
+        try:
+            response = await asyncio.to_thread(
+                requests.post,
+                chat_url,
+                json=payload,
+                timeout=self.timeout
+            )
+            if response.status_code != 200:
+                logger.error(f"Ollama chat returned error {response.status_code}: {response.text}")
+                raise Exception(f"Ollama chat error: {response.text}")
+            
+            resp_json = response.json()
+            return resp_json.get("message", {}).get("content", "")
+        except Exception as e:
+            logger.error(f"Ollama chat client failed: {e}")
             raise

@@ -351,7 +351,10 @@ def create_model(
     Returns:
         Threat classifier model on specified device
     """
-    if model_type == 'mitre_only':
+    if model_type == 'unified':
+        model = UnifiedThreatClassifier()
+        return model.to(device)
+    elif model_type == 'mitre_only':
         # MITRE-only model (21 features)
         default_config = {
             'vocab_size': 256,
@@ -609,3 +612,89 @@ class ThreatClassifierMitreOnly(nn.Module):
         attn_weights = F.softmax(attn_weights, dim=1).squeeze(-1)
         
         return attn_weights
+
+
+class ChangeEncoder(nn.Module):
+    """Encoder for system changes features."""
+    def __init__(self, input_dim: int = 20, hidden_dim: int = 64, output_dim: int = 32, dropout: float = 0.3):
+        super().__init__()
+        self.batch_norm = nn.BatchNorm1d(input_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.batch_norm(x)
+        return self.encoder(x)
+
+
+class TriageEncoder(nn.Module):
+    """Encoder for static triage features."""
+    def __init__(self, input_dim: int = 14, hidden_dim: int = 64, output_dim: int = 32, dropout: float = 0.3):
+        super().__init__()
+        self.batch_norm = nn.BatchNorm1d(input_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.batch_norm(x)
+        return self.encoder(x)
+
+
+class UnifiedThreatClassifier(nn.Module):
+    """
+    Complete unified classifier (Concatenation-based Early Fusion).
+    Fuses: Commands (256) + MITRE (32) + Changes (32) + Triage (32) = 352-dim
+    """
+    CLASS_NAMES = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
+    
+    def __init__(self):
+        super().__init__()
+        # Encoders
+        self.cmd_encoder = BiLSTMEncoder(vocab_size=256, embed_dim=64, hidden_dim=128, num_layers=2, attention=True)
+        self.mitre_encoder = MitreEncoder(input_dim=21, hidden_dim=64, output_dim=32)
+        self.changes_encoder = ChangeEncoder(input_dim=20, hidden_dim=64, output_dim=32)
+        self.triage_encoder = TriageEncoder(input_dim=12, hidden_dim=64, output_dim=32)
+        
+        # Total dim: 256 + 32 + 32 + 32 = 352
+        self.fusion = nn.Sequential(
+            nn.Linear(352, 128), 
+            nn.ReLU(), 
+            nn.Dropout(0.3),
+            nn.Linear(128, 6)
+        )
+    
+    def forward(self, commands, mitre, changes, triage, lengths=None, modality_mask=None):
+        # modality_mask: [batch, 4] bool - True means the modality is MISSING (used to zero-out missing features)
+        cmd_feat = self.cmd_encoder(commands, lengths)
+        mitre_feat = self.mitre_encoder(mitre)
+        changes_feat = self.changes_encoder(changes)
+        triage_feat = self.triage_encoder(triage)
+        
+        # Zero out missing modalities based on mask
+        if modality_mask is not None:
+            # Mask shape [batch, 4]
+            # [batch, 0] = cmd (never missing ideally, but we support it)
+            # [batch, 1] = mitre
+            # [batch, 2] = changes
+            # [batch, 3] = triage
+            cmd_feat = cmd_feat.masked_fill(modality_mask[:, 0:1], 0.0)
+            mitre_feat = mitre_feat.masked_fill(modality_mask[:, 1:2], 0.0)
+            changes_feat = changes_feat.masked_fill(modality_mask[:, 2:3], 0.0)
+            triage_feat = triage_feat.masked_fill(modality_mask[:, 3:4], 0.0)
+            
+        combined = torch.cat([cmd_feat, mitre_feat, changes_feat, triage_feat], dim=1)
+        return self.fusion(combined)
+
+    def predict(self, commands, mitre, changes, triage, lengths=None, modality_mask=None):
+        logits = self.forward(commands, mitre, changes, triage, lengths, modality_mask)
+        probabilities = F.softmax(logits, dim=1)
+        predictions = torch.argmax(probabilities, dim=1)
+        return predictions, probabilities
