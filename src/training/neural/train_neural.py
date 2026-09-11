@@ -62,15 +62,18 @@ def main():
     parser.add_argument('--use-semantic-labels', action='store_true',
                         help='Use semantic labeling based on command behavior')
     parser.add_argument('--label-mode', type=str, default='combined',
-                        choices=['semantic', 'combined', 'binary'],
-                        help='Label mode: semantic (command behavior only), '
-                             'combined (max of semantic + binary), '
-                             'or binary (original binary-based labels)')
+                        choices=['mitre_only_semantic_balanced', 'semantic', 'combined', 'binary'],
+                        help='Label mode: mitre_only_semantic_balanced (MITRE-only semantic labeling), '
+                              'semantic (command behavior only), '
+                              'combined (max of semantic + binary), '
+                              'or binary (original binary-based labels)')
     parser.add_argument('--precomputed-labels', type=str, 
                         default='data/exports/sessions_semantic_labeled.csv',
                         help='Path to pre-computed semantic labels CSV (faster loading)')
     
     # Model arguments
+    parser.add_argument('--mitre-only', action='store_true',
+                        help='Train MITRE-only model (21 dims) instead of full model (100 dims)')
     parser.add_argument('--embed-dim', type=int, default=64,
                         help='Character embedding dimension')
     parser.add_argument('--lstm-hidden', type=int, default=128,
@@ -117,6 +120,10 @@ def main():
     
     args = parser.parse_args()
     
+    # Auto-set model name if MITRE-only and default model name
+    if args.mitre_only and args.model_name == 'brain_v5_neural':
+        args.model_name = 'brain_v5_mitre_only'
+    
     # Set random seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -149,6 +156,9 @@ def main():
     print(f"\nLoading dataset from {args.data_path}...")
     if args.use_semantic_labels:
         print(f"Using semantic labels (mode={args.label_mode})")
+    if args.mitre_only:
+        print(f"Training MITRE-only model (21 features only, no binary features)")
+    
     train_dataset, val_dataset, test_dataset, tokenizer = load_dataset(
         csv_path=args.data_path,
         max_length=args.max_length,
@@ -158,7 +168,8 @@ def main():
         random_state=args.seed,
         use_semantic_labels=args.use_semantic_labels,
         label_mode=args.label_mode,
-        precomputed_labels_path=args.precomputed_labels if args.use_semantic_labels else None
+        precomputed_labels_path=args.precomputed_labels if args.use_semantic_labels else None,
+        mitre_only=args.mitre_only
     )
     
     # Get structured feature dimension
@@ -182,6 +193,7 @@ def main():
     model = create_model(
         structured_dim=structured_dim,
         device=device,
+        model_type='unified',
         embed_dim=args.embed_dim,
         lstm_hidden=args.lstm_hidden,
         lstm_layers=args.lstm_layers,
@@ -247,6 +259,56 @@ def main():
     # Test set evaluation
     test_metrics = trainer.print_classification_report(test_loader, "Test Set Results")
     
+    # ---------------------------------------------------------
+    # LLM Active Learning & Edge Case Generation
+    # ---------------------------------------------------------
+    print(f"\n{'='*60}")
+    print(" LLM Active Learning & Edge Cases")
+    print('='*60)
+    
+    if not args.no_synthetic:
+        import asyncio
+        import yaml
+        from training.neural.llm_synthetic import llm_review_misclassifications, llm_generate_edge_cases
+        
+        try:
+            with open("config/settings.yaml", "r") as f:
+                app_config = yaml.safe_load(f)
+                
+            print("\n1. LLM reviewing misclassifications and low-confidence predictions...")
+            class_names = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
+            reviews = asyncio.run(llm_review_misclassifications(
+                config=app_config,
+                model=model,
+                val_loader=val_loader,
+                class_names=class_names,
+                max_reviews=5
+            ))
+            
+            for i, rev in enumerate(reviews):
+                print(f"\n[Review {i+1}] Predicted: {rev['predicted_label']} (True: {rev['true_label']}, Conf: {rev['confidence']:.2f})")
+                print(f"Explanation: {rev['llm_explanation'][:200]}...")
+                
+            print("\n2. LLM generating adversarial edge cases for weak classes...")
+            # We target Exploit (3) as an example weak class for adversarial generation
+            edge_cases_df = asyncio.run(llm_generate_edge_cases(
+                config=app_config,
+                weak_class=3,
+                n_samples=2
+            ))
+            
+            if not edge_cases_df.empty:
+                edge_file = "data/exports/active_learning_edges.csv"
+                import os
+                if os.path.isfile(edge_file):
+                    edge_cases_df.to_csv(edge_file, mode='a', header=False, index=False)
+                else:
+                    edge_cases_df.to_csv(edge_file, index=False)
+                print(f"Successfully generated {len(edge_cases_df)} adversarial Exploit samples and saved to {edge_file} for the next training run.")
+                
+        except Exception as e:
+            print(f"LLM Active Learning failed (Make sure Ollama is running): {e}")
+
     # Save model and results
     save_training_results(
         model=model,

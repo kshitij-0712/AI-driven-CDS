@@ -109,12 +109,14 @@ models/*.pkl
 data/processed/ghidra_features/
 
 # Local configuration overrides
-config/settings.local.yaml
+config/authorized_keys
+config/ssh_host_rsa_key.pub
 *.local.yaml
 
 # Logs
 *.log
 logs/
+runtime/
 
 # Secrets / credentials
 .env
@@ -125,13 +127,14 @@ credentials/
 *.key
 
 # Temporary files
-
+data
+verify/
 tmp/
 temp/
 *.tmp
 *.bak
 .local
-
+*.pid
 # OpenCode session files and config
 session-*.md
 .opencode/

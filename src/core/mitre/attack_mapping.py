@@ -83,6 +83,62 @@ TACTIC_NAMES = sorted(TACTICS.keys(), key=lambda t: TACTICS[t]["order"])
 
 _RAW_PATTERNS = [
     # =================================================================
+    # INITIAL ACCESS (TA0001) / EXPLOIT PUBLIC-FACING APP (T1190)
+    # =================================================================
+    {
+        "pattern": r"(UNION\s+SELECT|OR\s+1=1|--\s*$|/\*.*\*/|'|%27)",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: SQL Injection",
+        "tactic": "initial_access",
+        "severity": 9,
+        "description": "SQL Injection payloads",
+    },
+    {
+        "pattern": r"(<script.*?>|javascript:|alert\s*\()",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: Cross-Site Scripting",
+        "tactic": "initial_access",
+        "severity": 7,
+        "description": "XSS payloads",
+    },
+    {
+        "pattern": r"(\.\./|\.\.\\|%2e%2e%2f|/etc/passwd|windows/system32)",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: Path Traversal",
+        "tactic": "initial_access",
+        "severity": 8,
+        "description": "Path traversal or LFI",
+    },
+    {
+        "pattern": r"(\$\([^)]+\)|`[^`]+`|;\s*(whoami|id|uname|cat|ls))",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: Command Injection",
+        "tactic": "initial_access",
+        "severity": 10,
+        "description": "OS Command Injection",
+    },
+    
+    # =================================================================
+    # RECONNAISSANCE (TA0043)
+    # =================================================================
+    {
+        "pattern": r"(sqlmap|nikto|dirbuster|gobuster|wfuzz|burp\s+suite)",
+        "technique_id": "T1595.002",
+        "technique_name": "Active Scanning: Vulnerability Scanning",
+        "tactic": "reconnaissance",
+        "severity": 5,
+        "description": "Web vulnerability scanners",
+    },
+    {
+        "pattern": r"GET\s+/(admin|wp-admin|phpinfo\.php|server-status|xmlrpc\.php|backup|config\.php)",
+        "technique_id": "T1595.003",
+        "technique_name": "Active Scanning: Wordlist Scanning",
+        "tactic": "reconnaissance",
+        "severity": 4,
+        "description": "Common sensitive file enumeration",
+    },
+
+    # =================================================================
     # EXECUTION (TA0002)
     # =================================================================
     {
