@@ -107,9 +107,10 @@ class OllamaClient(BaseLLMClient):
             "messages": messages,
             "stream": False,
             "options": {
+                "num_ctx":4096*5 ,
                 "temperature": 0.7,
-                "top_p": 0.9,
-                "num_predict": 4096
+                "top_p": 0.95,
+                "num_predict": 2000
             }
         }
 

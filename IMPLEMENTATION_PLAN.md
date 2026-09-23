@@ -151,7 +151,7 @@ Files: `http_proxy.py`, `ssh_proxy.py`, `session_store.py`
 1. **`http_proxy.py`**: Feed HTTP requests → unified model. After binary download, re-classify with triage. Accumulate system changes.
 2. **`ssh_proxy.py`**: Feed SSH commands → unified model. Update change vector after each command, re-run model.
 3. **`session_store.py`**: Add `binary_cache` + `system_changes` tables for progressive feature accumulation.
-
+4. **`decision.py`**: Modify the Classify functions for http to include the headers as well. Since New training data contains that
 **Action mapping** (changed from old model):
 
 | Label | Action | Deception Agent Behavior |

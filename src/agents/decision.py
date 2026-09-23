@@ -158,9 +158,8 @@ def _encode_batch(texts, max_length=512):
 
 
 def load_neural_model():
-    """Load the ThreatClassifierMitreOnly neural model from .pt state dict.
+    """Load the neural model from .pt state dict.
 
-    The model was trained on the train_1 branch and saved as a state_dict + config.
     We reconstruct the model architecture and load the weights.
 
     Returns True if successfully loaded, False otherwise.
@@ -169,8 +168,6 @@ def load_neural_model():
 
     if _neural_loaded:
         return _neural_model is not None
-
-    _neural_loaded = True  # Mark as attempted regardless of outcome
 
     try:
         import torch
@@ -188,14 +185,15 @@ def load_neural_model():
         return False
 
     try:
-        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        _neural_device =  "cuda" if torch.cuda.is_available() else "cpu"
+        checkpoint = torch.load(model_path, map_location=_neural_device, weights_only=False)
         model = UnifiedThreatClassifier()
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
 
         _neural_model = model
-        _neural_device = "cpu"
-
+       
+        _neural_loaded = True
         param_count = sum(p.numel() for p in model.parameters())
         logger.info(
             "Neural model loaded: UnifiedThreatClassifier (%s params)", f"{param_count:,}"
@@ -316,7 +314,7 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
     http_findings = [] # Regex removed
 
     # --- Stage 2: Neural model with confidence thresholding ---
-    neural_result = _classify_neural(full_command) if _neural_model is not None else None
+    neural_result = _classify_neural(full_command) if _neural_loaded else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result

