@@ -379,3 +379,175 @@ class DecoyManager:
                         shutil.rmtree(base_dir)
                     except Exception:
                         pass
+
+
+# ---------------------------------------------------------------------------
+# Security & Physical Decoy File Generation Engine
+# ---------------------------------------------------------------------------
+
+MAX_PATH_LENGTH = 1024
+MAX_FILENAME_LENGTH = 255
+MAX_SINGLE_FILE_BYTES = 100 * 1024      # 100 KB
+MAX_TOTAL_PAYLOAD_BYTES = 500 * 1024    # 500 KB
+MAX_FILES_COUNT = 10
+
+
+def sanitize_and_validate_decoy_path(base_dir: str, rel_path: str) -> str:
+    """
+    Strictly validates relative file paths against traversal, null bytes,
+    absolute paths, dot-prefixes, excessive length, and symlink escapes.
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        raise ValueError("Invalid path: path must be a non-empty string.")
+
+    # 1. Null bytes & length checks
+    if "\0" in rel_path or len(rel_path) > MAX_PATH_LENGTH:
+        raise ValueError("Invalid path: null bytes detected or path length exceeded.")
+
+    # 2. Reject absolute paths BEFORE any stripping
+    if rel_path.startswith("/") or rel_path.startswith("\\"):
+        raise ValueError(f"Absolute path rejected: {rel_path}")
+
+    # Reject Windows drive letters or URI schemes (e.g. C:\, file://)
+    if ":" in rel_path:
+        raise ValueError(f"Drive letter or scheme rejected: {rel_path}")
+
+    # 3. Reject dot-prefix and directory traversal indicators
+    normalized_separators = rel_path.replace("\\", "/")
+    path_segments = normalized_separators.split("/")
+
+    for seg in path_segments:
+        if seg in (".", ".."):
+            raise ValueError(f"Directory traversal component '{seg}' rejected: {rel_path}")
+        if len(seg) > MAX_FILENAME_LENGTH:
+            raise ValueError(f"Filename exceeds maximum length: {seg}")
+
+    # 4. Resolve canonical real paths
+    base_real = os.path.realpath(os.path.abspath(base_dir))
+    target_abs = os.path.abspath(os.path.join(base_real, rel_path))
+
+    # Verify target path stays strictly within the canonical base directory
+    if not target_abs.startswith(base_real + os.sep) and target_abs != base_real:
+        raise ValueError(f"Directory escape detected: {rel_path}")
+
+    # 5. Symlink Escape Verification on parent directories
+    parent_dir = os.path.dirname(target_abs)
+    if os.path.exists(parent_dir):
+        parent_real = os.path.realpath(parent_dir)
+        if not parent_real.startswith(base_real + os.sep) and parent_real != base_real:
+            raise ValueError(f"Symlink traversal escape detected: {rel_path}")
+
+    return target_abs
+
+
+def validate_decoy_payload(payload: dict) -> list:
+    """
+    Validates LLM decoy specification:
+    - Verifies generated_files exists and is a list.
+    - Enforces file count (<= 10).
+    - Enforces single file size (<= 100 KB) and total payload (<= 500 KB).
+    - Ignores or removes any security action fields.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Payload must be a JSON object.")
+
+    # LLM is strictly prohibited from dictating security actions
+    if "action" in payload:
+        del payload["action"]
+
+    files = payload.get("generated_files")
+    if not isinstance(files, list):
+        raise ValueError("Payload missing 'generated_files' list.")
+
+    if len(files) > MAX_FILES_COUNT:
+        raise ValueError(f"File count ({len(files)}) exceeds maximum limit of {MAX_FILES_COUNT}.")
+
+    total_bytes = 0
+    validated_files = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        rel_path = item.get("relative_path")
+        if not rel_path or not isinstance(rel_path, str):
+            raise ValueError(f"Missing or invalid 'relative_path' in file spec: {item}")
+
+        content = item.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > MAX_SINGLE_FILE_BYTES:
+            raise ValueError(f"File '{rel_path}' size ({content_bytes}B) exceeds 100 KB limit.")
+
+        total_bytes += content_bytes
+        if total_bytes > MAX_TOTAL_PAYLOAD_BYTES:
+            raise ValueError(f"Total payload size ({total_bytes}B) exceeds 500 KB limit.")
+
+        validated_files.append({"relative_path": rel_path, "content": content})
+
+    return validated_files
+
+
+def generate_fallback_decoy(session_id: str, app_theme: str = "") -> list:
+    """
+    Deterministic static fallback decoy when LLM is unavailable or invalid.
+    """
+    return [
+        {
+            "relative_path": "index.html",
+            "content": """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Corporate Gateway - Maintenance</title>
+  <style>
+    body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+    .card { background: #1e293b; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); max-width: 450px; }
+    h2 { margin-top: 0; color: #38bdf8; }
+    input { width: 100%; padding: 8px; margin: 8px 0; background: #334155; border: 1px solid #475569; color: #fff; border-radius: 4px; box-sizing: border-box; }
+    button { background: #0284c7; color: #fff; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 10px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>System Maintenance Portal</h2>
+    <p>Administrative authentication required to bypass maintenance lock.</p>
+    <form method="POST" action="/login">
+      <input type="text" name="username" placeholder="Username / Service ID" required>
+      <input type="password" name="password" placeholder="Passcode / Token" required>
+      <button type="submit">Authorize</button>
+    </form>
+  </div>
+</body>
+</html>"""
+        }
+    ]
+
+
+def generate_physical_decoy_files(session_id: str, generated_files: list, base_dir: Optional[str] = None) -> str:
+    """
+    Safely writes validated physical decoy files to the session's host mount path.
+    Mount target: ./runtime/decoy_http/{session_id}/html/
+    Mounted into container at: /usr/share/nginx/html/
+    """
+    if base_dir:
+        base_html_dir = os.path.abspath(base_dir)
+    else:
+        base_html_dir = os.path.abspath(f"./runtime/decoy_http/{session_id}/html")
+    os.makedirs(base_html_dir, exist_ok=True)
+
+    for file_item in generated_files:
+        rel_path = file_item.get("relative_path", "")
+        content = file_item.get("content", "")
+
+        try:
+            target_path = sanitize_and_validate_decoy_path(base_html_dir, rel_path)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            # Re-raise or log as appropriate
+            raise e
+
+    return base_html_dir
+

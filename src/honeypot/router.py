@@ -24,11 +24,11 @@ class LLMRouter:
         llm_cfg = galah_cfg.get("llm", {})
 
         self.default_provider = llm_cfg.get("default_provider", "ollama")
-        self.router_policy = llm_cfg.get("router_policy", "dynamic")
+        self.router_policy = llm_cfg.get("router_policy", "ollama_only")
         
         gemini_model = llm_cfg.get("gemini_model", "gemini-1.5-flash")
         ollama_model = llm_cfg.get("ollama_model", "llama3.2:1b")
-        ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
+        ollama_url = llm_cfg.get("ollama_url", "http://192.168.154.1:11434")
 
         self.gemini_key = os.environ.get("GEMINI_API_KEY", "")
         

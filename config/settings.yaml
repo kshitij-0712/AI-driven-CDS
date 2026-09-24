@@ -148,11 +148,11 @@ galah_honeypot:
     output_path: "./runtime/app_structure.json"
     auto_crawl: true
   llm:
-    default_provider: "gemini"
-    router_policy: "dynamic"
+    default_provider: "ollama"
+    router_policy: "ollama_only"
     gemini_model: "gemini-2.5-flash"
     ollama_model: "llama3.2:1b"
-    ollama_url: "http://127.0.0.1:11434"
+    ollama_url: "http://192.168.154.1:11434"
   cache:
     enabled: true
     ttl_seconds: 3600

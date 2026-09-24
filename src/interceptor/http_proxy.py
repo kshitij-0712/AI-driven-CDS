@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from agents.decision import build_hybrid_classifier, classify_http_request
+from agents.decision import build_hybrid_classifier, classify_http_request, aggregate_threat_signals
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
@@ -180,14 +180,32 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             if decoy:
                 target = decoy.base_url
                 
-                # Check for first-time redirection or behavior escalation
+                # Check for first-time redirection, missing page, new path, or behavior escalation
                 prev_label = ctx.get("decoy_label")
                 prev_severity = ctx.get("decoy_severity_max", 0)
+                prev_path = ctx.get("decoy_last_path")
+                prev_query = ctx.get("decoy_last_query", "")
+                
+                target_rel_path = request.url.path.strip("/")
+                if not target_rel_path:
+                    target_file = "index.html"
+                else:
+                    target_file = f"{target_rel_path}.html"
+                file_exists = (
+                    os.path.exists(os.path.join(decoy.html_dir, target_file)) or 
+                    os.path.exists(os.path.join(decoy.html_dir, target_rel_path))
+                )
+
+                is_attack = decision.get("label", "Safe") != "Safe"
                 is_escalation = (
                     not ctx.get("redirected_to_decoy") or 
-                    (decision["label"] != "Safe" and (
+                    not file_exists or
+                    (is_attack and (
+                        request.url.path != prev_path or
+                        request.method.upper() != "GET" or
                         decision["label"] != prev_label or 
-                        decision["severity_max"] > prev_severity
+                        decision["severity_max"] > prev_severity or
+                        str(request.url.query or "") != prev_query
                     ))
                 )
                 
@@ -214,6 +232,8 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                         "decoy_rule": decision.get("rule"),
                         "decoy_mitre_tactics": decision.get("mitre_tactics", []),
                         "decoy_severity_max": decision.get("severity_max", 0),
+                        "decoy_last_path": request.url.path,
+                        "decoy_last_query": str(request.url.query or ""),
                     })
                 
                 # Decoy Cold-Start Fix
@@ -286,10 +306,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                         content={"error": "real_service_unreachable"},
                     )
 
+        aggregated = aggregate_threat_signals(decision, {}, is_internal_traffic=False)
+
         event = {
             "timestamp": time.time(),
             "session_id": session_id,
             "source_ip": src_ip,
+            "threat_type": aggregated.get("threat_type", "EXTERNAL"),
+            "threat_score": aggregated.get("score", 0.0),
             "method": request.method,
             "path": request.url.path,
             "query": str(request.url.query or ""),

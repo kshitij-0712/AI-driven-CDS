@@ -555,7 +555,35 @@ class _FallbackHybridClassifier:
             return 4, "Destructive", {"rule_matched": "fallback destructive", "mitre_tactics": ["impact"], "severity_max": 9}
         if "wget" in text or "curl" in text:
             return 2, "Downloader", {"rule_matched": "fallback downloader", "mitre_tactics": ["command_and_control"], "severity_max": 7}
-        if "nmap" in text or "netstat" in text:
-            return 1, "Recon", {"rule_matched": "fallback recon", "mitre_tactics": ["discovery"], "severity_max": 5}
-
         return 0, "Safe", {"rule_matched": "fallback safe", "mitre_tactics": [], "severity_max": 1}
+
+
+# ---------------------------------------------------------------------------
+# Context Masking & Threat Aggregation
+# ---------------------------------------------------------------------------
+
+def aggregate_threat_signals(external_output: dict, insider_output: dict, is_internal_traffic: bool) -> dict:
+    """
+    Contextually masks and aggregates external public vs insider threat signals.
+    - If internal/authenticated traffic: masks external public exploits; prioritizes insider anomaly risk.
+    - If external public traffic: masks insider metrics; prioritizes v6 classifier label, action, and MITRE tactics.
+    """
+    if is_internal_traffic:
+        return {
+            "threat_type": "INSIDER",
+            "score": float(insider_output.get("risk_score", 0.0)),
+            "label": insider_output.get("label", "NORMAL"),
+            "action": insider_output.get("action", "monitor"),
+            "details": insider_output.get("explanation", []),
+        }
+    else:
+        return {
+            "threat_type": "EXTERNAL",
+            "score": float(external_output.get("confidence", 0.0)) * 100.0,
+            "label": external_output.get("label", "Safe"),
+            "action": external_output.get("action", "allow"),
+            "details": [external_output.get("rule", "v6_model")],
+            "mitre_tactics": external_output.get("mitre_tactics", []),
+            "severity_max": external_output.get("severity_max", 0),
+        }
+

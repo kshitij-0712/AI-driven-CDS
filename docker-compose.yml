@@ -19,6 +19,7 @@ services:
       - ./runtime:/app/runtime
       - ./config:/app/config
       - ./models:/app/models:ro
+      - ./src:/app/src
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
       interval: 10s
