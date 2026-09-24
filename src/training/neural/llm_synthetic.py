@@ -233,104 +233,12 @@ def build_mitre_features_from_commands(commands: str, class_id: int) -> Dict[str
 
 
 def build_triage_features_from_binary_type(binary_type: str, class_id: int) -> Dict[str, float]:
-    """Build 23-dim triage feature vector from binary type and class."""
-    config = CLASS_CONFIG[class_id]
-    vec = {}
-
-    # Base triage features (all 23 columns)
-    triage_cols = [
-        'triage_file_size', 'triage_entropy', 'triage_priority',
-        'triage_is_go', 'triage_is_packed', 'triage_is_stripped',
-        'triage_is_dll', 'triage_is_static', 'triage_score_mining',
-        'triage_score_botnet', 'triage_score_recon', 'triage_score_destructive',
-        'triage_ghidra_score', 'triage_angr_score'
-    ]
-
-    for col in triage_cols:
-        vec[col] = 0.0
-
-    if binary_type == "none":
-        return vec
-
-    # Class-specific triage templates
-    size_map = {
-        "recon_scanner": (10000, 500000),
-        "miner": (50000, 2000000),
-        "botnet": (50000, 2000000),
-        "downloader": (50000, 2000000),
-        "rat": (50000, 2000000),
-        "credential_stealer": (50000, 2000000),
-        "packed": (50000, 2000000),
-        "destructive": (50000, 2000000),
-        "ransomware": (50000, 2000000),
-        "wiper": (50000, 2000000),
-        "go_binary": (1000000, 30000000),
-        "multi_capability": (1000000, 30000000),
-        "persistence": (50000, 2000000),
-        "credential_access": (50000, 2000000),
-        "c2": (50000, 2000000),
-    }
-
-    entropy_map = {
-        "recon_scanner": (5.5, 7.5),
-        "miner": (6.5, 7.9),
-        "botnet": (6.5, 7.9),
-        "downloader": (6.5, 7.9),
-        "rat": (6.5, 7.9),
-        "credential_stealer": (6.5, 7.9),
-        "packed": (7.0, 7.9),
-        "destructive": (6.5, 7.9),
-        "ransomware": (6.5, 7.9),
-        "wiper": (6.5, 7.9),
-        "go_binary": (7.0, 7.9),
-        "multi_capability": (7.0, 7.9),
-        "persistence": (6.5, 7.9),
-        "credential_access": (6.5, 7.9),
-        "c2": (6.5, 7.9),
-    }
-
-    min_size, max_size = size_map.get(binary_type, (10000, 500000))
-    min_ent, max_ent = entropy_map.get(binary_type, (5.5, 7.5))
-
-    vec['triage_file_size'] = random.uniform(min_size, max_size)
-    vec['triage_entropy'] = random.uniform(min_ent, max_ent)
-    vec['triage_priority'] = random.uniform(20, 90)
-    vec['triage_is_stripped'] = 1.0
-    vec['triage_is_packed'] = 1.0 if binary_type in ["packed", "miner", "botnet", "rat", "credential_stealer"] else 0.0
-    vec['triage_is_go'] = 1.0 if binary_type == "go_binary" else 0.0
-    vec['triage_is_stripped'] = 1.0
-
-    # Score indicators
-    score_map = {
-        "miner":               ("triage_score_mining",       0.7, 1.0),
-        "botnet":              ("triage_score_botnet",       0.7, 1.0),
-        "recon_scanner":       ("triage_score_recon",        0.5, 1.0),
-        "destructive":         ("triage_score_destructive",  0.7, 1.0),
-        "ransomware":          ("triage_score_destructive",  0.7, 1.0),
-        "wiper":               ("triage_score_destructive",  0.7, 1.0),
-        "rat":                 ("triage_score_botnet",       0.6, 0.95),
-        "credential_stealer":  ("triage_score_botnet",       0.5, 0.9),
-        "c2":                  ("triage_score_botnet",       0.6, 0.95),
-        "persistence":         ("triage_score_botnet",       0.4, 0.8),
-        "multi_capability":    ("triage_score_botnet",       0.7, 1.0),
-        "go_binary":           ("triage_score_botnet",       0.6, 1.0),
-        "packed":              ("triage_score_botnet",       0.5, 0.9),
-        "downloader":          ("triage_score_mining",       0.4, 0.8),
-    }
-
-    if binary_type in score_map:
-        col, min_v, max_v = score_map[binary_type]
-        vec[col] = random.uniform(min_v, max_v)
-        
-        # Fake deep analysis scores (Knowledge Distillation targets)
-        # Deep analysis generally confirms the static score but with higher certainty
-        vec['triage_ghidra_score'] = min(1.0, random.uniform(min_v + 0.1, max_v + 0.2))
-        vec['triage_angr_score'] = min(1.0, random.uniform(min_v, max_v + 0.1))
-    else:
-        vec['triage_ghidra_score'] = 0.0
-        vec['triage_angr_score'] = 0.0
-
-    return vec
+    """
+    Return all-zeros triage dict for synthetic sessions.
+    Synthetic sessions do not have real binaries — triage features are masked out
+    during training via the dataset modality_mask.
+    """
+    return {}
 
 
 def build_change_features_from_summary(summary: str, class_id: int) -> np.ndarray:

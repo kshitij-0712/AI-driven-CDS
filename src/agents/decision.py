@@ -241,7 +241,7 @@ def _classify_neural(commands: str):
     
     # 2. Changes & Triage (Missing at HTTP request time)
     changes = torch.zeros((1, 20), dtype=torch.float32)
-    triage = torch.zeros((1, 12), dtype=torch.float32)
+    triage = torch.zeros((1, 70), dtype=torch.float32)
     
     # 3. Modality Mask (True = missing)
     # [cmd_missing, mitre_missing, changes_missing, triage_missing]

@@ -45,7 +45,7 @@ def main():
     # Data arguments
     parser.add_argument('--data-path', type=str, default='data/exports/sessions_complete.csv',
                         help='Path to sessions_complete.csv')
-    parser.add_argument('--max-length', type=int, default=512,
+    parser.add_argument('--max-length', type=int, default=5500,
                         help='Maximum command sequence length')
     parser.add_argument('--downsample-safe', type=int, default=5000,
                         help='Downsample Safe class to this size (0 to disable)')

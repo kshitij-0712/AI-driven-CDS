@@ -97,11 +97,11 @@ Desktop.ini
 *~
 
 # Project-specific: Data files (too large/sensitive for git)
-data/raw_logs/
+data/zeek
 data/processed/
-data/binaries/
-data/input/
-
+data/dionaea/
+data/cowrie/
+data/insider/
 # Trained models (large binary files)
 models/*.pkl
 
@@ -127,7 +127,6 @@ credentials/
 *.key
 
 # Temporary files
-data
 verify/
 tmp/
 temp/

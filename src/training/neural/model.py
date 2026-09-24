@@ -632,8 +632,8 @@ class ChangeEncoder(nn.Module):
 
 
 class TriageEncoder(nn.Module):
-    """Encoder for static triage features."""
-    def __init__(self, input_dim: int = 14, hidden_dim: int = 64, output_dim: int = 32, dropout: float = 0.3):
+    """Encoder for static triage + Ghidra + Angr binary features (70-dim)."""
+    def __init__(self, input_dim: int = 70, hidden_dim: int = 64, output_dim: int = 32, dropout: float = 0.3):
         super().__init__()
         self.batch_norm = nn.BatchNorm1d(input_dim)
         self.encoder = nn.Sequential(
@@ -658,14 +658,14 @@ class UnifiedThreatClassifier(nn.Module):
     def __init__(self):
         super().__init__()
         # Encoders
-        self.cmd_encoder = BiLSTMEncoder(vocab_size=256, embed_dim=64, hidden_dim=128, num_layers=2, attention=True)
+        self.cmd_encoder = BiLSTMEncoder(vocab_size=256, embed_dim=64, hidden_dim=128, num_layers=2, use_attention=True)
         self.mitre_encoder = MitreEncoder(input_dim=21, hidden_dim=64, output_dim=32)
         self.changes_encoder = ChangeEncoder(input_dim=20, hidden_dim=64, output_dim=32)
-        self.triage_encoder = TriageEncoder(input_dim=12, hidden_dim=64, output_dim=32)
+        self.triage_encoder = TriageEncoder(input_dim=70, hidden_dim=64, output_dim=32)
         
-        # Total dim: 256 + 32 + 32 + 32 = 352
+        # Total dim: 256 + 32 + 32 + 32 = 384
         self.fusion = nn.Sequential(
-            nn.Linear(352, 128), 
+            nn.Linear(384, 128), 
             nn.ReLU(), 
             nn.Dropout(0.3),
             nn.Linear(128, 6)

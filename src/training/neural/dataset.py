@@ -57,11 +57,43 @@ class ThreatDataset(Dataset):
     ]
 
     TRIAGE_COLS = [
+        # Static triage (12)
         'triage_file_size', 'triage_entropy', 'triage_priority',
         'triage_is_go', 'triage_is_packed', 'triage_is_stripped',
         'triage_is_dll', 'triage_is_static', 'triage_score_mining',
         'triage_score_botnet', 'triage_score_recon', 'triage_score_destructive',
-        'triage_ghidra_score', 'triage_angr_score'
+        # Ghidra features (23)
+        'ghidra_function_count', 'ghidra_total_instructions',
+        'ghidra_total_basic_blocks', 'ghidra_max_function_size',
+        'ghidra_avg_callers', 'ghidra_max_callers',
+        'ghidra_mining_pool_count', 'ghidra_crypto_wallet_count',
+        'ghidra_ip_count', 'ghidra_url_count',
+        'ghidra_shell_cmd_count', 'ghidra_file_path_count',
+        'ghidra_imports_file_io', 'ghidra_imports_process',
+        'ghidra_imports_network', 'ghidra_imports_crypto',
+        'ghidra_imports_evasion',
+        'ghidra_has_aes_sbox', 'ghidra_has_sha256_constants',
+        'ghidra_has_rc4_state', 'ghidra_has_xor_loop',
+        'ghidra_go_user_functions', 'ghidra_go_runtime_functions',
+        # Angr features (25)
+        'angr_basic_blocks', 'angr_edges', 'angr_functions_recovered',
+        'angr_cyclomatic_complexity', 'angr_function_count',
+        'angr_user_functions_listed',
+        'angr_syscalls_network', 'angr_syscalls_file_io',
+        'angr_syscalls_process', 'angr_syscalls_memory',
+        'angr_ip_count', 'angr_url_count',
+        'angr_mining_indicator_count', 'angr_shell_cmd_count',
+        'angr_has_network', 'angr_has_file_manipulation',
+        'angr_has_process_control', 'angr_has_crypto',
+        'angr_has_mining', 'angr_has_persistence',
+        'angr_has_evasion', 'angr_has_shell_execution',
+        'angr_complexity_tier', 'angr_is_partial', 'angr_loaded_as_blob',
+        # Derived features (10)
+        'has_ghidra_results', 'has_angr_results', 'has_script_results',
+        'deep_func_ratio_angr_ghidra', 'deep_mining_signal_count',
+        'deep_total_network_indicators', 'deep_total_crypto_indicators',
+        'deep_max_complexity', 'deep_total_evasion_indicators',
+        'deep_is_go_consensus',
     ]
     
     def __init__(self, data: pd.DataFrame, tokenizer: CommandTokenizer):
@@ -74,7 +106,7 @@ class ThreatDataset(Dataset):
                 data[col] = 0.0
         self.mitre = data[self.MITRE_COLS].fillna(0).values.astype(np.float32)
         
-        # 2. Triage (12 dim)
+        # 2. Triage (70 dim: 12 static + 23 ghidra + 25 angr + 10 derived)
         for col in self.TRIAGE_COLS:
             if col not in data.columns:
                 data[col] = 0.0
@@ -102,14 +134,7 @@ class ThreatDataset(Dataset):
         self.changes_mask = (self.changes.sum(axis=1) == 0)
         self.triage_mask = (self.triage.sum(axis=1) == 0)
         
-        # Get Deep Analysis (Knowledge Distillation) features
-        # If missing in legacy data, default to 0.0
-        ghidra = data['triage_ghidra_score'] if 'triage_ghidra_score' in data.columns else pd.Series([0.0]*len(data), index=data.index)
-        angr = data['triage_angr_score'] if 'triage_angr_score' in data.columns else pd.Series([0.0]*len(data), index=data.index)
-        self.deep_analysis = np.column_stack([ghidra.fillna(0.0).values, angr.fillna(0.0).values]).astype(np.float32)
-        
         self.labels = data['label_id'].values.astype(np.int64)
-        self.structured_dim = 21 + 12 + 20 # For legacy compatibility metric if needed
     
     def __len__(self) -> int:
         return len(self.commands)
@@ -130,7 +155,6 @@ class ThreatDataset(Dataset):
             'changes': torch.tensor(self.changes[idx], dtype=torch.float32),
             'triage': torch.tensor(self.triage[idx], dtype=torch.float32),
             'modality_mask': torch.tensor(mask, dtype=torch.bool),
-            'deep_analysis': torch.tensor(self.deep_analysis[idx], dtype=torch.float32),
             'label': torch.tensor(self.labels[idx], dtype=torch.long)
         }
 
@@ -145,7 +169,6 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'changes': torch.stack([item['changes'] for item in batch]),
         'triage': torch.stack([item['triage'] for item in batch]),
         'modality_mask': torch.stack([item['modality_mask'] for item in batch]),
-        'deep_analysis': torch.stack([item['deep_analysis'] for item in batch]),
         'labels': torch.stack([item['label'] for item in batch])
     }
 
@@ -185,18 +208,24 @@ def load_dataset(
         synthetic_path = 'data/exports/synthetic_batches.csv'
         if os.path.isfile(synthetic_path):
             print(f"Loading generated synthetic batches from {synthetic_path}")
-            syn_df = pd.read_csv(synthetic_path)
+            syn_df = pd.read_csv(synthetic_path, low_memory=False)
             df = pd.concat([df, syn_df], ignore_index=True)
             
         # Load the Active Learning generated edge cases
         active_learning_path = 'data/exports/active_learning_edges.csv'
         if os.path.isfile(active_learning_path):
             print(f"Loading Active Learning edge cases from {active_learning_path}")
-            al_df = pd.read_csv(active_learning_path)
+            al_df = pd.read_csv(active_learning_path, low_memory=False)
             df = pd.concat([df, al_df], ignore_index=True)
 
         if synthetic_data is not None and not synthetic_data.empty:
             df = pd.concat([df, synthetic_data], ignore_index=True)
+    
+    # Filter out non-numeric label_id rows (e.g. extra CSV headers)
+    if 'label_id' in df.columns:
+        df['label_id'] = pd.to_numeric(df['label_id'], errors='coerce')
+        df = df.dropna(subset=['label_id'])
+        df['label_id'] = df['label_id'].astype(int)
     
     # Very basic train/test/val split
     if not df.empty:
