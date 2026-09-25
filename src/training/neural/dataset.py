@@ -9,7 +9,17 @@ import numpy as np
 from typing import Tuple, List, Optional, Dict
 from pathlib import Path
 import ast
+import re
 
+def clean_payload(text: str) -> str:
+    """Strip HTTP method and version, keep URL path, headers, and body."""
+    if not isinstance(text, str):
+        return text
+    # Remove standard HTTP methods and version
+    text = re.sub(r'^(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+', '', text)
+    text = re.sub(r'\s+HTTP/1\.[01]', '', text)
+    return text
+    
 class CommandTokenizer:
     PAD_TOKEN = 0
     UNK_TOKEN = 1
@@ -98,7 +108,21 @@ class ThreatDataset(Dataset):
     
     def __init__(self, data: pd.DataFrame, tokenizer: CommandTokenizer):
         self.tokenizer = tokenizer
-        self.commands = data['commands'].fillna('').tolist()
+        
+        # Extract commands, determine protocol, and clean HTTP boilerplate
+        raw_commands = data['commands'].fillna('').tolist()
+        cleaned_commands = []
+        is_http_list = []
+        
+        for cmd in raw_commands:
+            if "HTTP/1." in cmd or "Host:" in cmd:
+                is_http_list.append(1.0)
+                cleaned_commands.append(clean_payload(cmd))
+            else:
+                is_http_list.append(0.0)
+                cleaned_commands.append(cmd)
+                
+        self.commands = cleaned_commands
         
         # 1. MITRE (21 dim)
         for col in self.MITRE_COLS:
@@ -112,7 +136,7 @@ class ThreatDataset(Dataset):
                 data[col] = 0.0
         self.triage = data[self.TRIAGE_COLS].fillna(0).values.astype(np.float32)
         
-        # 3. Changes (20 dim)
+        # 3. Changes (21 dim: 20 system changes + 1 protocol flag)
         def parse_changes(x):
             if isinstance(x, str):
                 try:
@@ -127,14 +151,24 @@ class ThreatDataset(Dataset):
             changes_list = data['change_features'].apply(parse_changes).tolist()
         else:
             changes_list = [[0.0] * 20 for _ in range(len(data))]
+            
+        # Append the protocol flag (is_http) as the 21st dimension
+        for i in range(len(changes_list)):
+            changes_list[i].append(is_http_list[i])
+            
         self.changes = np.array(changes_list, dtype=np.float32)
-        
+
         # 4. Modality Mask logic (True = missing)
         self.mitre_mask = (self.mitre.sum(axis=1) == 0)
         self.changes_mask = (self.changes.sum(axis=1) == 0)
         self.triage_mask = (self.triage.sum(axis=1) == 0)
         
         self.labels = data['label_id'].values.astype(np.int64)
+
+    @property
+    def structured_dim(self) -> int:
+        """Total dimension of structured features (MITRE + changes + triage)."""
+        return self.mitre.shape[1] + self.changes.shape[1] + self.triage.shape[1]
     
     def __len__(self) -> int:
         return len(self.commands)

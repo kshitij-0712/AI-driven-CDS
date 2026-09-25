@@ -176,9 +176,19 @@ def load_neural_model():
         logger.warning("PyTorch or model module not available: %s", exc)
         return False
 
+    # Load config to get the dynamically set model path
+    import yaml
+    config_path = Path(__file__).parent.parent.parent / "config" / "settings.yaml"
+    model_path_str = "models/brain_v6_unified.pt" # Fallback
+    try:
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+            model_path_str = config.get("ml", {}).get("neural_v6_model_path", model_path_str)
+    except Exception as e:
+        logger.warning("Could not read settings.yaml, using default neural model path. Error: %s", e)
+    
     # Locate the model file
-    model_dir = Path(__file__).parent.parent.parent / "models"
-    model_path = model_dir / "brain_v6_unified.pt"
+    model_path = Path(__file__).parent.parent.parent / model_path_str.strip("./")
 
     if not model_path.exists():
         logger.warning("Neural model not found at %s", model_path)
@@ -225,7 +235,7 @@ def _extract_mitre_features(commands: str):
     return [flat.get(col, 0.0) for col in MITRE_FEATURE_COLS]
 
 
-def _classify_neural(commands: str):
+def _classify_neural(commands: str, is_http: bool = False):
     """Run neural inference using UnifiedThreatClassifier."""
     if _neural_model is None:
         return None
@@ -240,7 +250,9 @@ def _classify_neural(commands: str):
     mitre = torch.tensor([mitre_features], dtype=torch.float32)
     
     # 2. Changes & Triage (Missing at HTTP request time)
-    changes = torch.zeros((1, 20), dtype=torch.float32)
+    changes = torch.zeros((1, 21), dtype=torch.float32)
+    changes[0, 20] = 1.0 if is_http else 0.0
+    
     triage = torch.zeros((1, 70), dtype=torch.float32)
     
     # 3. Modality Mask (True = missing)
@@ -286,35 +298,41 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
 
     user_agent = str(headers.get("user-agent", ""))
 
-    # --- Build the synthetic command (URL-decoded) ---
-    # Extract just the values from query/body params (strip keys like cmd=, q=, file=)
-    # The neural model was trained on raw commands, not HTTP query strings.
-    extracted_values = []
+    # --- Build the synthetic command (Raw HTTP Format) ---
+    # The neural model was trained on full HTTP requests in synthetic_batches.csv,
+    # so we must reconstruct the raw HTTP envelope (Method + Path + Headers + Body).
     
-    for payload in (query, body):
-        if not payload:
-            continue
-        decoded = unquote(payload)
-        for param in decoded.split("&"):
-            if "=" in param:
-                extracted_values.append(param.split("=", 1)[1])
-            else:
-                if param.strip():
-                    extracted_values.append(param)
-                    
-    synthetic_cmd = " ".join(extracted_values).strip()
-    if not synthetic_cmd:
-        synthetic_cmd = unquote(path)
+    full_path = path
+    if query:
+        full_path += f"?{query}"
+        
+    raw_request = f"{method} {full_path} HTTP/1.1\n"
+    
+    # Append headers
+    for k, v in headers.items():
+        # Title-case the header keys for standard formatting (e.g., user-agent -> User-Agent)
+        raw_request += f"{k.title()}: {v}\n"
+        
+    # Append body if present
+    if body:
+        raw_request += f"\n{unquote(body)}"
+        
+    synthetic_cmd = raw_request.strip()
+
+    # Clean HTTP boilerplate to isolate the context
+    import re
+    synthetic_cmd = re.sub(r'^(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+', '', synthetic_cmd)
+    synthetic_cmd = re.sub(r'\s+HTTP/1\.[01]', '', synthetic_cmd)
 
     # Combine history with current command for context-aware classification
-    full_command = f"{command_history}; {synthetic_cmd}".strip("; ") if command_history else synthetic_cmd
+    full_command = f"{command_history}\n\n{synthetic_cmd}".strip() if command_history else synthetic_cmd
 
     # Run MITRE rules classification first to get rule_id, rule_label, and explanation
     rule_id, rule_label, explanation = hybrid_classifier.classify(full_command)
     http_findings = [] # Regex removed
 
     # --- Stage 2: Neural model with confidence thresholding ---
-    neural_result = _classify_neural(full_command) if _neural_loaded else None
+    neural_result = _classify_neural(full_command, is_http=True) if _neural_loaded else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result

@@ -616,7 +616,7 @@ class ThreatClassifierMitreOnly(nn.Module):
 
 class ChangeEncoder(nn.Module):
     """Encoder for system changes features."""
-    def __init__(self, input_dim: int = 20, hidden_dim: int = 64, output_dim: int = 32, dropout: float = 0.3):
+    def __init__(self, input_dim: int = 21, hidden_dim: int = 64, output_dim: int = 32, dropout: float = 0.3):
         super().__init__()
         self.batch_norm = nn.BatchNorm1d(input_dim)
         self.encoder = nn.Sequential(
@@ -660,7 +660,7 @@ class UnifiedThreatClassifier(nn.Module):
         # Encoders
         self.cmd_encoder = BiLSTMEncoder(vocab_size=256, embed_dim=64, hidden_dim=128, num_layers=2, use_attention=True)
         self.mitre_encoder = MitreEncoder(input_dim=21, hidden_dim=64, output_dim=32)
-        self.changes_encoder = ChangeEncoder(input_dim=20, hidden_dim=64, output_dim=32)
+        self.changes_encoder = ChangeEncoder(input_dim=21, hidden_dim=64, output_dim=32)
         self.triage_encoder = TriageEncoder(input_dim=70, hidden_dim=64, output_dim=32)
         
         # Total dim: 256 + 32 + 32 + 32 = 384

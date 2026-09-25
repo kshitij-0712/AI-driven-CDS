@@ -17,6 +17,7 @@ import json
 import random
 import pandas as pd
 import numpy as np
+import torch
 from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
 import sys
@@ -776,16 +777,19 @@ async def llm_review_misclassifications(
     router = LLMRouter(config)
     reviews = []
 
+    # Get the device the model is currently running on
+    device = next(model.parameters()).device
+
     model.eval()
     with torch.no_grad():
         for batch in val_loader:
-            commands = batch['commands']
-            labels = batch['labels']
-            mitre = batch['mitre']
-            changes = batch['changes']
-            triage = batch['triage']
-            modality_mask = batch['modality_mask']
-            lengths = batch['lengths']
+            commands = batch['commands'].to(device)
+            labels = batch['labels'].to(device)
+            mitre = batch['mitre'].to(device)
+            changes = batch['changes'].to(device)
+            triage = batch['triage'].to(device)
+            modality_mask = batch['modality_mask'].to(device)
+            lengths = batch['lengths'].to(device)
 
             logits = model(commands, mitre, changes, triage, lengths, modality_mask)
             probs = torch.softmax(logits, dim=1)
@@ -798,7 +802,10 @@ async def llm_review_misclassifications(
                     if len(reviews) >= max_reviews:
                         return reviews
 
-                    cmd_text = commands[i]  # Already tokenized, need decode
+                    # Decode ASCII indices back to text for the LLM
+                    cmd_chars = [chr(c.item()) for c in commands[i] if c.item() > 1 and c.item() < 128]
+                    cmd_text = "".join(cmd_chars)
+                    
                     true_label = class_names[labels[i].item()]
                     pred_label = class_names[preds[i].item()]
                     confidence = confidences[i].item()
