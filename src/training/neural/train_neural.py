@@ -6,10 +6,10 @@ BiLSTM + Structured Features architecture for threat classification.
 
 Usage:
     # From project root on Windows:
-    .venv\Scripts\python src\training\neural\train_neural.py
+    .venv/Scripts/python src/training/neural/train_neural.py
     
     # With options:
-    .venv\Scripts\python src\training\neural\train_neural.py --epochs 30 --batch-size 64
+    .venv/Scripts/python src/training/neural/train_neural.py --epochs 30 --batch-size 64
 """
 
 import sys

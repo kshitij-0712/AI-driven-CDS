@@ -43,7 +43,7 @@ ml:
   neural_v5_results_path: "./models/brain_v5_neural_results.json"
   
   # Phase 6: Unified 4-Modality Model
-  neural_v6_model_path: "./models/brain_v6_neural_2048.pt"
+  neural_v6_model_path: "./models/brain_v5_neural.pt"
 
 # Phase 5: Neural model training configuration
 neural_training:

@@ -235,8 +235,21 @@ def _extract_mitre_features(commands: str):
     return [flat.get(col, 0.0) for col in MITRE_FEATURE_COLS]
 
 
-def _classify_neural(commands: str, is_http: bool = False):
-    """Run neural inference using UnifiedThreatClassifier."""
+def _classify_neural(
+    commands: str,
+    is_http: bool = False,
+    triage_features: list = None,
+):
+    """Run neural inference using UnifiedThreatClassifier.
+
+    Args:
+        commands: The command/payload string to classify.
+        is_http: Whether this is an HTTP request.
+        triage_features: Optional list of 12 floats from
+            static_analyzer. When provided, the triage
+            modality is unmasked so the model can use
+            binary analysis features for re-classification.
+    """
     if _neural_model is None:
         return None
 
@@ -247,47 +260,79 @@ def _classify_neural(commands: str, is_http: bool = False):
 
     # 1. MITRE features
     mitre_features = _extract_mitre_features(commands)
-    mitre = torch.tensor([mitre_features], dtype=torch.float32)
-    
-    # 2. Changes & Triage (Missing at HTTP request time)
+    mitre = torch.tensor(
+        [mitre_features], dtype=torch.float32
+    )
+
+    # 2. Changes (21 dim: 20 system + 1 protocol flag)
     changes = torch.zeros((1, 21), dtype=torch.float32)
     changes[0, 20] = 1.0 if is_http else 0.0
-    
+
+    # 3. Triage (70 dim)
     triage = torch.zeros((1, 70), dtype=torch.float32)
-    
-    # 3. Modality Mask (True = missing)
-    # [cmd_missing, mitre_missing, changes_missing, triage_missing]
-    modality_mask = torch.tensor([[False, False, True, True]], dtype=torch.bool)
+    triage_masked = True
+    if triage_features is not None and len(triage_features) >= 12:
+        triage[0, :12] = torch.tensor(
+            triage_features[:12], dtype=torch.float32
+        )
+        triage_masked = False
+
+    # 4. Modality Mask (True = missing/masked)
+    # [cmd, mitre, changes, triage]
+    modality_mask = torch.tensor(
+        [[False, False, not is_http, triage_masked]],
+        dtype=torch.bool,
+    )
 
     # Inference
     with torch.no_grad():
         predictions, probabilities = _neural_model.predict(
-            encoded, mitre, changes, triage, lengths, modality_mask
+            encoded, mitre, changes,
+            triage, lengths, modality_mask,
         )
 
     pred_class = predictions[0].item()
     probs = probabilities[0].cpu().numpy()
     confidence = float(probs[pred_class])
 
-    return pred_class, CLASS_NAMES[pred_class], confidence, {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))}
+    return (
+        pred_class,
+        CLASS_NAMES[pred_class],
+        confidence,
+        {
+            CLASS_NAMES[i]: float(probs[i])
+            for i in range(len(CLASS_NAMES))
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # Main HTTP classification entry point
 # ---------------------------------------------------------------------------
 
-def classify_http_request(hybrid_classifier, request_context, command_history: str = "", neural_model_loaded=None):
-    """Classify an HTTP request context using a multi-stage pipeline.
+def classify_http_request(
+    hybrid_classifier,
+    request_context,
+    command_history: str = "",
+    neural_model_loaded=None,
+    triage_features: list = None,
+):
+    """Classify an HTTP request using multi-stage pipeline.
 
     Pipeline:
-    1. Fast regex pre-filter for obvious attacks (XSS, SQLi, etc.)
-    2. Neural BiLSTM model (if loaded) with confidence thresholding
+    1. Fast regex pre-filter for obvious attacks
+    2. Neural BiLSTM model (if loaded) with confidence
     3. MITRE rule-based HybridClassifierV2 fallback
 
-    request_context keys:
-      - method, path, query, body, headers (dict), source_ip
+    Args:
+        triage_features: Optional 12 floats from
+            static_analyzer for binary-enriched
+            re-classification.
 
-    Returns a dict with threat label, action, and explanation.
+    request_context keys:
+      - method, path, query, body, headers, source_ip
+
+    Returns a dict with threat label, action, explanation.
     """
     method = (request_context.get("method") or "GET").upper()
     path = request_context.get("path") or "/"
@@ -332,7 +377,11 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
     http_findings = [] # Regex removed
 
     # --- Stage 2: Neural model with confidence thresholding ---
-    neural_result = _classify_neural(full_command, is_http=True) if _neural_loaded else None
+    neural_result = _classify_neural(
+        full_command,
+        is_http=True,
+        triage_features=triage_features,
+    ) if _neural_loaded else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result
@@ -414,9 +463,18 @@ def classify_http_request(hybrid_classifier, request_context, command_history: s
 # SSH Guard Integration
 # ---------------------------------------------------------------------------
 
-def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict:
+def classify_ssh_command(
+    hybrid_classifier,
+    command: str,
+    context: dict,
+    triage_features: list = None,
+) -> dict:
     """Evaluate an SSH command for threats.
-    Expects `command` to be the full session context if available.
+
+    Args:
+        triage_features: Optional 12 floats from
+            static_analyzer for binary-enriched
+            re-classification.
     """
     if not command.strip():
         return {
@@ -429,11 +487,16 @@ def classify_ssh_command(hybrid_classifier, command: str, context: dict) -> dict
             "severity_max": 0,
         }
 
-    # Run MITRE rules classification first to get rule_id, rule_label, and explanation
-    rule_id, rule_label, explanation = hybrid_classifier.classify(command)
+    # Run MITRE rules classification
+    rule_id, rule_label, explanation = (
+        hybrid_classifier.classify(command)
+    )
 
     # Stage 2: Neural Inference
-    neural_result = _classify_neural(command) if _neural_model is not None else None
+    neural_result = _classify_neural(
+        command,
+        triage_features=triage_features,
+    ) if _neural_model is not None else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result

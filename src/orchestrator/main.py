@@ -43,12 +43,30 @@ def run(config_path: str):
         app.state.decoys.get_or_spawn_ssh_decoy("prewarm")
         logging.info("Decoys ready.")
 
+        from honeypot.ssh_decoy_builder import SSHDecoyBuilder
+        from core.triage.watcher import TriageWatcher
+        builder = SSHDecoyBuilder(config, app.state.store)
+        
+        watcher = TriageWatcher(
+            watch_dir="./runtime/decoy_ssh",
+            store=app.state.store,
+            classifier=app.state.classifier,
+            builder=builder,
+            decoy_mgr=app.state.decoys
+        )
+        watcher.start()
+
         # Start SSH proxy
         ssh_task = asyncio.create_task(
-            start_ssh_proxy(config, app.state.store, app.state.nft, app.state.classifier, app.state.decoys)
+            start_ssh_proxy(
+                config, app.state.store, app.state.nft, app.state.classifier, app.state.decoys, builder
+            )
         )
         # Start HTTP server
-        await server.serve()
+        try:
+            await server.serve()
+        finally:
+            watcher.stop()
 
     asyncio.run(main_loop())
 

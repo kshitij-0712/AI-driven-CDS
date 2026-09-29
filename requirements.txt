@@ -19,3 +19,7 @@ pefile>=2023.2.7          # PE (Windows) header/import/export parsing
 # Optional: Network discovery
 # python-nmap>=0.7.1
 asyncssh
+
+# Testing
+pytest>=7.0
+watchdog>=4.0.0

@@ -34,7 +34,12 @@ class SSHDecoyBuilder:
         os.makedirs(honeyfs_home, exist_ok=True)
 
         baseline_flag = os.path.join(cowrie_base_dir, ".baseline_written")
-        if not os.path.exists(baseline_flag):
+        is_triage = decision.get("triage_enriched", False)
+        
+        if not os.path.exists(baseline_flag) or is_triage:
+            if is_triage:
+                logger.info(f"Triage enriched - bypassing baseline check to dynamically regenerate decoy files for {session_id}")
+            
             await self._generate_and_write_content(
                 txtcmds_dir, honeyfs_etc, honeyfs_home, cowrie_cfg_path, session_id, decision
             )

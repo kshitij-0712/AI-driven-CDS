@@ -28,8 +28,8 @@ class LLMRouter:
 
         gemini_model = llm_cfg.get("gemini_model", "gemini-1.5-flash")
         ollama_model = llm_cfg.get("ollama_model", "llama3.2:1b")
-        ollama_url = llm_cfg.get("ollama_url", "http://localhost:11434")
-        ollama_timeout = llm_cfg.get("ollama_timeout", 180)
+        ollama_url = llm_cfg.get("ollama_url", "http://192.168.56.1:11434")
+        ollama_timeout = llm_cfg.get("ollama_timeout", 5)
 
         self.gemini_key = os.environ.get("GEMINI_API_KEY", "")
 

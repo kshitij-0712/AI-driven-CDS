@@ -325,8 +325,13 @@ class DecoyManager:
             local_base_dir = os.path.abspath(f"./runtime/decoy_ssh/{actual_session_id}")
             txtcmds_dir = os.path.join(local_base_dir, "txtcmds")
             honeyfs_dir = os.path.join(local_base_dir, "honeyfs")
+            downloads_dir = os.path.join(local_base_dir, "downloads")
             os.makedirs(txtcmds_dir, exist_ok=True)
             os.makedirs(honeyfs_dir, exist_ok=True)
+            os.makedirs(downloads_dir, exist_ok=True)
+
+            # Fix permissions so Cowrie (uid 1000) can write to downloads
+            os.chmod(downloads_dir, 0o777)
 
             with open(os.path.join(local_base_dir, "session_id.txt"), "w") as _f:
                 _f.write(session_id)
@@ -347,6 +352,7 @@ class DecoyManager:
             host_txtcmds_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "txtcmds")
             host_honeyfs_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "honeyfs")
             host_cowrie_cfg = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "cowrie.cfg")
+            host_downloads_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "downloads")
 
             # Create empty cowrie.cfg so it can be mounted
             with open(os.path.join(local_base_dir, "cowrie.cfg"), "w") as f:
@@ -360,6 +366,7 @@ class DecoyManager:
                     host_txtcmds_dir: {"bind": "/cowrie/cowrie-git/share/cowrie/txtcmds", "mode": "ro"},
                     host_honeyfs_dir: {"bind": "/cowrie/cowrie-git/honeyfs", "mode": "ro"},
                     host_cowrie_cfg: {"bind": "/cowrie/cowrie-git/etc/cowrie.cfg", "mode": "ro"},
+                    host_downloads_dir: {"bind": "/cowrie/cowrie-git/var/lib/cowrie/downloads", "mode": "rw"},
                 },
                 labels={
                     "adaptiveshield.decoy": "true",

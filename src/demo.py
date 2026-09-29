@@ -9,7 +9,7 @@ This script demonstrates the complete 10% implementation milestone:
 4. Real-time session analysis
 
 Run with: python src/demo.py
-Or: .venv\Scripts\python src/demo.py (Windows)
+Or: .venv/Scripts/python src/demo.py (Windows)
 
 Modes:
   --hybrid   Use MITRE rule-based hybrid classifier (default, 90.9% accuracy)

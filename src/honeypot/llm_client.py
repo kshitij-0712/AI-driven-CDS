@@ -64,7 +64,7 @@ class GeminiClient(BaseLLMClient):
             raise
 
 class OllamaClient(BaseLLMClient):
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2:1b", timeout: int = 180):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2:1b", timeout: int = 5):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.url = f"{self.base_url}/api/generate"

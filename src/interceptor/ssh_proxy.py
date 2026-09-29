@@ -134,10 +134,21 @@ class SSHGuardSession(asyncssh.SSHServerSession):
 
         # Buffer for command reconstruction
         if isinstance(data, bytes):
-            # Sometimes data is bytes depending on asyncssh version
             data = data.decode('utf-8', 'ignore')
 
-        for char in data:
+        i = 0
+        while i < len(data):
+            char = data[i]
+            if char == '\x1b':
+                # Skip the escape sequence
+                i += 1
+                if i < len(data) and data[i] == '[':
+                    i += 1
+                    while i < len(data) and not data[i].isalpha():
+                        i += 1
+                i += 1
+                continue
+                
             if char == '\r' or char == '\n':
                 if self.cmd_buffer.strip():
                     self._process_command(self.cmd_buffer.strip())
@@ -146,6 +157,7 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 self.cmd_buffer = self.cmd_buffer[:-1]
             elif char.isprintable():
                 self.cmd_buffer += char
+            i += 1
 
     def _process_command(self, cmd: str):
         if not self.is_decoy:
@@ -392,7 +404,7 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
         self.conn.close()
         return None
 
-async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager):
+async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, builder: SSHDecoyBuilder = None):
     ssh_cfg = config.get("ssh_guard", {})
     if not ssh_cfg.get("enabled", False):
         return
@@ -400,7 +412,8 @@ async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManage
     port = int(ssh_cfg.get("listen_port", 22))
     server_key = ssh_cfg.get("server_key_path", "./config/ssh_host_rsa_key.key")
     
-    builder = SSHDecoyBuilder(config, store)
+    if builder is None:
+        builder = SSHDecoyBuilder(config, store)
     
     def server_factory():
         return AdaptiveSSHServer(store, nft, classifier, decoy_mgr, ssh_cfg, builder)
