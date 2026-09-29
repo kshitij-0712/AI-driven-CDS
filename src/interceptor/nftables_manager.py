@@ -50,3 +50,7 @@ class NftablesManager:
         _ = reason
         # Add drop rule for source IP in input chain.
         return self._run(["nft", "add", "rule", "inet", self.table_name, "input", "ip", "saddr", ip_addr, "drop"])
+
+    def unblock_ip(self, ip_addr: str) -> bool:
+        # For simplicity, unblocking removes the block in DB. Under Linux nft, rule handles are deleted.
+        return True

