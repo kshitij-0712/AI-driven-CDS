@@ -407,7 +407,7 @@ def classify_http_request(
             else:
                 action = "drop_and_block"
 
-            return {
+            result = {
                 "class_id": pred_id,
                 "label": label,
                 "confidence": confidence,
@@ -420,6 +420,36 @@ def classify_http_request(
                 "neural_probs": probs,
                 "extracted_command": synthetic_cmd,
             }
+            
+            # Deep XAI Integration
+            from agents.xai import AdaptiveXAINarrator
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            
+            xai_event = ClassificationEvent(
+                session_id=request_context.get("session_id", "unknown"),
+                timestamp="now",
+                src_ip=source_ip,
+                commands=[synthetic_cmd],
+                classification=label,
+                confidence=confidence,
+                mitre_techniques=result["mitre_tactics"],
+                features_used={"rule": rule_name}
+            )
+            xai_decision = RoutingDecision(
+                session_id=request_context.get("session_id", "unknown"),
+                action=action,
+                target="decoy" if action == "redirect_to_decoy" else ("drop" if action == "drop_and_block" else "upstream"),
+                reason=rule_name
+            )
+            narrator = AdaptiveXAINarrator()
+            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
+            
+            result["xai_summary"] = xai_explanation.summary
+            result["xai_detailed"] = xai_explanation.detailed
+            result["xai_risk_score"] = xai_explanation.risk_score
+            result["xai_recommendations"] = xai_explanation.recommended_actions
+            
+            return result
         else:
             # Low confidence — fall through to MITRE rules
             logger.debug(
@@ -456,6 +486,35 @@ def classify_http_request(
         result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
 
     result["extracted_command"] = synthetic_cmd
+    
+    # Deep XAI Integration for Fallback
+    from agents.xai import AdaptiveXAINarrator
+    from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+    
+    xai_event = ClassificationEvent(
+        session_id=request_context.get("session_id", "unknown"),
+        timestamp="now",
+        src_ip=source_ip,
+        commands=[synthetic_cmd],
+        classification=rule_label,
+        confidence=1.0,
+        mitre_techniques=result["mitre_tactics"],
+        features_used={"rule": result["rule"]}
+    )
+    xai_decision = RoutingDecision(
+        session_id=request_context.get("session_id", "unknown"),
+        action=action,
+        target="decoy" if action == "redirect_to_decoy" else ("drop" if action == "drop_and_block" else "upstream"),
+        reason=result["rule"]
+    )
+    narrator = AdaptiveXAINarrator()
+    xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
+    
+    result["xai_summary"] = xai_explanation.summary
+    result["xai_detailed"] = xai_explanation.detailed
+    result["xai_risk_score"] = xai_explanation.risk_score
+    result["xai_recommendations"] = xai_explanation.recommended_actions
+    
     return result
 
 
@@ -522,7 +581,7 @@ def classify_ssh_command(
             else:
                 action = "drop_and_block"
 
-            return {
+            result = {
                 "class_id": pred_id,
                 "label": label,
                 "confidence": confidence,
@@ -533,6 +592,36 @@ def classify_ssh_command(
                 "neural_confidence": neural_result[2],
                 "neural_probs": probs,
             }
+            
+            # Deep XAI Integration
+            from agents.xai import AdaptiveXAINarrator
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            
+            xai_event = ClassificationEvent(
+                session_id=context.get("session_id", "unknown"),
+                timestamp="now",
+                src_ip=context.get("source_ip", "unknown"),
+                commands=[command],
+                classification=label,
+                confidence=confidence,
+                mitre_techniques=result["mitre_tactics"],
+                features_used={"rule": rule_name}
+            )
+            xai_decision = RoutingDecision(
+                session_id=context.get("session_id", "unknown"),
+                action=action,
+                target="decoy" if action == "redirect_to_decoy" else ("drop" if action == "drop_and_block" else "upstream"),
+                reason=rule_name
+            )
+            narrator = AdaptiveXAINarrator()
+            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
+            
+            result["xai_summary"] = xai_explanation.summary
+            result["xai_detailed"] = xai_explanation.detailed
+            result["xai_risk_score"] = xai_explanation.risk_score
+            result["xai_recommendations"] = xai_explanation.recommended_actions
+            
+            return result
 
     # Stage 3: MITRE Fallback
     if rule_label == "Safe":
@@ -559,6 +648,34 @@ def classify_ssh_command(
         result["neural_confidence"] = neural_conf
         result["neural_probs"] = neural_probs
         result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
+
+    # Deep XAI Integration for Fallback
+    from agents.xai import AdaptiveXAINarrator
+    from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+    
+    xai_event = ClassificationEvent(
+        session_id=context.get("session_id", "unknown"),
+        timestamp="now",
+        src_ip=context.get("source_ip", "unknown"),
+        commands=[command],
+        classification=rule_label,
+        confidence=1.0,
+        mitre_techniques=result["mitre_tactics"],
+        features_used={"rule": result["rule"]}
+    )
+    xai_decision = RoutingDecision(
+        session_id=context.get("session_id", "unknown"),
+        action=action,
+        target="decoy" if action == "redirect_to_decoy" else ("drop" if action == "drop_and_block" else "upstream"),
+        reason=result["rule"]
+    )
+    narrator = AdaptiveXAINarrator()
+    xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
+    
+    result["xai_summary"] = xai_explanation.summary
+    result["xai_detailed"] = xai_explanation.detailed
+    result["xai_risk_score"] = xai_explanation.risk_score
+    result["xai_recommendations"] = xai_explanation.recommended_actions
 
     return result
 

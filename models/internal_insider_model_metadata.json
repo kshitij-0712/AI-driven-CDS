@@ -1,6 +1,6 @@
 {
-  "dataset_source": "./data/insider/internal_insider_dataset_live.csv",
-  "training_samples": 809,
+  "dataset_source": "./data/insider/internal_insider_dataset_base.csv",
+  "training_samples": 808,
   "test_samples": 203,
   "test_accuracy": 1.0,
   "feature_names": [

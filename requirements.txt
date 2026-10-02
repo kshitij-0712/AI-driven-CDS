@@ -23,3 +23,9 @@ asyncssh
 # Testing
 pytest>=7.0
 watchdog>=4.0.0
+
+# Deep Learning / ML (Required for neural models)
+torch>=2.0.0
+pandas>=2.0.0
+joblib>=1.3.0
+tqdm

@@ -44,7 +44,7 @@ def _request_to_context(request: Request, body: str) -> Dict:
     }
 
 
-def create_http_guard_app(config: Dict) -> FastAPI:
+def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
 
     runtime_cfg = config.get("runtime", {})
     http_cfg = config.get("http_guard", {})
@@ -60,6 +60,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     fallback_on_error = bool(http_cfg.get("fallback_on_error", True))
     listen_port = int(http_cfg.get("listen_port", 80))
     session_idle_timeout_sec = int(http_cfg.get("session_idle_timeout_sec", 900))
+    internal_paths = http_cfg.get("internal_paths", [])
 
     os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
 
@@ -381,7 +382,19 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "severity_max": 8,
                     "http_findings": ["brute_force"],
                 }
-
+                
+        # --- Logical Segregation: Flag External Reconnaissance ---
+        is_accessing_internal = any(path_lower.startswith(p) for p in internal_paths)
+        if not is_internal and is_accessing_internal:
+            # External users probing internal endpoints. Let it process normally, 
+            # but force classification to at least Recon.
+            if decision["label"] == "Safe":
+                decision["label"] = "Recon"
+                decision["rule"] = "Unauthorized reconnaissance of internal endpoint"
+                decision["action"] = "redirect_to_decoy"
+                if "discovery" not in decision.get("mitre_tactics", []):
+                    decision.setdefault("mitre_tactics", []).append("discovery")
+                decision["severity_max"] = max(decision.get("severity_max", 0), 4)
         # Determine base risk score from external neural network classification
         confidence = decision.get("neural_confidence", 1.0)
         ext_label = decision["label"].lower()
@@ -396,8 +409,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         else: # Destructive, APT
             base_risk_score = 75.0 + (confidence * 25.0)
 
-        # Check for Insider Threat if source IP is internal/private
-        is_internal = _is_private_ip(src_ip)
+        # Check for Insider Threat if this is the Internal HTTP Guard
         risk_score = base_risk_score
         insider_threat = None
         
@@ -438,8 +450,43 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 is_internal=True
             )
             insider_threat = insider_detector.analyze_signal(signal)
-            # Combine external and internal threat risk scores
-            risk_score = max(insider_threat.risk_score, base_risk_score)
+            
+            # Internal HTTP Guard EXCLUSIVELY uses insider risk score
+            risk_score = insider_threat.risk_score
+            decision["label"] = "Insider Anomaly"
+            decision["rule"] = ", ".join(insider_threat.anomaly_factors) or "Internal behavior monitoring"
+            
+            # Deep XAI Integration for Internal
+            from agents.xai import AdaptiveXAINarrator
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            
+            xai_event = ClassificationEvent(
+                session_id=session_id,
+                timestamp=signal.timestamp,
+                src_ip=src_ip,
+                commands=[action_details["command"]] if action_details["command"] else [],
+                classification=decision["label"],
+                confidence=1.0,
+                mitre_techniques=[],
+                features_used={"anomalies": insider_threat.anomaly_factors}
+            )
+            xai_decision = RoutingDecision(
+                session_id=session_id,
+                action="forward",
+                target="upstream",
+                reason=decision["rule"]
+            )
+            narrator = AdaptiveXAINarrator()
+            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
+            
+            decision["xai_summary"] = xai_explanation.summary
+            decision["xai_detailed"] = xai_explanation.detailed
+            decision["xai_risk_score"] = xai_explanation.risk_score
+            decision["xai_recommendations"] = xai_explanation.recommended_actions
+            
+        else:
+            # External HTTP Guard EXCLUSIVELY uses neural/hybrid external risk score
+            risk_score = base_risk_score
 
         # Policy Engine Decides
         if risk_score <= 30.0:
@@ -455,9 +502,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
         else:
             policy_decision = "CONTAIN"
-            action = "drop_and_block"
-            decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
-            decision["label"] = "Destructive"
+            # External attackers get blocked at the firewall. Internal employees get contained in a decoy.
+            if is_internal:
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or f"Policy: Internal containment triggered. Risk level: {risk_score}%"
+            else:
+                action = "drop_and_block"
+                decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
+                decision["label"] = "Destructive"
 
         decision["action"] = action
         target = f"http://{real_host}:{real_port}"
@@ -469,7 +521,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             pass
         elif ctx.get("redirected_to_decoy"):
             should_redirect_to_decoy = True
-        elif action == "redirect_to_decoy" or (galah_enabled and decision.get("label") not in ("Safe", "Recon")):
+        elif action == "redirect_to_decoy" or (galah_enabled and not is_internal and decision.get("label") not in ("Safe", "Recon")):
             should_redirect_to_decoy = True
 
         if action == "drop_and_block":
@@ -584,50 +636,17 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             if decision["label"] in ("Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"):
                 event["suspicious"] = True
 
-        # Generate XAI Explanation
-        from interfaces.xai_contract import ClassificationEvent, RoutingDecision
         is_insider_active = is_internal and insider_threat is not None
         
         event["risk_score"] = risk_score
         event["policy_decision"] = policy_decision
         if is_insider_active:
             event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
-
-        xai_features = {
-            "risk_score": risk_score,
-            "policy_decision": policy_decision
-        }
-        if is_insider_active:
-            xai_features.update({
-                "insider_threat": True if action == "drop_and_block" else False,
-                "role": request.headers.get("x-user-role", "normal"),
-                "anomaly_factors": insider_threat.anomaly_factors,
-                "evidence_features": insider_threat.features
-            })
-
-        xai_event = ClassificationEvent(
-            session_id=session_id,
-            timestamp=datetime.now().isoformat() + "Z",
-            src_ip=src_ip,
-            commands=[decision.get("extracted_command", "")] if decision.get("extracted_command") else [],
-            classification=decision["label"],
-            confidence=decision.get("neural_confidence", 1.0),
-            mitre_techniques=decision.get("mitre_tactics", []),
-            features_used=xai_features
-        )
-        xai_decision = RoutingDecision(
-            session_id=session_id,
-            action=action,
-            target=target,
-            reason=decision.get("rule", "Classification triggered")
-        )
-        
-        explanation = xai_detector.generate_explanation(xai_event, xai_decision)
-        
-        event["xai_summary"] = explanation.summary
-        event["xai_detailed"] = explanation.detailed
-        event["xai_risk_score"] = explanation.risk_score
-        event["xai_recommendations"] = explanation.recommended_actions
+            
+        event["xai_summary"] = decision.get("xai_summary", "")
+        event["xai_detailed"] = decision.get("xai_detailed", "")
+        event["xai_risk_score"] = decision.get("xai_risk_score", risk_score)
+        event["xai_recommendations"] = decision.get("xai_recommendations", [])
 
         # Push to live dashboard stream queue
         try:

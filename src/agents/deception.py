@@ -396,7 +396,9 @@ class DecoyManager:
             )
             self._active_ssh[container.id] = instance
             return instance
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to spawn SSH decoy: {e}")
             return None
 
     def get_or_spawn_ssh_decoy(self, session_id: str) -> Optional[DecoyInstance]:

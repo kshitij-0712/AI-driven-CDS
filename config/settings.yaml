@@ -112,6 +112,9 @@ http_guard:
   session_idle_timeout_sec: 900
   brute_force_threshold: 8
   block_duration_minutes: 60
+  internal_paths:
+    - "/admin"
+    - "/workspace"
 
 ssh_guard:
   enabled: true
@@ -132,7 +135,7 @@ ssh_guard:
   real_service_host: "127.0.0.1"
   real_service_port: 2200
   brute_force_threshold: 5  # Change it to 20 for real world scenarios
-  server_key_path: "./config/ssh_host_rsa_key"
+  server_key_path: "./config/ssh_host_rsa_key.key"
   allowed_keys_path: "./config/authorized_keys"
 
 decoys:
@@ -166,3 +169,9 @@ galah_honeypot:
     enabled: true
     ttl_seconds: 3600
 
+
+internal_http_guard:
+  enabled: true
+  listen_port: 8001
+  real_service_host: "127.0.0.1"
+  real_service_port: 8090
