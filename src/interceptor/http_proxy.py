@@ -1,8 +1,9 @@
 import json
 import os
+import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, Optional, Any
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -13,12 +14,15 @@ from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
 from agents.insider.insider_adapter import AdaptiveInsiderDetector
+from agents.insider.corporate_directory import CorporateDirectory
 from agents.xai import AdaptiveXAINarrator
 import ipaddress
 from datetime import datetime
 import asyncio
 from fastapi.responses import StreamingResponse
 from honeypot import HoneypotGenerator
+
+logger = logging.getLogger(__name__)
 
 # Global event queue will be attached to app.state inside create_http_guard_app
 active_event_queue = None
@@ -44,10 +48,12 @@ def _request_to_context(request: Request, body: str) -> Dict:
     }
 
 
-def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
+def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optional[DecoyManager] = None) -> FastAPI:
 
     runtime_cfg = config.get("runtime", {})
-    http_cfg = config.get("http_guard", {})
+    http_cfg = dict(config.get("http_guard", {}))
+    if is_internal:
+        http_cfg.update(config.get("internal_http_guard", {}))
     decoy_cfg = config.get("decoys", {})
 
     db_path = runtime_cfg.get("db_path", "./runtime/adaptiveshield.db")
@@ -64,26 +70,52 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
 
     os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
 
+    corporate_db_path = runtime_cfg.get("corporate_db_path", "./runtime/corporate_directory.db")
+    corporate_dir = CorporateDirectory(db_path=corporate_db_path)
+    insider_log_path = runtime_cfg.get("insider_log_path", "./runtime/logs/insider_events.jsonl")
+    os.makedirs(os.path.dirname(insider_log_path), exist_ok=True)
+
     store = SessionStore(db_path)
     nft = NftablesManager()
     nft.ensure_base_ruleset()
 
     classifier = build_hybrid_classifier()
-    insider_detector = AdaptiveInsiderDetector()
+    insider_detector = AdaptiveInsiderDetector(directory_db_path=corporate_db_path)
     xai_detector = AdaptiveXAINarrator()
 
-    decoys = DecoyManager(
-        http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
-        max_instances=int(decoy_cfg.get("max_instances", 5)),
-        idle_timeout_sec=int(decoy_cfg.get("idle_timeout_sec", 300)),
-        fallback_url=decoy_cfg.get("fallback_url"),
-    )
+    scope = "internal" if is_internal else "external"
+    if decoys is None:
+        decoys = DecoyManager(
+            http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
+            max_instances=int(decoy_cfg.get("max_instances", 5)),
+            idle_timeout_sec=int(decoy_cfg.get("idle_timeout_sec", 300)),
+            fallback_url=decoy_cfg.get("fallback_url"),
+            scope=scope,
+            host_runtime_dir=runtime_cfg.get(
+                "host_runtime_dir", "/home/me/data/AdaptiveShield/runtime"
+            ),
+        )
 
     galah_enabled = bool(config.get("galah_honeypot", {}).get("enabled", False))
     honeypot_gen = HoneypotGenerator(config, store) if galah_enabled else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Load neural model at startup
+        from agents.decision import load_neural_model
+        neural_model = load_neural_model()
+        if neural_model is not None:
+            logger.info("Neural model loaded at startup")
+            app.state.neural_model = neural_model
+            # Attach to classifier for SSH proxy access
+            if hasattr(app.state, "classifier"):
+                app.state.classifier.neural_model = neural_model
+        else:
+            logger.warning("Neural model unavailable at startup")
+            app.state.neural_model = None
+        
+        app.state.neural_model_loaded = neural_model is not None
+        
         decoys.pre_pull_images(decoy_cfg.get("pre_pull_images", []))
         yield
         decoys.shutdown_all_decoys()
@@ -121,15 +153,78 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
         )
 
     @app.get("/health")
-    async def health():
-        from agents.decision import _neural_model
+    async def health(request: Request):
+        neural_active = getattr(request.app.state, "neural_model_loaded", False)
         return {
             "status": "ok",
             "classifier": "hybrid_v2",
-            "neural_model": "active" if _neural_model is not None else "unavailable",
+            "neural_model": "active" if neural_active else "unavailable",
             "docker_available": decoys.docker_available,
             "real_service": f"http://{real_host}:{real_port}",
         }
+
+    @app.post("/api/auth/login")
+    async def auth_login(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        username = (body.get("username") or body.get("email") or "").strip()
+        password = (body.get("password") or "").strip()
+        client_ip = request.headers.get("x-mock-ip") or (request.client.host if request.client else "127.0.0.1")
+        user_agent = request.headers.get("user-agent", "")
+        
+        emp = corporate_dir.authenticate_employee(username, password)
+        if not emp:
+            return JSONResponse(status_code=401, content={"error": "invalid_credentials", "message": "Invalid corporate credentials."})
+        
+        token = corporate_dir.create_session(emp["user_id"], client_ip, user_agent)
+        response = JSONResponse(content={
+            "status": "success",
+            "message": "Authenticated successfully.",
+            "token": token,
+            "user": {
+                "user_id": emp["user_id"],
+                "name": emp["name"],
+                "email": emp["email"],
+                "role": emp["role"],
+                "department": emp["department"],
+                "assigned_ip": emp["assigned_ip"],
+                "assigned_device": emp["assigned_device"]
+            }
+        })
+        response.set_cookie(
+            key="nexus_session",
+            value=token,
+            httponly=False,
+            samesite="lax",
+            path="/"
+        )
+        return response
+
+    @app.post("/api/auth/logout")
+    async def auth_logout(request: Request):
+        token = request.cookies.get("nexus_session")
+        if token:
+            corporate_dir.terminate_session(token)
+        response = JSONResponse(content={"status": "success", "message": "Logged out."})
+        response.delete_cookie(key="nexus_session", path="/")
+        return response
+
+    @app.get("/api/auth/me")
+    async def auth_me(request: Request):
+        token = request.cookies.get("nexus_session")
+        auth_header = request.headers.get("authorization", "")
+        if not token and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+        profile = corporate_dir.validate_session(token) if token else None
+        if not profile:
+            return JSONResponse(status_code=401, content={"error": "unauthenticated"})
+        return JSONResponse(content={"status": "authenticated", "user": profile})
+
+    @app.get("/api/auth/personas")
+    async def auth_personas():
+        return JSONResponse(content={"personas": corporate_dir.get_test_personas()})
     @app.get("/api/events")
     async def sse_events(request: Request):
         async def event_generator():
@@ -250,9 +345,12 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
             cur.execute("SELECT src_ip FROM sessions WHERE id = ?", (session_id,))
             row = cur.fetchone()
             if row:
-                ip = row[0]
-                store.unblock_ip(ip)
-                nft.unblock_ip(ip)
+                stored_key = row[0]
+                real_ip = stored_key.split(":", 1)[1] if ":" in stored_key else stored_key
+                if not real_ip.startswith("corp_"):
+                    store.unblock_ip(real_ip)
+                    nft.unblock_ip(real_ip)
+                store.unblock_ip(stored_key)
             
             # Clear database and in-memory states
             store.reset_session(session_id)
@@ -287,7 +385,9 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
         blocked_until = store.get_blocked_until(src_ip)
         if blocked_until and blocked_until > time.time():
             # Log blocked attempt event to the dashboard
-            session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
+            session_key = f"int:{src_ip}" if is_internal else f"ext:{src_ip}"
+            session_prefix = "int_sess_" if is_internal else "ext_sess_"
+            session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix=session_prefix)
             
             event = {
                 "timestamp": time.time(),
@@ -355,12 +455,24 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
                 content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
             )
 
-        session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
+        # Resolve token from cookie or header to isolate sessions by persona on internal guard
+        auth_cookie = request.cookies.get("nexus_session")
+        auth_header = request.headers.get("authorization", "")
+        auth_bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+        token = auth_cookie or auth_bearer
+
+        if is_internal:
+            session_key = f"int:corp_{token}" if token else f"int:{src_ip}"
+            session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix="int_sess_")
+        else:
+            session_key = f"ext:{src_ip}"
+            session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix="ext_sess_")
         ctx = store._get_context(session_id)
         
         # Always fetch command history and classify the current request
         command_history = store.get_command_history(session_id)
-        decision = classify_http_request(classifier, context, command_history=command_history)
+        neural_model = getattr(request.app.state, "neural_model", None)
+        decision = classify_http_request(classifier, context, command_history=command_history, neural_model=neural_model)
         
         # Update command history with the current extracted command
         extracted_cmd = decision.get("extracted_command", "")
@@ -416,6 +528,39 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
         if is_internal:
             from interfaces.insider_contract import UserBehaviorSignal
             
+            # 1. Resolve corporate session from cookie or Authorization header
+            auth_cookie = request.cookies.get("nexus_session")
+            auth_header = request.headers.get("authorization", "")
+            auth_bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+            token = auth_cookie or auth_bearer
+            
+            session_profile = corporate_dir.validate_session(token) if token else None
+            
+            # Backward-compatibility fallback if tests or scripts pass explicit x-user-id header
+            if not session_profile and request.headers.get("x-user-id"):
+                legacy_uid = request.headers.get("x-user-id")
+                emp = corporate_dir.get_employee(legacy_uid)
+                if emp:
+                    session_profile = {
+                        "user_id": emp["user_id"],
+                        "name": emp["name"],
+                        "role": emp["role"],
+                        "department": emp["department"],
+                        "assigned_ip": emp["assigned_ip"],
+                        "assigned_device": emp["assigned_device"],
+                        "whitelisted_ips": emp["whitelisted_ips"],
+                    }
+                else:
+                    session_profile = {
+                        "user_id": legacy_uid,
+                        "name": legacy_uid,
+                        "role": request.headers.get("x-user-role", "normal"),
+                        "department": request.headers.get("x-user-department", "General_Staff"),
+                        "assigned_ip": "",
+                        "assigned_device": "",
+                        "whitelisted_ips": [],
+                    }
+            
             # Extract simulated features from HTTP JSON body if available
             extra_details = {}
             if body_str:
@@ -426,22 +571,27 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
                 except Exception:
                     pass
             
+            user_id = session_profile.get("user_id", "unknown_user") if session_profile else "unknown_user"
+            user_role = session_profile.get("role", "normal") if session_profile else "normal"
+            user_dept = session_profile.get("department", "General_Staff") if session_profile else "General_Staff"
+            
             action_details = {
                 "command": extra_details.get("command", decision.get("extracted_command", "")),
                 "file_path": request.url.path,
-                "role": request.headers.get("x-user-role", "normal"),
+                "role": user_role,
+                "department": user_dept,
                 **extra_details
             }
             
             # Dynamic failed_sudo check: if command starts with sudo and user is not admin, mark it failed
             cmd_val = action_details.get("command", "")
-            role_val = action_details.get("role", "normal").lower()
+            role_val = user_role.lower()
             if cmd_val and cmd_val.strip().lower().startswith("sudo"):
-                if "admin" not in role_val:
+                if "admin" not in role_val and "devops" not in user_dept.lower():
                     action_details["sudo_failed"] = True
             
             signal = UserBehaviorSignal(
-                user_id=request.headers.get("x-user-id", "unknown_user"),
+                user_id=user_id,
                 session_id=session_id,
                 timestamp=datetime.now().isoformat() + "Z",
                 action_type=request.method,
@@ -658,6 +808,38 @@ def create_http_guard_app(config: Dict, is_internal: bool = False) -> FastAPI:
         store.write_event(session_id, event)
         with open(threat_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
+
+        # Dedicated Insider Threat Event Logging
+        if is_internal:
+            is_whitelisted = corporate_dir.check_ip_whitelist(user_id, src_ip) if (session_profile and user_id != "unknown_user") else True
+            insider_log_record = {
+                "timestamp": time.time(),
+                "session_id": session_id,
+                "user_id": user_id,
+                "employee_name": session_profile.get("name", user_id) if session_profile else user_id,
+                "department": user_dept,
+                "role": user_role,
+                "client_ip": src_ip,
+                "assigned_ip": session_profile.get("assigned_ip", "") if session_profile else "",
+                "whitelisted_ip": is_whitelisted,
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query or ""),
+                "label": decision["label"],
+                "policy_decision": policy_decision,
+                "action": action,
+                "risk_score": risk_score,
+                "evidence_features": event.get("evidence_features", {}),
+                "xai_summary": decision.get("xai_summary", ""),
+                "xai_detailed": decision.get("xai_detailed", ""),
+                "rule": decision.get("rule", "")
+            }
+            try:
+                with open(insider_log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(insider_log_record) + "\n")
+            except Exception:
+                pass
+
         print(json.dumps(event), flush=True)
 
         return result

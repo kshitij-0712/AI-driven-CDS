@@ -45,12 +45,18 @@ class DecoyManager:
         max_instances: int = 5,
         idle_timeout_sec: int = 300,
         fallback_url: Optional[str] = None,
+        scope: str = "external",
+        host_runtime_dir: str = "/home/me/data/AdaptiveShield/runtime",
     ):
+        self.scope = scope if scope in ("external", "internal") else "external"
+        self.http_subpath = f"decoy_http/{self.scope}"
+        self.ssh_subpath = f"decoy_ssh/{self.scope}"
         self.http_image = http_image
         self.ssh_image = ssh_image
         self.max_instances = max_instances
         self.idle_timeout_sec = idle_timeout_sec
         self.fallback_url = fallback_url
+        self.host_runtime_dir = host_runtime_dir
         self.prewarm_count = 1
         self._active_http: Dict[str, DecoyInstance] = {}
         self._active_ssh: Dict[str, DecoyInstance] = {}
@@ -73,6 +79,9 @@ class DecoyManager:
             containers = self._docker.containers.list(all=True, filters={"label": "adaptiveshield.decoy=true"})
             now = time.time()
             for container in containers:
+                container_scope = container.labels.get("adaptiveshield.scope", "external")
+                if container_scope != self.scope:
+                    continue
                 if container.status != "running":
                     container.start()
                 container.reload()
@@ -175,7 +184,7 @@ class DecoyManager:
                 self.prewarm_count += 1
 
             # Local paths inside core container for writing files
-            local_base_dir = os.path.abspath(f"./runtime/decoy_http/{actual_session_id}")
+            local_base_dir = os.path.abspath(f"./runtime/{self.http_subpath}/{actual_session_id}")
             html_dir = os.path.join(local_base_dir, "html")
             conf_dir = os.path.join(local_base_dir, "conf")
             os.makedirs(html_dir, exist_ok=True)
@@ -201,7 +210,8 @@ class DecoyManager:
                 f.write(default_conf)
 
             # Determine host paths for Docker mounting (Docker-in-Docker path translation)
-            host_runtime_dir = "/home/me/data/AdaptiveShield/runtime"
+            # Use the configured host runtime dir, falling back to our container's mount info
+            host_runtime_dir = self.host_runtime_dir
             try:
                 # Find our own container and get host source of /app/runtime
                 containers = self._docker.containers.list(filters={"name": "adaptiveshield-core"})
@@ -213,8 +223,8 @@ class DecoyManager:
             except Exception:
                 pass
 
-            host_html_dir = os.path.join(host_runtime_dir, "decoy_http", actual_session_id, "html")
-            host_conf_dir = os.path.join(host_runtime_dir, "decoy_http", actual_session_id, "conf")
+            host_html_dir = os.path.join(host_runtime_dir, self.http_subpath, actual_session_id, "html")
+            host_conf_dir = os.path.join(host_runtime_dir, self.http_subpath, actual_session_id, "conf")
 
             container = self._docker.containers.run(
                 self.http_image,
@@ -227,6 +237,7 @@ class DecoyManager:
                 labels={
                     "adaptiveshield.decoy": "true",
                     "adaptiveshield.decoy_type": "http",
+                    "adaptiveshield.scope": self.scope,
                     "adaptiveshield.session_id": session_id,
                 },
             )
@@ -281,15 +292,24 @@ class DecoyManager:
                         pass
                 
                 # Auto-replenish: spawn a replacement prewarm in the background
-                # so the next attacker also gets zero cold-start latency.
-                threading.Thread(
-                    target=self._spawn_http_decoy,
-                    args=("prewarm",),
-                    daemon=True,
-                ).start()
+                # if pool capacity allows.
+                if len(self._active_http) < self.max_instances:
+                    threading.Thread(
+                        target=self._spawn_http_decoy,
+                        args=("prewarm",),
+                        daemon=True,
+                    ).start()
                 return instance
 
-        # 3. Spawn a new container for this session
+        # 3. If capacity reached, recycle least recently used (LRU) decoy
+        if len(self._active_http) >= self.max_instances:
+            lru = self._pick_existing_http_decoy()
+            if lru:
+                lru.session_id = session_id
+                lru.last_used_ts = time.time()
+                return lru
+
+        # 4. Spawn a new container for this session
         spawned = self._spawn_http_decoy(session_id)
         if spawned:
             return spawned
@@ -322,7 +342,7 @@ class DecoyManager:
                 actual_session_id = f"prewarm_{self.prewarm_count}"
                 self.prewarm_count += 1
             # Local paths inside core container for writing files
-            local_base_dir = os.path.abspath(f"./runtime/decoy_ssh/{actual_session_id}")
+            local_base_dir = os.path.abspath(f"./runtime/{self.ssh_subpath}/{actual_session_id}")
             txtcmds_dir = os.path.join(local_base_dir, "txtcmds")
             honeyfs_dir = os.path.join(local_base_dir, "honeyfs")
             downloads_dir = os.path.join(local_base_dir, "downloads")
@@ -337,7 +357,8 @@ class DecoyManager:
                 _f.write(session_id)
 
             # Determine host paths for Docker mounting (Docker-in-Docker path translation)
-            host_runtime_dir = "/home/me/data/AdaptiveShield/runtime"
+            # Use the configured host runtime dir, falling back to our container's mount info
+            host_runtime_dir = self.host_runtime_dir
             try:
                 # Find our own container and get host source of /app/runtime
                 containers = self._docker.containers.list(filters={"name": "adaptiveshield-core"})
@@ -349,10 +370,10 @@ class DecoyManager:
             except Exception:
                 pass
 
-            host_txtcmds_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "txtcmds")
-            host_honeyfs_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "honeyfs")
-            host_cowrie_cfg = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "cowrie.cfg")
-            host_downloads_dir = os.path.join(host_runtime_dir, "decoy_ssh", actual_session_id, "downloads")
+            host_txtcmds_dir = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "txtcmds")
+            host_honeyfs_dir = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "honeyfs")
+            host_cowrie_cfg = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "cowrie.cfg")
+            host_downloads_dir = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "downloads")
 
             # Create empty cowrie.cfg so it can be mounted
             with open(os.path.join(local_base_dir, "cowrie.cfg"), "w") as f:
@@ -371,6 +392,7 @@ class DecoyManager:
                 labels={
                     "adaptiveshield.decoy": "true",
                     "adaptiveshield.decoy_type": "ssh",
+                    "adaptiveshield.scope": self.scope,
                     "adaptiveshield.session_id": session_id,
                 },
             )
@@ -425,22 +447,33 @@ class DecoyManager:
                     except Exception:
                         pass
 
-                # Auto-replenish: spawn a replacement prewarm in the background.
-                threading.Thread(
-                    target=self._spawn_ssh_decoy,
-                    args=("prewarm",),
-                    daemon=True,
-                ).start()
+                # Auto-replenish: spawn a replacement prewarm in the background
+                # if pool capacity allows.
+                if len(self._active_ssh) < self.max_instances:
+                    threading.Thread(
+                        target=self._spawn_ssh_decoy,
+                        args=("prewarm",),
+                        daemon=True,
+                    ).start()
                 return instance
 
-        existing = self._pick_existing_ssh_decoy()
-        if existing:
-            existing.last_used_ts = time.time()
-            return existing
+        # 3. If capacity reached, recycle least recently used (LRU) decoy
+        if len(self._active_ssh) >= self.max_instances:
+            existing = self._pick_existing_ssh_decoy()
+            if existing:
+                existing.session_id = session_id
+                existing.last_used_ts = time.time()
+                return existing
 
         spawned = self._spawn_ssh_decoy(session_id)
         if spawned:
             return spawned
+
+        existing = self._pick_existing_ssh_decoy()
+        if existing:
+            existing.session_id = session_id
+            existing.last_used_ts = time.time()
+            return existing
 
         return None
 

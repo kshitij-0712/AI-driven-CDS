@@ -93,10 +93,17 @@ def _match_http_patterns(payload):
 
 
 # ---------------------------------------------------------------------------
-# Legacy sklearn model helpers (kept for backward compatibility)
+# Legacy sklearn model helpers (DEPRECATED - kept for reference only)
 # ---------------------------------------------------------------------------
 
+# These functions are deprecated and not used in the current pipeline.
+# The modern pipeline uses UnifiedThreatClassifier (BiLSTM + structured features).
+# Kept for historical reference only.
+
 def load_model(model_path, vectorizer_path):
+    """DEPRECATED: Load legacy sklearn model."""
+    import warnings
+    warnings.warn("load_model() is deprecated. Use UnifiedThreatClassifier instead.", DeprecationWarning)
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
     with open(vectorizer_path, 'rb') as f:
@@ -105,6 +112,9 @@ def load_model(model_path, vectorizer_path):
 
 
 def predict_intent(model, vectorizer, commands, class_labels):
+    """DEPRECATED: Predict with legacy sklearn model."""
+    import warnings
+    warnings.warn("predict_intent() is deprecated. Use UnifiedThreatClassifier instead.", DeprecationWarning)
     if not commands:
         return {
             "label": "Safe",
@@ -126,10 +136,8 @@ def predict_intent(model, vectorizer, commands, class_labels):
 # Neural model loading
 # ---------------------------------------------------------------------------
 
-_neural_model = None
-_neural_tokenizer = None
-_neural_device = "cpu"
-_neural_loaded = False
+# Removed global model state - now managed via FastAPI app.state
+# See src/interceptor/http_proxy.py create_http_guard_app() for initialization
 
 
 def _encode_batch(texts, max_length=512):
@@ -162,19 +170,14 @@ def load_neural_model():
 
     We reconstruct the model architecture and load the weights.
 
-    Returns True if successfully loaded, False otherwise.
+    Returns the loaded model if successful, None otherwise.
     """
-    global _neural_model, _neural_tokenizer, _neural_device, _neural_loaded
-
-    if _neural_loaded:
-        return _neural_model is not None
-
     try:
         import torch
         from training.neural.model import UnifiedThreatClassifier
     except ImportError as exc:
         logger.warning("PyTorch or model module not available: %s", exc)
-        return False
+        return None
 
     # Load config to get the dynamically set model path
     import yaml
@@ -186,32 +189,40 @@ def load_neural_model():
             model_path_str = config.get("ml", {}).get("neural_v6_model_path", model_path_str)
     except Exception as e:
         logger.warning("Could not read settings.yaml, using default neural model path. Error: %s", e)
-    
+
     # Locate the model file
     model_path = Path(__file__).parent.parent.parent / model_path_str.strip("./")
 
     if not model_path.exists():
         logger.warning("Neural model not found at %s", model_path)
-        return False
+        return None
 
     try:
-        _neural_device =  "cuda" if torch.cuda.is_available() else "cpu"
-        checkpoint = torch.load(model_path, map_location=_neural_device, weights_only=False)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         model = UnifiedThreatClassifier()
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
+        model.to(device)
 
-        _neural_model = model
-       
-        _neural_loaded = True
         param_count = sum(p.numel() for p in model.parameters())
         logger.info(
             "Neural model loaded: UnifiedThreatClassifier (%s params)", f"{param_count:,}"
         )
-        return True
+        return model
     except Exception:
         logger.exception("Failed to load neural model")
-        return False
+        return None
+
+
+def get_neural_model():
+    """Backward compatibility - returns the globally loaded model if available.
+    
+    NOTE: This is deprecated. Use app.state.neural_model instead.
+    """
+    # We don't maintain global state anymore - return None to signal
+    # that the caller should use app.state.neural_model
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +248,7 @@ def _extract_mitre_features(commands: str):
 
 def _classify_neural(
     commands: str,
+    neural_model,
     is_http: bool = False,
     triage_features: list = None,
 ):
@@ -244,13 +256,14 @@ def _classify_neural(
 
     Args:
         commands: The command/payload string to classify.
+        neural_model: The loaded UnifiedThreatClassifier model (from app.state).
         is_http: Whether this is an HTTP request.
         triage_features: Optional list of 12 floats from
             static_analyzer. When provided, the triage
             modality is unmasked so the model can use
             binary analysis features for re-classification.
     """
-    if _neural_model is None:
+    if neural_model is None:
         return None
 
     import torch
@@ -286,7 +299,7 @@ def _classify_neural(
 
     # Inference
     with torch.no_grad():
-        predictions, probabilities = _neural_model.predict(
+        predictions, probabilities = neural_model.predict(
             encoded, mitre, changes,
             triage, lengths, modality_mask,
         )
@@ -314,7 +327,7 @@ def classify_http_request(
     hybrid_classifier,
     request_context,
     command_history: str = "",
-    neural_model_loaded=None,
+    neural_model=None,
     triage_features: list = None,
 ):
     """Classify an HTTP request using multi-stage pipeline.
@@ -379,9 +392,10 @@ def classify_http_request(
     # --- Stage 2: Neural model with confidence thresholding ---
     neural_result = _classify_neural(
         full_command,
+        neural_model,
         is_http=True,
         triage_features=triage_features,
-    ) if _neural_loaded else None
+    ) if neural_model is not None else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result
@@ -526,6 +540,7 @@ def classify_ssh_command(
     hybrid_classifier,
     command: str,
     context: dict,
+    neural_model=None,
     triage_features: list = None,
 ) -> dict:
     """Evaluate an SSH command for threats.
@@ -554,8 +569,9 @@ def classify_ssh_command(
     # Stage 2: Neural Inference
     neural_result = _classify_neural(
         command,
+        neural_model,
         triage_features=triage_features,
-    ) if _neural_model is not None else None
+    ) if neural_model is not None else None
 
     if neural_result is not None:
         pred_id, label, confidence, probs = neural_result
@@ -687,20 +703,14 @@ def build_hybrid_classifier():
     """Factory to build HybridClassifierV2.
 
     Keeps setup in one place so orchestrator/API can use it directly.
-    Also attempts to load the neural model as a side-effect.
+    Neural model loading is now handled at FastAPI app startup via lifespan.
     """
-    # Attempt to load neural model
-    neural_ok = load_neural_model()
-    if neural_ok:
-        logger.info("Neural model ready — will use neural + MITRE hybrid pipeline")
-    else:
-        logger.warning("Neural model unavailable — using MITRE rules only")
-
     try:
         from training.neural.hybrid_classifier_v2 import HybridClassifierV2
 
         return HybridClassifierV2()
     except Exception:
+        logger.warning("HybridClassifierV2 unavailable — using fallback classifier")
         return _FallbackHybridClassifier()
 
 

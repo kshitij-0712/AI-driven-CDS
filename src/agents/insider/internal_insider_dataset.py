@@ -21,12 +21,18 @@ def extract_features(session: Dict[str, Any]) -> Dict[str, float]:
     """
     # Extract roles (default to normal if not specified)
     role = str(session.get("role", "normal")).lower()
+    is_admin = 1.0 if any(k in role for k in ["admin", "devops", "sre", "sysadmin", "infrastructure"]) else 0.0
+    is_dev = 1.0 if any(k in role for k in ["developer", "engineer", "scientist", "ai", "ml", "programmer", "software"]) and not is_admin else 0.0
+    is_fin = 1.0 if any(k in role for k in ["finance", "account", "payroll", "billing", "revenue"]) else 0.0
+    is_hr = 1.0 if any(k in role for k in ["hr", "personnel", "people", "recruiting", "talent"]) else 0.0
+    is_normal = 1.0 if not (is_admin or is_dev or is_fin or is_hr) else 0.0
+
     features = {
-        "role_admin": float(1 if role == "admin" else 0),
-        "role_finance": float(1 if role == "finance" else 0),
-        "role_developer": float(1 if role == "developer" else 0),
-        "role_hr": float(1 if role == "hr" else 0),
-        "role_normal": float(1 if role in {"normal", "employee", "staff"} else 0),
+        "role_admin": is_admin,
+        "role_finance": is_fin,
+        "role_developer": is_dev,
+        "role_hr": is_hr,
+        "role_normal": is_normal,
     }
 
     # Temporal access features
@@ -75,8 +81,9 @@ def extract_features(session: Dict[str, Any]) -> Dict[str, float]:
     risk_score = 0.0
     # Weights for risk scoring based on policy violations
     weights = {
-        "access_unauthorized_scope": 30,
-        "access_sensitive_dirs": 20,
+        "access_unauthorized_scope": 40,
+        "access_sensitive_dirs": 15,
+        "unusual_pc_login": 40,
         "usb_write_count": 10,
         "cloud_upload_count": 25,
         "log_deletion_attempt": 20,

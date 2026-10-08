@@ -180,7 +180,8 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         
         if self.is_decoy:
             # --- EXTERNAL THREAT (Brute-forced into Cowrie) ---
-            decision = classify_ssh_command(self.classifier, full_command, context)
+            neural_model = getattr(self.classifier, "neural_model", None)
+            decision = classify_ssh_command(self.classifier, full_command, context, neural_model=neural_model)
             
             confidence = decision.get("neural_confidence", 1.0)
             ext_label = decision["label"].lower()

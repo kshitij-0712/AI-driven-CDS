@@ -51,6 +51,19 @@ def model():
 
 
 @pytest.fixture(scope="session")
+def insider_bundle():
+    """Load the trained internal insider model bundle once for the session."""
+    from agents.insider.internal_insider_inference import load_internal_insider_model
+    model_path = PROJECT_ROOT / "models" / "internal_insider_model.pkl"
+    if not model_path.exists():
+        pytest.skip("No trained internal insider model file found")
+    bundle = load_internal_insider_model(str(model_path))
+    if bundle is None:
+        pytest.skip("Failed to load internal insider model bundle")
+    return bundle
+
+
+@pytest.fixture(scope="session")
 def tokenizer():
     """Create a CommandTokenizer."""
     from training.neural.dataset import CommandTokenizer

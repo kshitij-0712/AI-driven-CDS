@@ -49,11 +49,28 @@ def run(config_path: str):
     int_server = uvicorn.Server(int_config)
 
     async def main_loop():
-        # Pre-warm decoys using external app's decoy manager
-        logging.info("Pre-warming HTTP and SSH decoys...")
+        # Unified signal handler so both Uvicorn servers receive exit signal and trigger FastAPI lifespans
+        loop = asyncio.get_running_loop()
+        import signal
+
+        def handle_shutdown():
+            logging.info("Termination signal received. Shutting down HTTP guards...")
+            ext_server.should_exit = True
+            int_server.should_exit = True
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, handle_shutdown)
+
+        # Pre-warm external decoys
+        logging.info("Pre-warming External HTTP and SSH decoys...")
         ext_app.state.decoys.get_or_spawn_http_decoy("prewarm")
         ext_app.state.decoys.get_or_spawn_ssh_decoy("prewarm")
-        logging.info("Decoys ready.")
+
+        # Pre-warm internal decoys
+        logging.info("Pre-warming Internal HTTP and SSH decoys...")
+        int_app.state.decoys.get_or_spawn_http_decoy("prewarm")
+        int_app.state.decoys.get_or_spawn_ssh_decoy("prewarm")
+        logging.info("All decoys ready across external and internal scopes.")
 
         from honeypot.ssh_decoy_builder import SSHDecoyBuilder
         from core.triage.watcher import TriageWatcher
@@ -85,13 +102,8 @@ def run(config_path: str):
                 int_server.serve()
             )
         finally:
-            logging.info("Shutting down... cleaning up all decoy containers.")
+            logging.info("Shutting down... stopping background watchers.")
             watcher.stop()
-            try:
-                ext_app.state.decoys.shutdown_all_decoys()
-                int_app.state.decoys.shutdown_all_decoys()
-            except Exception as e:
-                logging.error(f"Error during decoy cleanup: {e}")
 
     asyncio.run(main_loop())
 

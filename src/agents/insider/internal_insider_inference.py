@@ -16,13 +16,11 @@ def load_internal_insider_model(model_path: str = "./models/internal_insider_mod
 
 def predict_session_risk(session: Dict[str, Any], model_bundle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Extracts features, runs rule-based label/reason check, and runs ML prediction.
+    Extracts universal behavioral features and runs Random Forest ML inference.
+    Falls back to baseline rules only if model bundle is unavailable.
     """
     features = extract_features(session)
-    rule_label, rule_reason = determine_label(features, session.get("explicit_label", 0))
-
-    ml_score = 0.0
-    ml_label = "NORMAL"
+    explanation = []
 
     if model_bundle is not None:
         try:
@@ -30,30 +28,51 @@ def predict_session_risk(session: Dict[str, Any], model_bundle: Optional[Dict[st
             scaler = model_bundle["scaler"]
             feat_names = model_bundle["feature_names"]
             
-            vector = [features[col] for col in feat_names]
+            vector = [features.get(col, 0.0) for col in feat_names]
             X_scaled = scaler.transform([vector])
             
             probs = model.predict_proba(X_scaled)
             ml_score = float(probs[0][1] if probs.shape[1] > 1 else probs[0][0])
-            ml_label = "MALICIOUS_INSIDER" if ml_score >= 0.5 else "NORMAL"
+            
+            # Policy-level risk floor: Deterministically enforce department scopes and stolen cookies
+            policy_risk = float(features.get("calculated_risk_score", 0.0))
+            if features.get("access_unauthorized_scope", 0.0) > 0:
+                policy_risk = max(policy_risk, 75.0)
+            if features.get("unusual_pc_login", 0.0) > 0:
+                policy_risk = max(policy_risk, 65.0)
+
+            # Blended risk: max of RF model anomaly and explicit policy risk
+            risk_score = round(max(ml_score * 100.0, policy_risk), 1)
+            final_label = "MALICIOUS_INSIDER" if risk_score >= 50.0 else "NORMAL"
+
+            if final_label == "MALICIOUS_INSIDER":
+                if features.get("access_unauthorized_scope", 0.0) > 0:
+                    explanation.append("Unauthorized department boundary breach: access to restricted corporate scope")
+                if features.get("unusual_pc_login", 0.0) > 0:
+                    explanation.append("Suspicious session origin: Client IP not in employee authorized whitelist (Possible Cookie Theft / Session Hijack)")
+                active_threats = [k for k in ["access_unauthorized_scope", "unusual_pc_login", "cloud_upload_count", "usb_mount_attempt", "log_deletion_attempt", "work_after_hours"] if features.get(k, 0) > 0]
+                if active_threats:
+                    explanation.append(f"Contributing anomalous vectors: {', '.join(active_threats)}")
+                explanation.append(f"Threat Score: {risk_score} (ML Prob: {ml_score:.3f}, Policy Risk: {policy_risk})")
+            else:
+                explanation.append(f"Normal session behavior (Risk score: {risk_score}, ML threat probability: {ml_score:.3f})")
+
+            return {
+                "session_id": session.get("session_id", "unknown"),
+                "role": session.get("role", "normal"),
+                "risk_score": risk_score,
+                "label": final_label,
+                "explanation": explanation,
+                "features": features
+            }
         except Exception as e:
-            print(f"Error running ML inference: {e}")
+            print(f"Error running ML inference, using fallback: {e}")
 
-    # Combine Rules and ML (Flag if either detects)
-    is_malicious = (rule_label == 1) or (ml_label == "MALICIOUS_INSIDER")
-    final_label = "MALICIOUS_INSIDER" if is_malicious else "NORMAL"
-    
-    explanation = []
-    if rule_label == 1:
-        explanation.append(f"Rule alert: {rule_reason}")
-    if ml_label == "MALICIOUS_INSIDER":
-        explanation.append(f"ML threat confidence: {ml_score:.3f}")
-    if not explanation:
-        explanation.append(f"Normal behavior. ML score={ml_score:.3f}")
-
-    # Blended risk aggregation formula: (ML RF probability * 40) + Contextual Violation Score
-    blended_risk = (ml_score * 40.0) + features["calculated_risk_score"]
-    risk_score = min(blended_risk, 100.0)
+    # Fallback to rule engine only if ML bundle is missing
+    rule_label, rule_reason = determine_label(features, session.get("explicit_label", 0))
+    final_label = "MALICIOUS_INSIDER" if rule_label == 1 else "NORMAL"
+    risk_score = float(features.get("calculated_risk_score", 50.0 if rule_label == 1 else 10.0))
+    explanation.append(f"Fallback Rule verdict: {rule_reason}")
 
     return {
         "session_id": session.get("session_id", "unknown"),

@@ -16,6 +16,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./src:/app/src
       - ./runtime:/app/runtime
       - ./config:/app/config
       - ./models:/app/models:ro

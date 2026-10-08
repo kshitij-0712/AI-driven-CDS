@@ -102,8 +102,8 @@ data/processed/
 data/dionaea/
 data/cowrie/
 data/insider/
-# Trained models (large binary files)
-models/*.pkl
+data/cert*
+
 
 # Ghidra output (generated)
 data/processed/ghidra_features/
@@ -125,6 +125,7 @@ secrets/
 credentials/
 *.pem
 *.key
+config/company*
 
 # Temporary files
 verify/

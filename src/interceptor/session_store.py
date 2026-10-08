@@ -52,7 +52,7 @@ class SessionStore:
         self.conn.commit()
 
     @thread_safe
-    def get_or_create_session(self, src_ip: str, idle_timeout_sec: int = 900) -> str:
+    def get_or_create_session(self, src_ip: str, idle_timeout_sec: int = 900, prefix: str = "sess_") -> str:
         now = time.time()
         cur = self.conn.cursor()
         cur.execute(
@@ -70,7 +70,7 @@ class SessionStore:
                 self.conn.commit()
                 return session_id
 
-        session_id = str(uuid.uuid4())
+        session_id = f"{prefix}{uuid.uuid4().hex[:12]}"
         cur.execute(
             """
             INSERT INTO sessions(id, src_ip, first_seen_ts, last_seen_ts, request_count, context_json)

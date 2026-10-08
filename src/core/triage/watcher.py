@@ -140,6 +140,7 @@ class DecoyDownloadHandler(FileSystemEventHandler):
             self.classifier,
             history,
             context,
+            neural_model=getattr(self.classifier, "neural_model", None),
             triage_features=features
         )
         decision["triage_enriched"] = True

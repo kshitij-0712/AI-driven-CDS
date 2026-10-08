@@ -1,8 +1,181 @@
 {
   "dataset_source": "./data/insider/internal_insider_dataset_base.csv",
-  "training_samples": 808,
-  "test_samples": 203,
-  "test_accuracy": 1.0,
+  "training_samples": 264361,
+  "test_samples": 66091,
+  "normal_samples": 329088,
+  "malicious_samples": 1364,
+  "test_accuracy": 0.986094929718116,
+  "roc_auc": 0.9620360318725507,
+  "pr_auc": 0.2879085088149539,
+  "classification_report": {
+    "0": {
+      "precision": 0.9981119042136772,
+      "recall": 0.9879060439393479,
+      "f1-score": 0.9929827508532945,
+      "support": 65818.0
+    },
+    "1": {
+      "precision": 0.15856236786469344,
+      "recall": 0.5494505494505495,
+      "f1-score": 0.2461033634126333,
+      "support": 273.0
+    },
+    "accuracy": 0.986094929718116,
+    "macro avg": {
+      "precision": 0.5783371360391854,
+      "recall": 0.7686782966949487,
+      "f1-score": 0.6195430571329639,
+      "support": 66091.0
+    },
+    "weighted avg": {
+      "precision": 0.9946440035400109,
+      "recall": 0.986094929718116,
+      "f1-score": 0.9898976398280217,
+      "support": 66091.0
+    }
+  },
+  "feature_importances": [
+    {
+      "feature": "usb_mount_attempt",
+      "importance": 0.2788507666624332
+    },
+    {
+      "feature": "usb_write_count",
+      "importance": 0.09700007234967369
+    },
+    {
+      "feature": "download_count",
+      "importance": 0.09030266346982704
+    },
+    {
+      "feature": "command_density",
+      "importance": 0.08813020981779479
+    },
+    {
+      "feature": "command_count",
+      "importance": 0.08499753307736274
+    },
+    {
+      "feature": "duration_sec",
+      "importance": 0.08127014128308471
+    },
+    {
+      "feature": "network_connection_count",
+      "importance": 0.06636640746499037
+    },
+    {
+      "feature": "behavior_deviation_score",
+      "importance": 0.06379783682314766
+    },
+    {
+      "feature": "access_sensitive_dirs",
+      "importance": 0.04454393869313046
+    },
+    {
+      "feature": "calculated_risk_score",
+      "importance": 0.017012717995215663
+    },
+    {
+      "feature": "cloud_upload_count",
+      "importance": 0.015154450240162935
+    },
+    {
+      "feature": "unusual_login_time",
+      "importance": 0.011787013020949685
+    },
+    {
+      "feature": "access_intellectual_property",
+      "importance": 0.009478550357984233
+    },
+    {
+      "feature": "work_after_hours",
+      "importance": 0.008329277505030885
+    },
+    {
+      "feature": "role_developer",
+      "importance": 0.007108935223234675
+    },
+    {
+      "feature": "access_unauthorized_scope",
+      "importance": 0.005336763366438272
+    },
+    {
+      "feature": "role_normal",
+      "importance": 0.0048577436767979236
+    },
+    {
+      "feature": "log_deletion_attempt",
+      "importance": 0.0037603756646715555
+    },
+    {
+      "feature": "unusual_pc_login",
+      "importance": 0.0034128032631809196
+    },
+    {
+      "feature": "credential_sharing_indicators",
+      "importance": 0.0031449022021317135
+    },
+    {
+      "feature": "role_admin",
+      "importance": 0.0030351755373870617
+    },
+    {
+      "feature": "switch_user_count",
+      "importance": 0.0028405298209526826
+    },
+    {
+      "feature": "work_weekends",
+      "importance": 0.0027910406152089023
+    },
+    {
+      "feature": "high_volume_download",
+      "importance": 0.0022371081410799583
+    },
+    {
+      "feature": "suspicious_process_spawned",
+      "importance": 0.0020896686537142414
+    },
+    {
+      "feature": "role_finance",
+      "importance": 0.0012231292258674804
+    },
+    {
+      "feature": "role_hr",
+      "importance": 0.0008942400971575413
+    },
+    {
+      "feature": "cron_tampering",
+      "importance": 0.00024600575138897934
+    },
+    {
+      "feature": "failed_sudo_count",
+      "importance": 0.0
+    },
+    {
+      "feature": "access_hr_db",
+      "importance": 0.0
+    },
+    {
+      "feature": "obfuscated_command_count",
+      "importance": 0.0
+    },
+    {
+      "feature": "printing_sensitive_files",
+      "importance": 0.0
+    },
+    {
+      "feature": "sudoers_modification",
+      "importance": 0.0
+    },
+    {
+      "feature": "syslog_stop_attempt",
+      "importance": 0.0
+    },
+    {
+      "feature": "access_finance_system",
+      "importance": 0.0
+    }
+  ],
   "feature_names": [
     "role_admin",
     "role_finance",
@@ -39,32 +212,5 @@
     "suspicious_process_spawned",
     "calculated_risk_score",
     "behavior_deviation_score"
-  ],
-  "test_report": {
-    "0": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 184.0
-    },
-    "1": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 19.0
-    },
-    "accuracy": 1.0,
-    "macro avg": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 203.0
-    },
-    "weighted avg": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1-score": 1.0,
-      "support": 203.0
-    }
-  }
+  ]
 }
