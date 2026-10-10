@@ -12,7 +12,7 @@ from agents.insider.internal_insider_inference import load_internal_insider_mode
 from agents.insider.corporate_directory import CorporateDirectory
 
 class AdaptiveInsiderDetector:
-    def __init__(self, model_path: str = "./models/internal_insider_model.pkl", directory_db_path: Optional[str] = None):
+    def __init__(self, model_path: str = "./models/internal_insider_model.pkl", directory_db_path: Optional[str] = None, profile_path: Optional[str] = None):
         self.model_bundle = load_internal_insider_model(model_path)
         if self.model_bundle is None:
             print(f"Warning: Could not load internal insider model from {model_path}. Running with rule-based fallback only.")
@@ -20,8 +20,8 @@ class AdaptiveInsiderDetector:
             print(f"Loaded internal insider model from {model_path}")
 
         # Corporate Directory & Company Policy Profile
-        if directory_db_path:
-            self.corporate_dir = CorporateDirectory(db_path=directory_db_path)
+        if directory_db_path or profile_path:
+            self.corporate_dir = CorporateDirectory(db_path=directory_db_path or "./runtime/corporate_directory.db", profile_path=profile_path)
         else:
             self.corporate_dir = CorporateDirectory()
         self.company_profile = self.corporate_dir.get_company_profile()

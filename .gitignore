@@ -121,11 +121,13 @@ runtime/
 # Secrets / credentials
 .env
 .env.*
+!.env.example
 secrets/
 credentials/
 *.pem
 *.key
 config/company*
+!config/company_profile.json.example
 
 # Temporary files
 verify/
@@ -138,3 +140,12 @@ temp/
 # OpenCode session files and config
 session-*.md
 .opencode/
+
+# External ML datasets (shared folder artifacts, too large for git)
+ssh_attacks.csv
+MOTIF/
+unified_external_corpus_dedup.csv
+
+# Symlinked shared-folder corpora (transfer to Windows training host via
+# the VirtualBox shared folder, not git)
+data/exports/training

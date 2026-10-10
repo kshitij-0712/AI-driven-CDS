@@ -481,7 +481,7 @@ def save_training_results(
     training_results: Dict,
     test_metrics: Dict,
     output_dir: str = './models',
-    model_name: str = 'brain_v5_neural'
+    model_name: str = 'brain_neural'
 ):
     """
     Save trained model and results in multiple formats.

@@ -15,6 +15,7 @@ Usage:
 import sys
 import argparse
 from pathlib import Path
+from typing import Tuple
 
 # Add src to path for imports
 src_path = Path(__file__).parent.parent.parent
@@ -34,17 +35,54 @@ from training.neural.synthetic import generate_synthetic_data
 from training.neural.losses import create_loss_function, compute_class_weights
 from training.neural.trainer import (
     NeuralTrainer, 
-    save_training_results,
+    save_training_results, 
     print_confusion_matrix
 )
 
 
+def load_corpus_splits(corpus_dir: str, max_length: int) -> Tuple:
+    """Load pre-split training corpus from assemble_training_corpus.py.
+
+    Reads train.csv / val.csv / test_azure.csv + test_public.csv (concatenated
+    as the test set). Bypasses load_dataset's random re-split — the assembly
+    script already guarantees disjoint, stratified, danger-balanced splits
+    with an Azure-domain held-out set.
+    """
+    import pandas as pd
+    cdir = Path(corpus_dir)
+    required = ["train.csv", "val.csv", "test_azure.csv", "test_public.csv"]
+    for name in required:
+        p = cdir / name
+        if not p.exists():
+            raise FileNotFoundError(
+                f"{name} not found in {cdir}. Run "
+                f"src/training/neural/assemble_training_corpus.py first."
+            )
+    tokenizer = CommandTokenizer(max_length=max_length)
+    train_df = pd.read_csv(cdir / "train.csv")
+    val_df = pd.read_csv(cdir / "val.csv")
+    test_df = pd.concat(
+        [pd.read_csv(cdir / "test_azure.csv"), pd.read_csv(cdir / "test_public.csv")],
+        ignore_index=True,
+    )
+    print(f"Corpus splits loaded: train={len(train_df)} val={len(val_df)} "
+          f"test={len(test_df)} (azure-heldout + public)")
+    return (ThreatDataset(train_df, tokenizer),
+            ThreatDataset(val_df, tokenizer),
+            ThreatDataset(test_df, tokenizer),
+            tokenizer)
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Train brain_v5_neural model')
+    parser = argparse.ArgumentParser(description='Train brain_neural model')
     
     # Data arguments
     parser.add_argument('--data-path', type=str, default='data/exports/sessions_complete.csv',
                         help='Path to sessions_complete.csv')
+    parser.add_argument('--corpus-dir', type=str, default=None,
+                        help='Pre-split corpus dir from assemble_training_corpus.py '
+                             '(train/val/test_azure/test_public CSVs). Overrides '
+                             '--data-path and the random re-split.')
     parser.add_argument('--max-length', type=int, default=5500,
                         help='Maximum command sequence length')
     parser.add_argument('--downsample-safe', type=int, default=5000,
@@ -101,13 +139,18 @@ def main():
                         help='Loss function type')
     parser.add_argument('--focal-gamma', type=float, default=2.0,
                         help='Focal loss gamma parameter')
+    parser.add_argument('--cost-preset', type=str, default='default',
+                        choices=['default', 'danger'],
+                        help="Class-cost preset: 'default' (Safe=1..APT=20) or "
+                             "'danger' (Safe/Recon=1, danger classes 12-18 — "
+                             "prioritizes catching Downloader/Exploit/Destructive/APT)")
     
     # Output arguments
     parser.add_argument('--output-dir', type=str, default='models',
                         help='Output directory for model')
     parser.add_argument('--checkpoint-dir', type=str, default='checkpoints',
                         help='Checkpoint directory')
-    parser.add_argument('--model-name', type=str, default='brain_v5_neural',
+    parser.add_argument('--model-name', type=str, default='brain_neural',
                         help='Model filename (without extension)')
     
     # Other arguments
@@ -121,8 +164,8 @@ def main():
     args = parser.parse_args()
     
     # Auto-set model name if MITRE-only and default model name
-    if args.mitre_only and args.model_name == 'brain_v5_neural':
-        args.model_name = 'brain_v5_mitre_only'
+    if args.mitre_only and args.model_name == 'brain_neural':
+        args.model_name = 'brain_mitre_only'
     
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -133,7 +176,7 @@ def main():
     # Device
     device = 'cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu'
     print(f"\n{'='*60}")
-    print(" AdaptiveShield Phase 5 Neural Model Training")
+    print(" AdaptiveShield Neural Model Training")
     print('='*60)
     print(f"Device: {device}")
     if device == 'cuda':
@@ -153,24 +196,30 @@ def main():
         )
     
     # Load and split dataset
-    print(f"\nLoading dataset from {args.data_path}...")
-    if args.use_semantic_labels:
-        print(f"Using semantic labels (mode={args.label_mode})")
-    if args.mitre_only:
-        print(f"Training MITRE-only model (21 features only, no binary features)")
-    
-    train_dataset, val_dataset, test_dataset, tokenizer = load_dataset(
-        csv_path=args.data_path,
-        max_length=args.max_length,
-        downsample_safe=args.downsample_safe if args.downsample_safe > 0 else None,
-        include_synthetic=not args.no_synthetic,
-        synthetic_data=synthetic_data,
-        random_state=args.seed,
-        use_semantic_labels=args.use_semantic_labels,
-        label_mode=args.label_mode,
-        precomputed_labels_path=args.precomputed_labels if args.use_semantic_labels else None,
-        mitre_only=args.mitre_only
-    )
+    print(f"\nLoading dataset...")
+    if args.corpus_dir:
+        print(f"Using pre-split corpus from {args.corpus_dir}")
+        train_dataset, val_dataset, test_dataset, tokenizer = load_corpus_splits(
+            corpus_dir=args.corpus_dir, max_length=args.max_length
+        )
+    else:
+        print(f"Loading dataset from {args.data_path}...")
+        if args.use_semantic_labels:
+            print(f"Using semantic labels (mode={args.label_mode})")
+        if args.mitre_only:
+            print(f"Training MITRE-only model (21 features only, no binary features)")
+        train_dataset, val_dataset, test_dataset, tokenizer = load_dataset(
+            csv_path=args.data_path,
+            max_length=args.max_length,
+            downsample_safe=args.downsample_safe if args.downsample_safe > 0 else None,
+            include_synthetic=not args.no_synthetic,
+            synthetic_data=synthetic_data,
+            random_state=args.seed,
+            use_semantic_labels=args.use_semantic_labels,
+            label_mode=args.label_mode,
+            precomputed_labels_path=args.precomputed_labels if args.use_semantic_labels else None,
+            mitre_only=args.mitre_only
+        )
     
     # Get structured feature dimension
     structured_dim = train_dataset.structured_dim
@@ -215,7 +264,8 @@ def main():
         loss_type=args.loss,
         labels=train_labels,
         gamma=args.focal_gamma,
-        num_classes=6
+        num_classes=6,
+        cost_preset=args.cost_preset
     )
     
     # Print class weights if applicable

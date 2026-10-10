@@ -119,6 +119,20 @@ class CostSensitiveLoss(nn.Module):
         4: 15.0,   # Destructive - critical (ransomware)
         5: 20.0,   # ADVANCED_APT - maximum cost (APT undetected)
     }
+
+    # Danger-priority preset: flatten Safe/Recon, boost everything else.
+    # Designed for catch-on-the-spot detection of dangerous classes
+    # (Downloader/Exploit/Destructive/APT) at the cost of more false
+    # positives on quiet traffic — the deployment tradeoff where a
+    # missed intrusion costs far more than an extra decoy engagement.
+    DANGER_CLASS_COSTS = {
+        0: 1.0,    # Safe
+        1: 1.0,    # Recon (monitored anyway at runtime)
+        2: 12.0,   # Downloader
+        3: 14.0,   # Exploit
+        4: 18.0,   # Destructive
+        5: 18.0,   # ADVANCED_APT
+    }
     
     def __init__(
         self,
@@ -298,22 +312,32 @@ def create_loss_function(
     gamma: float = 2.0,
     class_costs: Optional[dict] = None,
     num_classes: int = 6,
-    weight_method: str = 'inverse_freq'
+    weight_method: str = 'inverse_freq',
+    cost_preset: str = 'default',
 ) -> nn.Module:
     """
     Factory function to create a loss function.
-    
+
     Args:
         loss_type: 'focal', 'cost_sensitive', 'combined', or 'ce' (cross-entropy)
         labels: Training labels for computing class weights (for focal loss)
         gamma: Focal loss gamma
-        class_costs: Cost multipliers for cost-sensitive loss
+        class_costs: Explicit cost multipliers (overrides preset)
         num_classes: Number of classes
         weight_method: Method for computing class weights from labels
-    
+        cost_preset: 'default' (Safe=1..APT=20) or 'danger' (Safe/Recon=1,
+            danger classes 12-18 — prioritizes catching Downloader/Exploit/
+            Destructive/APT over quiet-traffic precision)
+
     Returns:
         Loss function module
     """
+    if class_costs is None and loss_type in ('cost_sensitive', 'combined'):
+        if cost_preset == 'danger':
+            class_costs = CostSensitiveLoss.DANGER_CLASS_COSTS
+        else:
+            class_costs = CostSensitiveLoss.DEFAULT_CLASS_COSTS
+
     if loss_type == 'ce':
         if labels is not None:
             weights = compute_class_weights(labels, num_classes, weight_method)

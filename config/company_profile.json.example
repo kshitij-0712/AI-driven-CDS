@@ -1,0 +1,96 @@
+{
+  "company_info": {
+    "name": "ACME Corporation",
+    "domain": "acme.com",
+    "internal_domain": "corp.acme.internal",
+    "industry": "Enterprise Cloud & Software",
+    "headquarters": "Austin, TX, USA",
+    "total_employees": 100
+  },
+  "work_policy": {
+    "timezone": "America/Chicago",
+    "standard_start_hour": 8,
+    "standard_end_hour": 18,
+    "work_days": [0, 1, 2, 3, 4],
+    "after_hours_threshold": 19,
+    "early_hours_threshold": 7
+  },
+  "departments": {
+    "Engineering": {
+      "display_name": "Software Engineering & R&D",
+      "privilege_tier": "technical_specialist",
+      "authorized_scopes": [
+        "/src/",
+        "/git/",
+        "/models/",
+        "/builds/"
+      ],
+      "restricted_scopes": [
+        "/vault/prod/",
+        "/finance/",
+        "/hr/payroll/"
+      ]
+    },
+    "DevOps_SRE": {
+      "display_name": "Cloud Infrastructure & SRE",
+      "privilege_tier": "admin_infrastructure",
+      "authorized_scopes": [
+        "/infrastructure/",
+        "/kubernetes/",
+        "/monitoring/",
+        "/logs/"
+      ],
+      "restricted_scopes": [
+        "/hr/payroll/",
+        "/finance/tax/"
+      ]
+    },
+    "Finance_HR": {
+      "display_name": "Finance, Accounting & HR",
+      "privilege_tier": "standard_business",
+      "authorized_scopes": [
+        "/finance/",
+        "/hr/",
+        "/billing/"
+      ],
+      "restricted_scopes": [
+        "/infrastructure/",
+        "/src/",
+        "/models/"
+      ]
+    }
+  },
+  "ssh_policy": {
+    "permit_root_login": false,
+    "require_mfa": true,
+    "high_risk_commands": [
+      "rm -rf /var/log",
+      "history -c",
+      "shred",
+      "nc -e",
+      "systemctl stop auditd"
+    ]
+  },
+  "employees": [
+    {
+      "user_id": "usr_dev_01",
+      "name": "Jane Doe",
+      "email": "jane.doe@acme.com",
+      "role": "Lead Software Engineer",
+      "department": "Engineering",
+      "assigned_device": "MAC-ENG-1001",
+      "assigned_ip": "10.10.4.52",
+      "is_active": true
+    },
+    {
+      "user_id": "usr_sre_02",
+      "name": "John Smith",
+      "email": "john.smith@acme.com",
+      "role": "Principal SRE",
+      "department": "DevOps_SRE",
+      "assigned_device": "LNX-SRE-2001",
+      "assigned_ip": "10.10.2.15",
+      "is_active": true
+    }
+  ]
+}
