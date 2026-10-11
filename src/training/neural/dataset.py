@@ -184,7 +184,7 @@ class ThreatDataset(Dataset):
         
         return {
             'commands': torch.tensor(indices, dtype=torch.long),
-            'length': torch.tensor(min(len(self.commands[idx]), self.tokenizer.max_length)),
+            'length': torch.tensor(max(1, min(len(self.commands[idx]), self.tokenizer.max_length))),
             'mitre': torch.tensor(self.mitre[idx], dtype=torch.float32),
             'changes': torch.tensor(self.changes[idx], dtype=torch.float32),
             'triage': torch.tensor(self.triage[idx], dtype=torch.float32),

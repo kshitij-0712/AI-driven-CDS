@@ -65,6 +65,19 @@ def load_corpus_splits(corpus_dir: str, max_length: int) -> Tuple:
         [pd.read_csv(cdir / "test_azure.csv"), pd.read_csv(cdir / "test_public.csv")],
         ignore_index=True,
     )
+    # Defensive: drop rows with empty/NaN commands — zero-length sequences
+    # crash pack_padded_sequence (observed in the shared-folder corpus build)
+    def _drop_empty(df, name):
+        n0 = len(df)
+        df = df[df["commands"].notna()]
+        df = df[df["commands"].astype(str).str.strip() != ""]
+        dropped = n0 - len(df)
+        if dropped:
+            print(f"  dropped {dropped} empty-command rows from {name}")
+        return df
+    train_df = _drop_empty(train_df, "train")
+    val_df = _drop_empty(val_df, "val")
+    test_df = _drop_empty(test_df, "test")
     print(f"Corpus splits loaded: train={len(train_df)} val={len(val_df)} "
           f"test={len(test_df)} (azure-heldout + public)")
     return (ThreatDataset(train_df, tokenizer),
@@ -85,7 +98,7 @@ def main():
                              '--data-path and the random re-split.')
     parser.add_argument('--max-length', type=int, default=5500,
                         help='Maximum command sequence length')
-    parser.add_argument('--downsample-safe', type=int, default=5000,
+    parser.add_argument('--downsample-safe', type=int, default=0,
                         help='Downsample Safe class to this size (0 to disable)')
     
     # Synthetic data arguments
@@ -124,9 +137,9 @@ def main():
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
                         help='Maximum training epochs')
-    parser.add_argument('--batch-size', type=int, default=64,
+    parser.add_argument('--batch-size', type=int, default=128,
                         help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-3,
+    parser.add_argument('--lr', type=float, default=1e-5,
                         help='Learning rate')
     parser.add_argument('--weight-decay', type=float, default=1e-4,
                         help='Weight decay (L2 regularization)')
@@ -160,6 +173,16 @@ def main():
                         help='Disable CUDA')
     parser.add_argument('--num-workers', type=int, default=0,
                         help='DataLoader workers (0 for Windows)')
+
+    # Crash-resume arguments
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume training after a crash/OOM: loads '
+                             'checkpoints/latest_model.pt (falls back to '
+                             'checkpoints/best_model.pt if absent). Use the '
+                             'SAME model/loss/corpus args as the original run.')
+    parser.add_argument('--resume-from', type=str, default=None,
+                        help='Explicit checkpoint path to resume from '
+                             '(overrides --resume auto-discovery)')
     
     args = parser.parse_args()
     
@@ -284,6 +307,39 @@ def main():
         checkpoint_dir=args.checkpoint_dir
     )
     
+    # Crash resume: restore full training state before the loop
+    start_epoch = 0
+    if args.resume or args.resume_from:
+        ckpt_dir = Path(args.checkpoint_dir)
+        if args.resume_from:
+            resume_path = Path(args.resume_from)
+        else:
+            resume_path = 'latest_model.pt'
+            if not (ckpt_dir/resume_path).exists():
+                fallback = 'best_model.pt'
+                if (ckpt_dir/fallback).exists():
+                    print(f"\nNOTE: latest_model.pt not found (original run predates "
+                          f"per-epoch checkpoints); resuming from best_model.pt — "
+                          f"progress since its last improvement is lost.")
+                    resume_path = fallback
+        if not (ckpt_dir/resume_path).exists():
+            raise FileNotFoundError(f"Cannot resume: no checkpoint at {resume_path}")
+        try:
+            trainer.load_checkpoint(str(resume_path))
+            start_epoch = trainer.current_epoch
+            print(f"\nRESUMED from {resume_path}")
+            print(f"  completed epochs : {start_epoch}")
+            print(f"  best_val_f1      : {trainer.best_val_f1:.4f}")
+            print(f"  best_val_loss    : {trainer.best_val_loss:.4f}")
+            print(f"  no-improve count : {trainer.epochs_without_improvement}/{args.patience}")
+            print(f"  continuing at    : epoch {start_epoch + 1} of {args.epochs}")
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"Failed to load {resume_path}: checkpoint architecture does not "
+                f"match the model built from current args (check --embed-dim / "
+                f"--lstm-hidden / --lstm-layers / --mitre-only)."
+            ) from e
+    
     # Train
     print(f"\n{'='*60}")
     print(" Training")
@@ -297,7 +353,8 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         epochs=args.epochs,
-        verbose=True
+        verbose=True,
+        start_epoch=start_epoch
     )
     
     # Load best model for final evaluation

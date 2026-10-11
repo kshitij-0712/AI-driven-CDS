@@ -31,8 +31,8 @@ def model():
 
     # Try loading the latest trained model
     model_paths = [
-        PROJECT_ROOT / "models" / "brain_v5_neural.pt",
-        PROJECT_ROOT / "models" / "brain_v6_unified.pt",
+        PROJECT_ROOT / "models" / "brain_neural.pt",
+        PROJECT_ROOT / "models" / "brain_neural_1.pt",
     ]
 
     for path in model_paths:

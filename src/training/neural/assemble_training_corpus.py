@@ -77,10 +77,13 @@ def main():
     # ---------- Azure ----------
     with open(EXPORTS / "sessions_complete_v3.csv", newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
+            cmds = (r.get("commands") or "")
+            if not cmds.strip():
+                continue  # empty-command sessions crash BiLSTM packing downstream
             rows.append({
                 "session_id": r["session_id"],
                 "source": "azure_cowrie",
-                "commands": r.get("commands", ""),
+                "commands": cmds,
                 "label_id": int(float(r["label_v3_id"])),
                 "label_source": r.get("label_v3_source", ""),
                 "origin": "azure",
@@ -130,10 +133,14 @@ def main():
         print("httpparams: MISSING (skipped)")
 
     # ---------- Global exact-command dedup across sources ----------
+    # Full-string key: prefix truncation was found to merge distinct Azure
+    # sessions (2,578 unique full strings -> 265 at 512 chars). Exact means
+    # exact; template mass is handled by the per-(source,label,signature)
+    # cap below, not by a lossy key.
     seen = set()
     deduped = []
     for r in rows:
-        key = r["commands"][:512]
+        key = r["commands"]
         if key in seen:
             continue
         seen.add(key)

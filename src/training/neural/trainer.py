@@ -109,6 +109,10 @@ class NeuralTrainer:
         self.epochs_without_improvement = 0
         self.training_history = []
         self.current_epoch = 0
+        # Scheduler state captured by load_checkpoint() when called before
+        # train() (scheduler doesn't exist yet then); applied in train()
+        # right after _init_scheduler().
+        self._pending_scheduler_state = None
     
     def _init_scheduler(self, train_loader: DataLoader, epochs: int):
         """Initialize learning rate scheduler."""
@@ -281,7 +285,8 @@ class NeuralTrainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         epochs: int = 50,
-        verbose: bool = True
+        verbose: bool = True,
+        start_epoch: int = 0
     ) -> Dict:
         """
         Full training loop with validation.
@@ -291,16 +296,23 @@ class NeuralTrainer:
             val_loader: Validation data loader
             epochs: Maximum epochs
             verbose: Print progress
-        
+            start_epoch: First epoch to run (1-based via resume, e.g. pass
+                checkpoint['epoch'] to continue after a crash)
+            
         Returns:
             Training history dict
         """
         # Initialize scheduler
         self._init_scheduler(train_loader, epochs)
         
+        # Restore scheduler state stashed by load_checkpoint() (crash resume)
+        if self._pending_scheduler_state is not None and self.scheduler is not None:
+            self.scheduler.load_state_dict(self._pending_scheduler_state)
+            self._pending_scheduler_state = None
+        
         start_time = time.time()
         
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             self.current_epoch = epoch + 1
             epoch_start = time.time()
             
@@ -364,6 +376,11 @@ class NeuralTrainer:
             else:
                 self.epochs_without_improvement += 1
             
+            # Crash-recovery point: full training state saved EVERY epoch
+            # regardless of improvement (atomic write; see save_checkpoint).
+            # Resume with: train_neural.py --resume
+            self.save_checkpoint('latest_model.pt', val_metrics)
+            
             # Early stopping
             if self.epochs_without_improvement >= self.patience:
                 if verbose:
@@ -385,7 +402,8 @@ class NeuralTrainer:
         }
     
     def save_checkpoint(self, filename: str, metrics: Optional[Dict] = None):
-        """Save model checkpoint."""
+        """Save model checkpoint (atomic: tmp file + rename, so a crash or
+        OOM mid-save can never leave a corrupt file behind)."""
         checkpoint = {
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
@@ -394,29 +412,47 @@ class NeuralTrainer:
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'best_val_loss': self.best_val_loss,
             'best_val_f1': self.best_val_f1,
+            'epochs_without_improvement': self.epochs_without_improvement,
+            'scaler_state_dict': self.scaler.state_dict() if self.scaler else None,
             'training_history': self.training_history,
             'metrics': metrics,
             'timestamp': datetime.now().isoformat()
         }
         
         path = self.checkpoint_dir / filename
-        torch.save(checkpoint, path)
+        tmp_path = path.with_suffix(path.suffix + '.tmp')
+        torch.save(checkpoint, tmp_path)
+        tmp_path.replace(path)
     
     def load_checkpoint(self, filename: str):
-        """Load model from checkpoint."""
+        """Load model from checkpoint (crash resume).
+        
+        Restores weights, optimizer, scheduler (stashed for train() if not
+        yet initialized), AMP scaler, epoch counter, best-metric tracking,
+        early-stopping counter, and full history. Compatible with old-format
+        checkpoints that lack the newer keys.
+        """
         path = self.checkpoint_dir / filename
         checkpoint = torch.load(path, map_location=self.device)
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
-        if checkpoint['scheduler_state_dict'] and self.scheduler:
+        if checkpoint.get('scaler_state_dict') and self.scaler:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        
+        if checkpoint.get('scheduler_state_dict') and self.scheduler:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        elif checkpoint.get('scheduler_state_dict'):
+            # train() hasn't initialized the scheduler yet — stash and apply
+            # right after _init_scheduler() runs
+            self._pending_scheduler_state = checkpoint['scheduler_state_dict']
         
         self.current_epoch = checkpoint['epoch']
         self.best_val_loss = checkpoint['best_val_loss']
         self.best_val_f1 = checkpoint['best_val_f1']
         self.training_history = checkpoint['training_history']
+        self.epochs_without_improvement = checkpoint.get('epochs_without_improvement', 0)
         
         return checkpoint.get('metrics')
     
