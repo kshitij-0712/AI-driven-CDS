@@ -40,7 +40,7 @@ from training.neural.trainer import (
 )
 
 
-def load_corpus_splits(corpus_dir: str, max_length: int) -> Tuple:
+def load_corpus_splits(corpus_dir: str, max_length: int, include_synthetic: bool = True) -> Tuple:
     """Load pre-split training corpus from assemble_training_corpus.py.
 
     Reads train.csv / val.csv / test_azure.csv + test_public.csv (concatenated
@@ -65,6 +65,14 @@ def load_corpus_splits(corpus_dir: str, max_length: int) -> Tuple:
         [pd.read_csv(cdir / "test_azure.csv"), pd.read_csv(cdir / "test_public.csv")],
         ignore_index=True,
     )
+    if not include_synthetic:
+        if "origin" in train_df.columns:
+            n0 = len(train_df)
+            train_df = train_df[train_df["origin"] != "synthetic"]
+            print(f"  --no-synthetic: filtered out {n0 - len(train_df)} synthetic rows from train")
+        if "origin" in val_df.columns:
+            val_df = val_df[val_df["origin"] != "synthetic"]
+
     # Defensive: drop rows with empty/NaN commands — zero-length sequences
     # crash pack_padded_sequence (observed in the shared-folder corpus build)
     def _drop_empty(df, name):
@@ -206,9 +214,9 @@ def main():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
-    # Generate synthetic data if needed
+    # Generate synthetic data if needed (only for online generation without pre-split corpus)
     synthetic_data = None
-    if not args.no_synthetic:
+    if not args.no_synthetic and not args.corpus_dir:
         print(f"\nGenerating synthetic data...")
         print(f"  Recon sessions: {args.synthetic_recon}")
         print(f"  Exploit sessions: {args.synthetic_exploit}")
@@ -223,7 +231,9 @@ def main():
     if args.corpus_dir:
         print(f"Using pre-split corpus from {args.corpus_dir}")
         train_dataset, val_dataset, test_dataset, tokenizer = load_corpus_splits(
-            corpus_dir=args.corpus_dir, max_length=args.max_length
+            corpus_dir=args.corpus_dir,
+            max_length=args.max_length,
+            include_synthetic=not args.no_synthetic,
         )
     else:
         print(f"Loading dataset from {args.data_path}...")
@@ -282,7 +292,7 @@ def main():
     
     # Create loss function
     print(f"\nLoss function: {args.loss}")
-    train_labels = np.array([train_dataset[i]['label'].item() for i in range(len(train_dataset))])
+    train_labels = train_dataset.labels if hasattr(train_dataset, 'labels') else np.array([train_dataset[i]['label'].item() for i in range(len(train_dataset))])
     loss_fn = create_loss_function(
         loss_type=args.loss,
         labels=train_labels,

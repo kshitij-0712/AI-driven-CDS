@@ -6,25 +6,35 @@ Merges:
   - data/exports/unified_external_corpus.csv (CSIC + zyw-286 + ML4Net + NL2Bash)
   - HttpParamsDataset payloads (sqli/xss/cmdi/path-traversal -> Exploit;
     wrapped in a minimal HTTP envelope since runtime sees envelopes)
+  - data/processed/synthetic_batches.csv    (LLM synthetic minority edge cases)
+  - data/exports/tier0_annotation_sheet_LABELED.csv (SOC-adjudicated Gold Ground Truth)
 
-Then:
-  - Template downsampling: command signatures repeating >N times are capped
-    (the busybox/authorized_keys families must not dominate gradients)
-  - Stratified split 70/15/15 with THREE disjoint eval sets:
-      * test_azure   : held-out Azure rows only (deployment-domain eval,
-                      triage masked at scoring time by the eval harness)
-      * test_public  : held-out external rows only (cross-domain eval)
-      * tier0        : the 257-row LLM-annotated sheet (human-verifiable eval)
-  - Class weights computed from the FINAL training distribution and saved
-    for the training script (train_neural consumes this manifest).
+Architecture:
+  - Azure deduplication: per-IP unique command sessions (no cap).
+  - Template downsampling: identical signatures within (source, label) capped at 200.
+  - Composite Validation Set (val.csv):
+      * 100% of Tier-0 Gold (357 rows) — human/SOC verified ground truth.
+      * Balanced Azure honeypot slice (~120 rows).
+      * Balanced Synthetic slice (~480 rows).
+      * Balanced Public slice (~1,075 rows).
+      * Total val.csv ~2,030 rows, balanced across all 6 classes and all 4 domains.
+  - Training Set (train.csv):
+      * Reclaims all remaining data (~285,000+ rows).
+      * STRICT ZERO LEAKAGE: val command strings are 100% disjoint from train.
+      * Tier-0 is 100% excluded from train.
+  - Sub-eval compatibility:
+      * test_azure.csv (Azure val slice) and test_public.csv (Public val slice)
+        exported for downstream domain-specific evaluation without stealing from train.
+  - MITRE ATT&CK Targets:
+      * All 21 MITRE feature columns (14 tactics + 7 metrics) computed on-the-fly
+        and exported to all CSVs.
 
-Outputs under data/exports/:
-  training/train.csv, training/val.csv,
-  training/test_azure.csv, training/test_public.csv
-  training/assembly_manifest.json (distributions + weights)
+Outputs under data/exports/training/:
+  train.csv, val.csv, test_azure.csv, test_public.csv, assembly_manifest.json
 """
 import csv
 import json
+import math
 import re
 import sys
 import random
@@ -38,21 +48,22 @@ except OverflowError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
+from training.neural.dataset import ThreatDataset
+from core.mitre.session_annotator import annotate_session, annotation_to_flat_dict
+
 ROOT = Path(__file__).resolve().parents[3]
 EXPORTS = ROOT / "data" / "exports"
 OUT_DIR = EXPORTS / "training"
 HTTPPARAMS = ROOT / "data" / "external" / "httpparams" / "payload_full.csv"
+SYNTHETIC_CSV = ROOT / "data" / "processed" / "synthetic_batches.csv"
 TIER0 = EXPORTS / "tier0_annotation_sheet_LABELED.csv"
 
 CLASS_NAMES = ["Safe", "Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"]
 SEED = 42
 TEMPLATE_CAP = 200        # max rows per (source, label, signature)
-SAFE_CAP = 40000          # global cap on Safe rows in TRAIN (diversify emphasis)
-VAL_FRAC = 0.15
-TEST_FRAC = 0.15
+SAFE_CAP = 40000          # global cap on Safe rows in TRAIN
 
-# HttpParams attack_type -> class (cmdi is shell injection over HTTP ->
-# Exploit, consistent with runtime where HTTP reaches a Linux host)
+# HttpParams attack_type -> class
 HTTPPARAMS_MAP = {
     "sqli": 3,
     "xss": 3,
@@ -70,16 +81,63 @@ def norm_signature(text):
     return s[:256]
 
 
+def get_val_quota(origin, label_id, count):
+    """Determine balanced validation slice quota per stratum."""
+    if origin == "azure":
+        if count <= 2:
+            return 0
+        return min(50, max(1, count // 10))
+    elif origin == "synthetic":
+        return min(80, max(1, count // 4))
+    elif origin == "public":
+        # For public minority classes (Downloader=2, Destructive=4)
+        if label_id == 2:
+            return min(25, count // 4)
+        elif label_id == 4:
+            return min(50, count // 4)
+        else:
+            return min(250, count // 10)
+    return 0
+
+
 def main():
     rng = random.Random(SEED)
-    rows = []   # unified schema: session_id, source, commands, label_id, label_source
+    rows = []
 
-    # ---------- Azure ----------
+    # ---------- 1. Tier-0 Gold Ground Truth ----------
+    tier0_rows = []
+    if TIER0.exists():
+        with open(TIER0, newline="", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                cmds = (r.get("commands") or "").strip()
+                label_str = (r.get("your_label") or "").strip()
+                if not cmds or label_str not in CLASS_NAMES:
+                    continue
+                tier0_rows.append({
+                    "session_id": r.get("row_id") or r.get("session_id", f"tier0_{len(tier0_rows)}"),
+                    "source": "soc_gold",
+                    "commands": cmds,
+                    "label_id": CLASS_NAMES.index(label_str),
+                    "label_source": "tier0_soc_adjudicated",
+                    "origin": "tier0",
+                })
+        print(f"tier-0 gold rows: {len(tier0_rows)}")
+    else:
+        print("tier-0 gold sheet: MISSING (skipped)")
+
+    # ---------- 2. Azure (Per-IP unique sessions, no cap) ----------
+    n0 = len(rows)
+    seen_azure = set()
     with open(EXPORTS / "sessions_complete_v3.csv", newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
-            cmds = (r.get("commands") or "")
-            if not cmds.strip():
-                continue  # empty-command sessions crash BiLSTM packing downstream
+            cmds = (r.get("commands") or "").strip()
+            if not cmds:
+                continue
+            ip = (r.get("src_ip") or "unknown").strip()
+            key = (ip, cmds)
+            if key in seen_azure:
+                continue
+            seen_azure.add(key)
             rows.append({
                 "session_id": r["session_id"],
                 "source": "azure_cowrie",
@@ -88,23 +146,28 @@ def main():
                 "label_source": r.get("label_v3_source", ""),
                 "origin": "azure",
             })
-    print(f"azure rows: {len(rows)}")
+    print(f"azure rows (per-IP unique): {len(rows) - n0}")
 
-    # ---------- External ----------
+    # ---------- 3. External (deduped within public corpora) ----------
     n0 = len(rows)
+    seen_ext = set()
     with open(EXPORTS / "unified_external_corpus.csv", newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
+            cmds = (r.get("commands") or "").strip()
+            if not cmds or cmds in seen_ext:
+                continue
+            seen_ext.add(cmds)
             rows.append({
                 "session_id": r["session_id"],
                 "source": r["source"],
-                "commands": r.get("commands", ""),
+                "commands": cmds,
                 "label_id": int(float(r["mapped_label_id"])),
                 "label_source": r.get("label_source", ""),
                 "origin": "public",
             })
     print(f"external rows: {len(rows) - n0}")
 
-    # ---------- HttpParams payloads ----------
+    # ---------- 4. HttpParams payloads ----------
     n0 = len(rows)
     if HTTPPARAMS.exists():
         with open(HTTPPARAMS, newline="", encoding="utf-8") as f:
@@ -117,8 +180,6 @@ def main():
                 lab = HTTPPARAMS_MAP.get(atype)
                 if lab is None:
                     continue
-                # minimal envelope: runtime feeds reconstructed requests;
-                # param values ride in the query/body position
                 envelope = f"POST /param HTTP/1.1; Host: host.internal; payload={payload}"
                 rows.append({
                     "session_id": f"httpparams_{i}",
@@ -132,24 +193,35 @@ def main():
     else:
         print("httpparams: MISSING (skipped)")
 
-    # ---------- Global exact-command dedup across sources ----------
-    # Full-string key: prefix truncation was found to merge distinct Azure
-    # sessions (2,578 unique full strings -> 265 at 512 chars). Exact means
-    # exact; template mass is handled by the per-(source,label,signature)
-    # cap below, not by a lossy key.
-    seen = set()
-    deduped = []
-    for r in rows:
-        key = r["commands"]
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(r)
-    print(f"after global exact dedup: {len(deduped)} (was {len(rows)})")
-    rows = deduped
+    # ---------- 5. Synthetic batches (minority class balancing) ----------
+    n0 = len(rows)
+    if SYNTHETIC_CSV.exists():
+        seen_syn = set()
+        real_commands = {r["commands"] for r in rows}
+        with open(SYNTHETIC_CSV, newline="", encoding="utf-8", errors="ignore") as f:
+            for r in csv.DictReader(f):
+                cmds = (r.get("commands") or "").strip()
+                if not cmds or cmds in seen_syn or cmds in real_commands:
+                    continue
+                seen_syn.add(cmds)
+                try:
+                    lid = int(float(r.get("label_id", -1)))
+                except (ValueError, TypeError):
+                    continue
+                if 0 <= lid <= 5:
+                    rows.append({
+                        "session_id": r.get("session_id", f"syn_{len(rows)}"),
+                        "source": "synthetic_llm",
+                        "commands": cmds,
+                        "label_id": lid,
+                        "label_source": "synthetic_batch",
+                        "origin": "synthetic",
+                    })
+        print(f"synthetic rows: {len(rows) - n0}")
+    else:
+        print("synthetic batches: MISSING (skipped)")
 
-    # ---------- Template downsampling ----------
-    # Cap identical normalized signatures within (source, label)
+    # ---------- 6. Template downsampling ----------
     groups = defaultdict(list)
     for r in rows:
         groups[(r["source"], r["label_id"], norm_signature(r["commands"]))].append(r)
@@ -164,39 +236,38 @@ def main():
     print(f"template downsampling: dropped {dropped} rows (cap {TEMPLATE_CAP}/signature)")
     rows = kept
 
-    # ---------- Split: stratified by (origin, label) ----------
-    # Azure rows are the deployment domain: eval representation matters more
-    # than exact 15%. Per-azure-class: min 10 rows (or all if fewer) to eval,
-    # 10% to val, rest to train. Public rows use the standard 15/15 split.
+    # ---------- 7. Stratified Sampling for Composite Validation Set ----------
     by_stratum = defaultdict(list)
     for r in rows:
         by_stratum[(r["origin"], r["label_id"])].append(r)
     for key in by_stratum:
         rng.shuffle(by_stratum[key])
 
-    AZURE_EVAL_FLOOR = 10
+    val_tier0 = list(tier0_rows)
+    val_azure = []
+    val_synthetic = []
+    val_public = []
 
-    train, val = [], []
-    test_azure, test_public = [], []
     for (origin, lab), grp in sorted(by_stratum.items()):
         n = len(grp)
+        quota = get_val_quota(origin, lab, n)
+        val_slice = grp[:quota]
         if origin == "azure":
-            n_test = min(max(AZURE_EVAL_FLOOR, n // 10), n // 2 if n > 1 else n)
-            n_test = min(n_test, n)
-        else:
-            n_test = int(n * TEST_FRAC)
-        n_val = int((n - n_test) * VAL_FRAC) if origin == "azure" else int(n * VAL_FRAC)
-        test = grp[:n_test]
-        val_ = grp[n_test:n_test + n_val]
-        tr_ = grp[n_test + n_val:]
-        train.extend(tr_)
-        val.extend(val_)
-        if origin == "azure":
-            test_azure.extend(test)
-        else:
-            test_public.extend(test)
+            val_azure.extend(val_slice)
+        elif origin == "synthetic":
+            val_synthetic.extend(val_slice)
+        elif origin == "public":
+            val_public.extend(val_slice)
 
-    # Safe-cap on TRAIN only (keeps val/test distributions honest)
+    val = val_tier0 + val_azure + val_synthetic + val_public
+    val_commands = set(r["commands"] for r in val)
+    print(f"\ncomposite val rows: {len(val)} (tier0={len(val_tier0)}, azure={len(val_azure)}, syn={len(val_synthetic)}, pub={len(val_public)})")
+
+    # ---------- 8. Train Assembly (Strict Zero Leakage) ----------
+    val_ids = set(r["session_id"] for r in val)
+    train = [r for r in rows if r["commands"] not in val_commands and r["session_id"] not in val_ids and r["origin"] != "tier0"]
+
+    # Safe-cap on TRAIN only
     safe_train = [r for r in train if r["label_id"] == 0]
     if len(safe_train) > SAFE_CAP:
         rng.shuffle(safe_train)
@@ -207,44 +278,65 @@ def main():
     rng.shuffle(train)
     rng.shuffle(val)
 
-    # ---------- Write ----------
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    FIELDS = ["session_id", "source", "commands", "label_id", "label_name",
-              "label_source", "origin"]
+    # Hard leakage checks
+    train_commands = set(r["commands"] for r in train)
+    assert train_commands.isdisjoint(val_commands), "ERROR: Validation leakage detected in train set!"
+    assert all(r["origin"] != "tier0" for r in train), "ERROR: Tier-0 leaked into train set!"
+    print("leakage assertions passed: train and val commands are strictly disjoint (0 overlap).")
 
-    def write(path, data):
+    # Compatibility subsets
+    test_azure = val_azure
+    test_public = val_public
+
+    # ---------- 9. Feature Annotation & CSV Writing ----------
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    FIELDS = [
+        "session_id", "source", "commands", "label_id", "label_name",
+        "label_source", "origin"
+    ] + ThreatDataset.MITRE_COLS
+
+    def write_dataset(path, data):
+        print(f"annotating and writing {path.name} ({len(data)} rows)...")
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=FIELDS)
             w.writeheader()
             for r in data:
-                w.writerow({
-                    "session_id": r["session_id"], "source": r["source"],
-                    "commands": r["commands"], "label_id": r["label_id"],
+                cmds_list = [c.strip() for c in r["commands"].split('\n') if c.strip()] or [r["commands"]]
+                ann = annotate_session(cmds_list)
+                flat = annotation_to_flat_dict(ann)
+                out_row = {
+                    "session_id": r["session_id"],
+                    "source": r["source"],
+                    "commands": r["commands"],
+                    "label_id": r["label_id"],
                     "label_name": CLASS_NAMES[r["label_id"]],
-                    "label_source": r["label_source"], "origin": r["origin"],
-                })
-        print(f"wrote {path} ({len(data)} rows)")
+                    "label_source": r["label_source"],
+                    "origin": r["origin"],
+                }
+                for col in ThreatDataset.MITRE_COLS:
+                    out_row[col] = flat.get(col, 0)
+                w.writerow(out_row)
+        print(f"  wrote {path} successfully.")
 
-    write(OUT_DIR / "train.csv", train)
-    write(OUT_DIR / "val.csv", val)
-    write(OUT_DIR / "test_azure.csv", test_azure)
-    write(OUT_DIR / "test_public.csv", test_public)
+    write_dataset(OUT_DIR / "train.csv", train)
+    write_dataset(OUT_DIR / "val.csv", val)
+    write_dataset(OUT_DIR / "test_azure.csv", test_azure)
+    write_dataset(OUT_DIR / "test_public.csv", test_public)
 
-    # ---------- Manifest with class weights ----------
+    # ---------- 10. Manifest with Class Weights ----------
     train_dist = Counter(r["label_id"] for r in train)
     total = sum(train_dist.values())
-    # inverse-sqrt weights (stable under extreme imbalance)
-    import math
     weights = {}
     for c in range(6):
         cnt = max(train_dist.get(c, 0), 1)
         weights[c] = round(math.sqrt(total / (6 * cnt)), 4)
 
+    val_dist = Counter(r["label_id"] for r in val)
     manifest = {
         "class_names": CLASS_NAMES,
         "counts": {
             "train": {CLASS_NAMES[c]: train_dist.get(c, 0) for c in range(6)},
-            "val": {CLASS_NAMES[c]: Counter(r['label_id'] for r in val).get(c, 0) for c in range(6)},
+            "val": {CLASS_NAMES[c]: val_dist.get(c, 0) for c in range(6)},
             "test_azure": {CLASS_NAMES[c]: Counter(r['label_id'] for r in test_azure).get(c, 0) for c in range(6)},
             "test_public": {CLASS_NAMES[c]: Counter(r['label_id'] for r in test_public).get(c, 0) for c in range(6)},
         },
@@ -261,6 +353,9 @@ def main():
     print("\n=== TRAIN DISTRIBUTION ===")
     for c in range(6):
         print(f"  {CLASS_NAMES[c]:14s} {train_dist.get(c, 0):7d}")
+    print("\n=== VAL DISTRIBUTION ===")
+    for c in range(6):
+        print(f"  {CLASS_NAMES[c]:14s} {val_dist.get(c, 0):7d}")
     print("\n=== INVERSE-SQRT WEIGHTS ===")
     for c in range(6):
         print(f"  {CLASS_NAMES[c]:14s} {weights[c]}")

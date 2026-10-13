@@ -352,7 +352,7 @@ def create_model(
         Threat classifier model on specified device
     """
     if model_type == 'unified':
-        model = UnifiedThreatClassifier()
+        model = UnifiedThreatClassifier(**kwargs)
         return model.to(device)
     elif model_type == 'mitre_only':
         # MITRE-only model (21 features)
@@ -652,16 +652,25 @@ class UnifiedThreatClassifier(nn.Module):
     """
     Complete unified classifier (Concatenation-based Early Fusion).
     Fuses: Commands (256) + MITRE (32) + Changes (32) + Triage (32) = 352-dim
+    Auxiliary Head: Directly predicts 14 MITRE tactics from BiLSTM text features.
     """
     CLASS_NAMES = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
     
-    def __init__(self):
+    def __init__(self, aux_dim: int = 14, **kwargs):
         super().__init__()
         # Encoders
         self.cmd_encoder = BiLSTMEncoder(vocab_size=256, embed_dim=64, hidden_dim=128, num_layers=2, use_attention=True)
         self.mitre_encoder = MitreEncoder(input_dim=21, hidden_dim=64, output_dim=32)
         self.changes_encoder = ChangeEncoder(input_dim=21, hidden_dim=64, output_dim=32)
         self.triage_encoder = TriageEncoder(input_dim=70, hidden_dim=64, output_dim=32)
+        
+        # Auxiliary MITRE tactic head (multi-task supervision on text representations)
+        self.aux_dim = aux_dim
+        self.mitre_aux_head = nn.Sequential(
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, aux_dim)
+        )
         
         # Total dim: 256 + 32 + 32 + 32 = 384
         self.fusion = nn.Sequential(
@@ -671,27 +680,28 @@ class UnifiedThreatClassifier(nn.Module):
             nn.Linear(128, 6)
         )
     
-    def forward(self, commands, mitre, changes, triage, lengths=None, modality_mask=None):
-        # modality_mask: [batch, 4] bool - True means the modality is MISSING (used to zero-out missing features)
+    def forward(self, commands, mitre, changes, triage, lengths=None, modality_mask=None, return_aux=False):
+        # modality_mask: [batch, 4] bool - True means the modality is MISSING
         cmd_feat = self.cmd_encoder(commands, lengths)
+        aux_logits = self.mitre_aux_head(cmd_feat)
+        
         mitre_feat = self.mitre_encoder(mitre)
         changes_feat = self.changes_encoder(changes)
         triage_feat = self.triage_encoder(triage)
         
         # Zero out missing modalities based on mask
         if modality_mask is not None:
-            # Mask shape [batch, 4]
-            # [batch, 0] = cmd (never missing ideally, but we support it)
-            # [batch, 1] = mitre
-            # [batch, 2] = changes
-            # [batch, 3] = triage
             cmd_feat = cmd_feat.masked_fill(modality_mask[:, 0:1], 0.0)
             mitre_feat = mitre_feat.masked_fill(modality_mask[:, 1:2], 0.0)
             changes_feat = changes_feat.masked_fill(modality_mask[:, 2:3], 0.0)
             triage_feat = triage_feat.masked_fill(modality_mask[:, 3:4], 0.0)
             
         combined = torch.cat([cmd_feat, mitre_feat, changes_feat, triage_feat], dim=1)
-        return self.fusion(combined)
+        logits = self.fusion(combined)
+        
+        if return_aux:
+            return logits, aux_logits
+        return logits
 
     def predict(self, commands, mitre, changes, triage, lengths=None, modality_mask=None):
         logits = self.forward(commands, mitre, changes, triage, lengths, modality_mask)

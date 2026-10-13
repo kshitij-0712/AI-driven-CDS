@@ -103,6 +103,10 @@ class NeuralTrainer:
         # AMP scaler
         self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
         
+        # Auxiliary loss for multi-task MITRE supervision
+        self.aux_loss_fn = nn.BCEWithLogitsLoss()
+        self.aux_weight = 0.3
+        
         # Training state
         self.best_val_loss = float('inf')
         self.best_val_f1 = 0.0
@@ -161,8 +165,17 @@ class NeuralTrainer:
             # Forward pass with AMP
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
-                    logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
-                    loss = self.loss_fn(logits, labels)
+                    if hasattr(self.model, 'mitre_aux_head') and 'mitre_targets' in batch:
+                        logits, aux_logits = self.model(
+                            commands, mitre, changes, triage, lengths, modality_mask, return_aux=True
+                        )
+                        threat_loss = self.loss_fn(logits, labels)
+                        aux_targets = batch['mitre_targets'].to(self.device)
+                        aux_loss = self.aux_loss_fn(aux_logits, aux_targets)
+                        loss = threat_loss + self.aux_weight * aux_loss
+                    else:
+                        logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
+                        loss = self.loss_fn(logits, labels)
                 
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
@@ -170,8 +183,17 @@ class NeuralTrainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
-                loss = self.loss_fn(logits, labels)
+                if hasattr(self.model, 'mitre_aux_head') and 'mitre_targets' in batch:
+                    logits, aux_logits = self.model(
+                        commands, mitre, changes, triage, lengths, modality_mask, return_aux=True
+                    )
+                    threat_loss = self.loss_fn(logits, labels)
+                    aux_targets = batch['mitre_targets'].to(self.device)
+                    aux_loss = self.aux_loss_fn(aux_logits, aux_targets)
+                    loss = threat_loss + self.aux_weight * aux_loss
+                else:
+                    logits = self.model(commands, mitre, changes, triage, lengths, modality_mask)
+                    loss = self.loss_fn(logits, labels)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
@@ -435,7 +457,7 @@ class NeuralTrainer:
         path = self.checkpoint_dir / filename
         checkpoint = torch.load(path, map_location=self.device)
         
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         if checkpoint.get('scaler_state_dict') and self.scaler:
