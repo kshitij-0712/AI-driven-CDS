@@ -14,19 +14,41 @@ You must respond ONLY with a valid JSON object matching the following structure:
   "headers": {
     "Content-Type": "text/html"
   },
-  "body": "<html>...</html>",
-  "session_updates": {
-    "key": "value"
-  }
+  "body": "<!DOCTYPE html><html><head><title>System Response</title></head><body><div class='result'><p>System operation result details...</p></div></body></html>",
+  "session_updates": {}
 }
 
 Guidelines:
 1. "status_code": Use realistic HTTP status codes (200, 404, 500, 403, 401) depending on the context and attack progress.
 2. "headers": Include appropriate headers like Content-Type ("text/html", "application/json", "text/plain").
-3. "body": Return realistic content. If HTML is returned, use modern and premium styled design (incorporate the style/theme from the target application). Do not use basic unstyled pages. Ensure it matches the look of the crawled pages.
-4. "session_updates": Record any state changes made by the attacker's action (e.g., if they added a user, uploaded a file, changed settings, or executed commands). This will be passed back to you in subsequent requests.
+3. "body": Return the complete HTML or content that the attacker will see. It MUST have visible, realistic text content inside the <body> tag (e.g., <h2> headers, descriptive paragraphs <p>, code blocks <pre><code>, stack traces, database errors, or forms). NEVER return an empty <body></body> or blank page.
+4. "session_updates": Record internal state changes only. Do NOT put visible page text or visible errors only inside session_updates; all visible content MUST be directly in "body".
 5. Do not write any explanations outside the JSON block. Return ONLY the JSON object.
 """
+
+    @staticmethod
+    def build_decoy_spec_instruction() -> str:
+        return """You are Galah, an adaptive cyber decoy assistant.
+Your goal is to propose declarative decoy web files to trap attackers inside an isolated decoy container.
+
+You must respond ONLY with a valid JSON object matching the following structure:
+{
+  "decoy_persona": "vulnerable_web_app",
+  "generated_files": [
+    {
+      "relative_path": "index.html",
+      "content": "<!DOCTYPE html><html>...</html>"
+    }
+  ]
+}
+
+Strict Rules:
+1. "generated_files": Return a list of at most 5 files.
+2. "relative_path": Must be clean relative paths (e.g., "index.html", "admin/login.html", ".env", "api/v1/config.json"). NEVER use absolute paths or path traversal (no ../).
+3. "content": High quality, realistic HTML, text, or JSON configuration content matching the target application theme and attack scenario.
+4. Do NOT output any security actions, shell commands, or explanations outside the JSON object.
+"""
+
 
     @staticmethod
     def build_user_prompt(
@@ -61,11 +83,11 @@ Guidelines:
         elif intent_label.lower() == "exploit":
             strategy = (
                 "Strategy: The attacker is executing an exploit (SQLi, command injection, path traversal, XSS). "
-                "Make the exploit seem successful or very close to successful! "
-                "- If SQLi: return a realistic database error, database exception, stack trace, and software versions (e.g., MariaDB/MySQL/PostgreSQL version info) to make the attacker believe they triggered a vulnerable database query. Do NOT return normal successful pages. "
-                "- If path traversal: return a believable fake version of the requested file (e.g., fake /etc/passwd or system logs). "
-                "- If command injection: simulate the terminal output of their command inside a realistic response. "
-                "- If XSS: return the reflected payload or store it in 'session_updates' to show later."
+                "Make the exploit seem successful to deceive the attacker! "
+                "- If SQLi (e.g. on /profile): generate realistic fake dumped database records (admin, engineer, operator with password hashes and emails) or a realistic MariaDB/MySQL syntax error traceback matching the target application. NEVER return generic phrases like 'Database connection issues have been resolved'. "
+                "- If path traversal (e.g. on /export): return realistic fake Linux file contents (e.g. root:x:0:0:root:/root:/bin/bash). "
+                "- If command injection (e.g. on /api/ping): simulate the terminal output of ping followed by the output of their command (e.g. fake shadow/passwd output). "
+                "- If XSS: return the reflected payload inside a visible element."
             )
         elif intent_label.lower() == "downloader":
             strategy = (

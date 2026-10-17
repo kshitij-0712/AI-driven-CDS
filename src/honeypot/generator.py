@@ -12,6 +12,12 @@ from honeypot.router import LLMRouter
 from honeypot.prompt_builder import PromptBuilder
 from honeypot.state_manager import SessionStateManager
 from honeypot.cache import HoneypotCache
+from agents.deception import (
+    sanitize_and_validate_decoy_path,
+    validate_decoy_payload,
+    generate_fallback_decoy,
+    generate_physical_decoy_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,14 +213,21 @@ class HoneypotGenerator:
         return html
 
     def _write_baseline_pages(self, html_dir: str):
-        if not self.app_structure:
-            return
-            
         import httpx
+
+        pages = self.app_structure.get("pages", {}) if self.app_structure else {}
         
-        pages = self.app_structure.get("pages", {})
-        for path in pages.keys():
-            # Map path to file name
+        # Always ensure root "/" is included
+        paths_to_write = set(pages.keys())
+        paths_to_write.add("/")
+        for p_info in pages.values():
+            for form in p_info.get("forms", []):
+                act = form.get("action")
+                m = form.get("method", "GET").upper()
+                if act and act.startswith("/") and m == "GET":
+                    paths_to_write.add(act)
+
+        for path in paths_to_write:
             rel_path = path.strip("/")
             if not rel_path:
                 rel_path = "index.html"
@@ -245,6 +258,260 @@ class HoneypotGenerator:
         with open(os.path.join(html_dir, ".baseline_written"), "w") as f:
             f.write("true")
 
+    def _is_empty_or_broken_html(self, body: str) -> bool:
+        """Detects if LLM generated an empty, blank, broken, or generic filler HTML body."""
+        if not body or not str(body).strip():
+            return True
+        b_str = str(body)
+        if re.search(r"<body[^>]*>\s*<\/body>", b_str, re.IGNORECASE):
+            return True
+        # Check for literal example placeholder copies from prompt or generic filler
+        for p in [
+            "<h2>heading</h2>", "page title", "content...", "<html>...</html>",
+            "resolved successfully", "system response", "connection issues", "system operation result",
+            "database connection issues", "database connection"
+        ]:
+            if p in b_str.lower():
+                return True
+        visible = re.sub(r"<[^>]+>", "", b_str).strip()
+        if len(visible) < 15:
+            return True
+        return False
+
+    def _synthesize_realistic_decoy_body(
+        self,
+        path: str,
+        query: str,
+        label: str,
+        parsed_res: Dict[str, Any]
+    ) -> str:
+        """Synthesizes a realistic, target-app-matched response page with fake exploit data."""
+        theme = self.app_structure.get("theme", "") if self.app_structure else ""
+        if not theme or ":root" not in theme:
+            theme = """:root {
+                --bg-color: #0f172a;
+                --text-color: #f8fafc;
+                --card-bg: rgba(30, 41, 59, 0.7);
+                --primary: #3b82f6;
+                --primary-hover: #2563eb;
+                --accent: #8b5cf6;
+                --border: rgba(255, 255, 255, 0.1);
+            }"""
+
+        updates = parsed_res.get("session_updates", {}) if isinstance(parsed_res, dict) else {}
+        err_msg = (
+            updates.get("sql_error")
+            or updates.get("error_message")
+            or updates.get("message")
+            or updates.get("details")
+        )
+
+        query_str = query or ""
+        lower_q = query_str.lower()
+        lower_p = path.lower()
+
+        if "sql" in lower_q or "1=1" in lower_q or "or" in lower_q or "union" in lower_q or "select" in lower_q or "profile" in lower_p or "sql_error" in updates or "user_data" in updates:
+            if updates.get("user_data") and isinstance(updates["user_data"], list):
+                rows = []
+                for u in updates["user_data"]:
+                    uname = u.get("username", "")
+                    email = u.get("email", "")
+                    role = ",".join(u.get("roles", [])) if isinstance(u.get("roles"), list) else str(u.get("roles", ""))
+                    pw_hash = u.get("password_hash", "$2y$12$...")
+                    rows.append(f"{uname:<10} | {email:<25} | {role:<12} | {pw_hash}")
+                table_header = f"[+] Database Query: SELECT * FROM users WHERE id = '{query_str}';\n[+] Status: Returned {len(rows)} record(s):\n\n"
+                table_header += f"{'username':<10} | {'email':<25} | {'role':<12} | {'password_hash'}\n"
+                table_header += "-" * 75 + "\n"
+                err_msg = table_header + "\n".join(rows)
+            elif not err_msg:
+                rows = [
+                    f"{'admin':<10} | {'admin@adaptive.network':<25} | {'superadmin':<12} | $2y$12$e8Y7hK9mP2vWxZ4qR1sTuO0e8Y7hK9mP2vWxZ4qR1sTuO0",
+                    f"{'engineer':<10} | {'evelyn@adaptive.network':<25} | {'developer':<12} | $2y$12$9kLmP3vWxZ4qR1sTuO0e8Y7hK9mP2vWxZ4qR1sTuO09kLmP",
+                    f"{'operator':<10} | {'liam@adaptive.network':<25} | {'ops_admin':<12} | $2y$12$4vWxZ4qR1sTuO0e8Y7hK9mP2vWxZ4qR1sTuO0e8Y7hK4vWxZ"
+                ]
+                table_header = f"[+] Database Query: SELECT * FROM users WHERE id = '{query_str}';\n[+] Status: Returned 3 record(s):\n\n"
+                table_header += f"{'username':<10} | {'email':<25} | {'role':<12} | {'password_hash'}\n"
+                table_header += "-" * 75 + "\n"
+                err_msg = table_header + "\n".join(rows)
+            title = "Profile Results"
+            subtitle = "SQL Query Execution"
+        elif "ping" in lower_p or "cat" in lower_q or "shadow" in lower_q or ";" in lower_q or "|" in lower_q:
+            if not err_msg:
+                err_msg = (
+                    "PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n"
+                    "64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.038 ms\n"
+                    "--- 127.0.0.1 ping statistics ---\n"
+                    "1 packets transmitted, 1 received, 0% packet loss\n\n"
+                    "root:$6$rounds=40000$h7r2Y9kL0$xQ4bC8dE2fG...:19000:0:99999:7:::\n"
+                    "daemon:*:19000:0:99999:7:::\n"
+                    "bin:*:19000:0:99999:7:::\n"
+                    "sys:*:19000:0:99999:7:::\n"
+                    "www-data:*:19000:0:99999:7:::"
+                )
+            title = "Diagnostic Results"
+            subtitle = "Command Execution Output"
+        elif "export" in lower_p or "passwd" in lower_q or "etc" in lower_q or ".." in lower_q:
+            if not err_msg:
+                err_msg = (
+                    "root:x:0:0:root:/root:/bin/bash\n"
+                    "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+                    "bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+                    "sys:x:3:3:sys:/dev:/usr/sbin/nologin\n"
+                    "sync:x:4:65534:sync:/bin:/bin/sync\n"
+                    "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"
+                )
+            title = "File Export"
+            subtitle = "File Content Stream"
+        elif path in ("/", ""):
+            # Home / Dashboard: Always serve the full cloned home page from target application
+            import httpx
+            try:
+                resp = httpx.get(self.target_url, timeout=3)
+                if resp.status_code == 200:
+                    return resp.text
+            except Exception:
+                pass
+            title = "Adaptive Network Terminal"
+            subtitle = "Dashboard"
+        else:
+            if not err_msg:
+                err_msg = f"System notice: Decoy endpoint {path} processed request successfully."
+            title = "Adaptive Network Terminal"
+            subtitle = "Status 200 OK"
+
+        # Try to embed into real application HTML template
+        import httpx
+        real_html = ""
+        try:
+            real_url = f"{self.target_url}{path}"
+            if query:
+                real_url += f"?{query}"
+            resp = httpx.get(real_url, timeout=3)
+            if resp.status_code == 200:
+                real_html = resp.text
+        except Exception:
+            pass
+
+        if not real_html:
+            try:
+                resp = httpx.get(self.target_url, timeout=3)
+                if resp.status_code == 200:
+                    real_html = resp.text
+            except Exception:
+                pass
+
+        if real_html and '<div class="result-box">' in real_html:
+            formatted_payload = (
+                f'<div class="result-box">'
+                f'<pre style="color:#a7f3d0;margin:0;font-size:0.9rem;white-space:pre-wrap;font-family:monospace;">{err_msg}</pre>'
+                f'</div>'
+            )
+            return re.sub(r'<div class="result-box">[\s\S]*?</div>', formatted_payload, real_html, count=1)
+        elif real_html and '<div class="container">' in real_html:
+            split_idx = real_html.find('<div class="grid-2">')
+            if split_idx != -1:
+                header_part = real_html[:split_idx]
+                card_part = f"""
+                <div class="card" style="max-width:850px;margin:0 auto;width:100%;">
+                    <h3>{title} <span class="badge">{subtitle}</span></h3>
+                    <div class="result-box">
+                        <pre style="color:#a7f3d0;margin:0;font-size:0.9rem;white-space:pre-wrap;font-family:monospace;">{err_msg}</pre>
+                    </div>
+                    <br>
+                    <a href="/">← Back to Dashboard</a>
+                </div>
+                """
+                return header_part + card_part + "</div></body></html>"
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        {theme}
+        body {{
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg-color, #0f172a);
+            color: var(--text-color, #f8fafc);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }}
+        .card {{
+            background: var(--card-bg, rgba(30, 41, 59, 0.7));
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+            border-radius: 16px;
+            padding: 28px;
+            max-width: 800px;
+            width: 100%;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }}
+        h3 {{
+            margin-top: 0;
+            color: #f87171;
+            font-size: 1.3rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid var(--border, rgba(255,255,255,0.1));
+            padding-bottom: 12px;
+        }}
+        .badge {{
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }}
+        .code-block {{
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            padding: 16px;
+            color: #fca5a5;
+            font-family: monospace;
+            font-size: 0.95rem;
+            white-space: pre-wrap;
+            line-height: 1.5;
+            margin-top: 15px;
+        }}
+        .meta-info {{
+            margin-top: 20px;
+            font-size: 0.85rem;
+            color: #64748b;
+            border-top: 1px solid var(--border, rgba(255,255,255,0.1));
+            padding-top: 12px;
+        }}
+        a {{
+            color: var(--primary, #3b82f6);
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 20px;
+            font-weight: 500;
+        }}
+        a:hover {{ text-decoration: underline; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h3>{title} <span class="badge">{subtitle}</span></h3>
+        <div class="code-block">{err_msg}</div>
+        <div class="meta-info">Adaptive Decoy Environment | Active Session Monitoring</div>
+        <a href="/">← Back to Dashboard</a>
+    </div>
+</body>
+</html>"""
+
     async def prepare_decoy_files(
         self,
         session_id: str,
@@ -255,20 +522,23 @@ class HoneypotGenerator:
         container_id: str,
         decoys_manager: Any
     ):
-        """Bakes/updates static content in the decoy container's HTML directory."""
-        await self._ensure_app_structure()
-        
-        # 1. Write baseline pages if not already written
-        baseline_flag = os.path.join(html_dir, ".baseline_written")
-        if not os.path.exists(baseline_flag):
-            self._write_baseline_pages(html_dir)
-
-        # 2. Check Cache
         method = request.method
         path = request.url.path
         query = str(request.url.query or "")
         label = decision.get("label", "Recon")
         is_dynamic = label.lower() in ("exploit", "downloader", "destructive", "advanced_apt") or method.upper() != "GET"
+
+        await self._ensure_app_structure()
+
+        # 1. Write baseline pages if not already written
+        baseline_flag = os.path.join(html_dir, ".baseline_written")
+        if not os.path.exists(baseline_flag):
+            self._write_baseline_pages(html_dir)
+
+        # If the request is for the root dashboard "/" and is Safe, preserve real dashboard
+        if path in ("/", "") and label == "Safe":
+            self._write_baseline_pages(html_dir)
+            return
         
         cached_response = self.cache.get(session_id, method, path, query, body_str, is_dynamic)
         
@@ -276,61 +546,91 @@ class HoneypotGenerator:
         if cached_response:
             parsed_res = cached_response
         else:
-            # 3. Load persistent attacker session memory
-            session_memory = self.state_manager.load_state(session_id)
+            try:
+                # 3. Load persistent attacker session memory
+                session_memory = self.state_manager.load_state(session_id)
 
-            # 4. Build system instruction and user prompt
-            system_instruction = PromptBuilder.build_system_instruction()
-            
-            request_context = {
-                "method": method,
-                "path": path,
-                "query": query,
-                "body": body_str,
-                "headers": dict(request.headers)
-            }
-            
-            user_prompt = PromptBuilder.build_user_prompt(
-                request_context=request_context,
-                intent_label=label,
-                app_structure=self.app_structure,
-                session_memory=session_memory
-            )
+                # 4. Build system instruction and user prompt
+                system_instruction = PromptBuilder.build_system_instruction()
+                
+                request_context = {
+                    "method": method,
+                    "path": path,
+                    "query": query,
+                    "body": body_str,
+                    "headers": dict(request.headers)
+                }
+                
+                user_prompt = PromptBuilder.build_user_prompt(
+                    request_context=request_context,
+                    intent_label=label,
+                    app_structure=self.app_structure,
+                    session_memory=session_memory
+                )
 
-            # 5. Call LLM Router (Ollama/Gemini/Mock fallback)
-            raw_response = await self.router.generate(label, system_instruction, user_prompt)
+                # 5. Call LLM Router (Ollama/Mock fallback)
+                raw_response = await self.router.generate(label, system_instruction, user_prompt)
 
-            # 6. Parse Response JSON
-            parsed_res = self._parse_json_response(raw_response)
+                # 6. Parse Response JSON
+                parsed_res = self._parse_json_response(raw_response)
 
-            # 7. Update persistent attacker session memory
-            updates = parsed_res.get("session_updates", {})
-            self.state_manager.update_state(session_id, updates)
+                # 7. Update persistent attacker session memory
+                updates = parsed_res.get("session_updates", {})
+                self.state_manager.update_state(session_id, updates)
 
-            # 8. Store in cache
-            self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
+                # 8. Store in cache
+                self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
+            except Exception as e:
+                logger.error(f"Error during LLM decoy generation: {e}. Falling back to static decoy.")
+                fallback_files = generate_fallback_decoy(session_id)
+                parsed_res = {
+                    "status_code": 200,
+                    "headers": {"Content-Type": "text/html"},
+                    "body": fallback_files[0]["content"],
+                    "session_updates": {}
+                }
 
-        # 9. Write the response body to the corresponding file path in the html_dir
-        rel_path = path.strip("/")
-        if not rel_path:
-            rel_path = "index.html"
+        # 9. If parsed_res contains generated_files, validate and write them safely
+        if "generated_files" in parsed_res and isinstance(parsed_res["generated_files"], list):
+            try:
+                validated_files = validate_decoy_payload(parsed_res)
+                generate_physical_decoy_files(session_id, validated_files, base_dir=html_dir)
+            except Exception as e:
+                logger.warning(f"Payload validation failed for generated_files: {e}. Using fallback.")
+                fallback_files = generate_fallback_decoy(session_id)
+                generate_physical_decoy_files(session_id, fallback_files, base_dir=html_dir)
         else:
-            # If the response is HTML and not ending in .html, append .html
-            headers = parsed_res.get("headers", {})
-            content_type = headers.get("Content-Type", headers.get("content-type", "text/html"))
-            if "html" in content_type or parsed_res.get("body", "").strip().startswith("<"):
-                if not rel_path.endswith(".html"):
-                    rel_path += ".html"
-                    
-        file_path = os.path.join(html_dir, rel_path)
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        
-        body = parsed_res.get("body", "")
-        if isinstance(body, dict):
-            body = json.dumps(body)
+            # Write single response body using path sanitizer
+            rel_path = path.strip("/")
+            if not rel_path:
+                rel_path = "index.html"
+            else:
+                # If the response is HTML and not ending in .html, append .html
+                headers = parsed_res.get("headers", {})
+                content_type = headers.get("Content-Type", headers.get("content-type", "text/html"))
+                if "html" in content_type or parsed_res.get("body", "").strip().startswith("<"):
+                    if not rel_path.endswith(".html"):
+                        rel_path += ".html"
+                        
+            try:
+                file_path = sanitize_and_validate_decoy_path(html_dir, rel_path)
+            except Exception as e:
+                logger.warning(f"Path sanitization triggered for {rel_path}: {e}. Falling back to index.html")
+                file_path = os.path.join(html_dir, "index.html")
+                
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(body)
+            body = parsed_res.get("body", "")
+            if isinstance(body, dict):
+                body = json.dumps(body)
+                
+            # Guard against empty, blank, or broken HTML generated by smaller LLMs
+            if self._is_empty_or_broken_html(body):
+                logger.info(f"LLM produced empty or broken body for {path}. Synthesizing realistic decoy page.")
+                body = self._synthesize_realistic_decoy_body(path, query, label, parsed_res)
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(body)
 
         # 10. Update metadata.json in base directory (parent of html_dir)
         base_dir = os.path.dirname(html_dir)
@@ -365,6 +665,7 @@ class HoneypotGenerator:
     server_name localhost;
     root /usr/share/nginx/html;
     index index.html index.htm;
+    error_page 405 =200 $uri;
 
     location / {
         try_files $uri $uri.html $uri/ /index.html =404;
@@ -393,6 +694,7 @@ class HoneypotGenerator:
                 
             if status == 200:
                 conf_content += f"        try_files /{escaped_route} /index.html =404;\n"
+                conf_content += f"        error_page 405 =200 /{escaped_route};\n"
             elif status in (301, 302):
                 loc = route_headers.get("Location", route_headers.get("location", "/"))
                 conf_content += f"        return {status} {loc};\n"
