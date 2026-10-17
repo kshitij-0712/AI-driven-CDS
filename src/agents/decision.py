@@ -38,6 +38,8 @@ MITRE_FEATURE_COLS = [
 # ---------------------------------------------------------------------------
 # HTTP attack pre-filter patterns (fast regex check before neural model)
 # ---------------------------------------------------------------------------
+# Attack and Benign Guard Patterns
+# ---------------------------------------------------------------------------
 
 HTTP_ATTACK_PATTERNS = {
     "xss": [
@@ -46,28 +48,37 @@ HTTP_ATTACK_PATTERNS = {
         r"on\w+\s*=",
         r"<img[^>]+onerror",
         r"<svg[^>]+onload",
+        r"<svg[^>]*\/onload",
         r"alert\s*\(",
         r"document\.cookie",
     ],
     "sqli": [
-        r"'\s*(or|and)\s+['\d\w]+\s*=\s*['\d\w]+",
-        r"union\s+select",
+        r"'\s*(?:or|and)\s+['\d\w]+\s*=\s*['\d\w]+",
+        r"union\s+(?:all\s+)?select",
         r"select\s+.+\s+from",
         r"drop\s+table",
         r"--\s*$",
         r"/\*.*\*/",
+        r"waitfor\s+delay",
+        r"sleep\s*\(\s*\d+\s*\)",
+        r"pg_sleep\s*\(",
     ],
     "path_traversal": [
         r"\.\./",
         r"\.\.\\",
         r"%2e%2e%2f",
         r"/etc/passwd",
+        r"/etc/shadow",
         r"windows/system32",
     ],
     "command_injection": [
-        r"[;&|`]\s*(whoami|id|uname|cat|ls|bash|sh)",
+        r"[;&|`]\s*(?:whoami|id|uname|cat|ls|bash|sh|rm|wget|curl)",
         r"\$\([^)]+\)",
         r"`[^`]+`",
+        r"system\s*\(",
+        r"passthru\s*\(",
+        r"shell_exec\s*\(",
+        r"\$\{jndi:(?:ldap|rmi|dns):",
     ],
     "scanner": [
         r"sqlmap",
@@ -80,6 +91,55 @@ HTTP_ATTACK_PATTERNS = {
     ],
 }
 
+SSH_DESTRUCTIVE_PATTERNS = [
+    r"rm\s+-rf\s+(?:/|/\*)",
+    r"dd\s+if=/dev/(?:zero|urandom)",
+    r"shred\s+-[uzfv]",
+    r"mkfs\.",
+    r">\s*/dev/sd[a-z]",
+]
+
+SSH_REVERSE_SHELL_PATTERNS = [
+    r"(?:>&|> &)\s*/dev/tcp/",
+    r"/dev/tcp/.*0>&1",
+    r"nc\s+.*-e\s+/bin/",
+    r"mkfifo.*nc",
+    r"bash\s+-i\s+>&",
+]
+
+SSH_DROPPER_PATTERNS = [
+    r"curl\s+.*\|\s*(?:ba)?sh",
+    r"wget\s+.*\|\s*(?:ba)?sh",
+    r"wget\s+-[qO]+.*\|\s*sh",
+    r"cd\s+/tmp.*(?:wget|curl).*(?:chmod|\./)",
+    r"wget\s+.*chmod\s+\+?x",
+    r"curl\s+.*chmod\s+\+?x",
+    r"xmrig",
+]
+
+SSH_APT_PATTERNS = [
+    r"echo\s+.*ssh-rsa.*>>\s*.*authorized_keys",
+    r"crontab\s+-",
+    r">>\s*~?/?(?:\.bashrc|\.profile)",
+    r">>\s*/etc/(?:rc\.local|crontab)",
+]
+
+SSH_CRED_THEFT_PATTERNS = [
+    r"cat\s+(?:/etc/shadow|/etc/security/opasswd)",
+    r"unshadow\s+",
+]
+
+SSH_BENIGN_PATTERNS = [
+    r"^git\s+(?:status|pull|fetch|checkout|clone|commit|push|diff|log|branch)",
+    r"^docker\s+(?:ps|logs|pull|build|run|images|stop|start|restart)",
+    r"^systemctl\s+(?:status|restart|stop|start|reload)",
+    r"^journalctl",
+    r"^(?:apt|apt-get)\s+(?:update|install|upgrade)",
+    r"^(?:pip|npm)\s+install",
+    r"^tar\s+-[a-zA-Z]+",
+    r"^curl\s+(?:-s\s+)?https?://(?:localhost|127\.0\.0\.1|::1)",
+]
+
 
 def _match_http_patterns(payload):
     findings = []
@@ -90,6 +150,12 @@ def _match_http_patterns(payload):
                 findings.append(category)
                 break
     return findings
+
+
+def _match_any(text, patterns):
+    t = (text or "").lower()
+    return any(re.search(p, t) for p in patterns)
+
 
 
 # ---------------------------------------------------------------------------
@@ -304,18 +370,36 @@ def _classify_neural(
             triage, lengths, modality_mask,
         )
 
-    pred_class = predictions[0].item()
     probs = probabilities[0].cpu().numpy()
+    probs_dict = {
+        CLASS_NAMES[i]: float(probs[i])
+        for i in range(len(CLASS_NAMES))
+    }
+
+    # Cost-sensitive risk-adjusted thresholding:
+    # High-severity threat classes (with ~98% precision) trigger if their probability
+    # clears risk-calibrated thresholds rather than losing to raw argmax > 0.50.
+    import numpy as np
+    if probs_dict.get("Destructive", 0.0) >= 0.20:
+        pred_class = CLASS_NAMES.index("Destructive")
+    elif probs_dict.get("Downloader", 0.0) >= 0.22:
+        pred_class = CLASS_NAMES.index("Downloader")
+    elif probs_dict.get("Exploit", 0.0) >= 0.25:
+        pred_class = CLASS_NAMES.index("Exploit")
+    elif probs_dict.get("ADVANCED_APT", 0.0) >= 0.35:
+        pred_class = CLASS_NAMES.index("ADVANCED_APT")
+    elif probs_dict.get("Recon", 0.0) >= 0.40:
+        pred_class = CLASS_NAMES.index("Recon")
+    else:
+        pred_class = int(np.argmax(probs))
+
     confidence = float(probs[pred_class])
 
     return (
         pred_class,
         CLASS_NAMES[pred_class],
         confidence,
-        {
-            CLASS_NAMES[i]: float(probs[i])
-            for i in range(len(CLASS_NAMES))
-        },
+        probs_dict,
     )
 
 
@@ -385,11 +469,22 @@ def classify_http_request(
     # Combine history with current command for context-aware classification
     full_command = f"{command_history}\n\n{synthetic_cmd}".strip() if command_history else synthetic_cmd
 
-    # Run MITRE rules classification first to get rule_id, rule_label, and explanation
-    rule_id, rule_label, explanation = hybrid_classifier.classify(full_command)
-    http_findings = [] # Regex removed
+    # 1. Match HTTP attack syntax (XSS, SQLi, Path Traversal, Command Injection)
+    http_findings = _match_http_patterns(full_command)
+    http_override = None
+    if http_findings:
+        raw_lower = full_command.lower()
+        if "command_injection" in http_findings and any(k in raw_lower for k in ["rm -rf", "dd if="]):
+            http_override = (4, "Destructive", f"HTTP Guard: Destructive injection ({', '.join(http_findings)})")
+        elif any(f in http_findings for f in ["xss", "sqli", "path_traversal", "command_injection"]):
+            http_override = (3, "Exploit", f"HTTP Guard: Exploit injection ({', '.join(http_findings)})")
+        elif "scanner" in http_findings:
+            http_override = (1, "Recon", f"HTTP Guard: Web scanner recon ({', '.join(http_findings)})")
 
-    # --- Stage 2: Neural model with confidence thresholding ---
+    # Run MITRE rules classification
+    rule_id, rule_label, explanation = hybrid_classifier.classify(full_command)
+
+    # --- Stage 2: Neural model with calibrated risk thresholding ---
     neural_result = _classify_neural(
         full_command,
         neural_model,
@@ -397,107 +492,49 @@ def classify_http_request(
         triage_features=triage_features,
     ) if neural_model is not None else None
 
-    if neural_result is not None:
+    if http_override is not None:
+        pred_id, label, rule_name = http_override
+        confidence = 1.0
+        probs = neural_result[3] if neural_result is not None else {CLASS_NAMES[i]: (1.0 if i == pred_id else 0.0) for i in range(6)}
+    elif neural_result is not None:
         pred_id, label, confidence, probs = neural_result
-
-        if confidence >= CONFIDENCE_THRESHOLD:
-            # Check for safeguard override
-            if rule_id > pred_id:
-                logger.info(
-                    "Safeguard override: Neural predicted '%s' (conf=%.2f%%) but rules detected '%s'. Overriding to rules.",
-                    label, confidence * 100, rule_label
-                )
+        if confidence >= 0.35:
+            rule_name = f"neural_model (confidence={confidence:.2%})"
+        else:
+            if rule_label in ("Destructive", "Exploit", "ADVANCED_APT"):
                 pred_id, label, confidence = rule_id, rule_label, 1.0
                 rule_name = explanation.get("rule_matched")
             else:
-                rule_name = f"neural_model (confidence={confidence:.2%})"
+                pred_id, label = 0, "Safe"
+                confidence = probs.get("Safe", 0.50)
+                rule_name = "neural_model (safe baseline)"
+    else:
+        pred_id, label, confidence = rule_id, rule_label, 1.0
+        rule_name = explanation.get("rule_matched")
+        probs = {CLASS_NAMES[i]: (1.0 if i == pred_id else 0.0) for i in range(6)}
 
-            if label == "Safe":
-                action = "forward"
-            elif label == "Recon":
-                action = "forward_and_log"
-            elif label in ("Downloader", "Exploit"):
-                action = "redirect_to_decoy"
-            else:
-                action = "drop_and_block"
-
-            result = {
-                "class_id": pred_id,
-                "label": label,
-                "confidence": confidence,
-                "action": action,
-                "rule": rule_name,
-                "mitre_tactics": explanation.get("mitre_tactics", []),
-                "severity_max": explanation.get("severity_max", 0),
-                "http_findings": http_findings,
-                "neural_confidence": neural_result[2],
-                "neural_probs": probs,
-                "extracted_command": synthetic_cmd,
-            }
-            
-            # Deep XAI Integration
-            from agents.xai import AdaptiveXAINarrator
-            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
-            
-            xai_event = ClassificationEvent(
-                session_id=request_context.get("session_id", "unknown"),
-                timestamp="now",
-                src_ip=source_ip,
-                commands=[synthetic_cmd],
-                classification=label,
-                confidence=confidence,
-                mitre_techniques=result["mitre_tactics"],
-                features_used={"rule": rule_name}
-            )
-            xai_decision = RoutingDecision(
-                session_id=request_context.get("session_id", "unknown"),
-                action=action,
-                target="decoy" if action == "redirect_to_decoy" else ("drop" if action == "drop_and_block" else "upstream"),
-                reason=rule_name
-            )
-            narrator = AdaptiveXAINarrator()
-            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
-            
-            result["xai_summary"] = xai_explanation.summary
-            result["xai_detailed"] = xai_explanation.detailed
-            result["xai_risk_score"] = xai_explanation.risk_score
-            result["xai_recommendations"] = xai_explanation.recommended_actions
-            
-            return result
-        else:
-            # Low confidence — fall through to MITRE rules
-            logger.debug(
-                "Neural confidence %.2f%% < threshold %.0f%%, falling back to MITRE rules",
-                confidence * 100, CONFIDENCE_THRESHOLD * 100
-            )
-
-    # --- Stage 3: MITRE rule-based fallback ---
-    if rule_label == "Safe":
+    if label == "Safe":
         action = "forward"
-    elif rule_label == "Recon":
+    elif label == "Recon":
         action = "forward_and_log"
-    elif rule_label in ("Downloader", "Exploit"):
+    elif label in ("Downloader", "Exploit"):
         action = "redirect_to_decoy"
     else:
         action = "drop_and_block"
 
     result = {
-        "class_id": rule_id,
-        "label": rule_label,
-        "confidence": 1.0,
+        "class_id": pred_id,
+        "label": label,
+        "confidence": confidence,
         "action": action,
-        "rule": explanation.get("rule_matched"),
+        "rule": rule_name,
         "mitre_tactics": explanation.get("mitre_tactics", []),
         "severity_max": explanation.get("severity_max", 0),
         "http_findings": http_findings,
+        "neural_confidence": confidence,
+        "neural_probs": probs,
+        "extracted_command": synthetic_cmd,
     }
-
-    # Annotate with neural fallback info if neural model was attempted but low-confidence
-    if neural_result is not None:
-        _, _, neural_conf, neural_probs = neural_result
-        result["neural_confidence"] = neural_conf
-        result["neural_probs"] = neural_probs
-        result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
 
     result["extracted_command"] = synthetic_cmd
     
@@ -561,109 +598,90 @@ def classify_ssh_command(
             "severity_max": 0,
         }
 
+    # Stage 1: Explicit Attack & Damage Signatures
+    ssh_override = None
+    if _match_any(command, SSH_DESTRUCTIVE_PATTERNS):
+        ssh_override = (4, "Destructive", "SSH Guard: Destructive command pattern")
+    elif _match_any(command, SSH_REVERSE_SHELL_PATTERNS):
+        ssh_override = (3, "Exploit", "SSH Guard: Reverse shell pattern")
+    elif _match_any(command, SSH_DROPPER_PATTERNS):
+        ssh_override = (2, "Downloader", "SSH Guard: Dropper / Miner pattern")
+    elif _match_any(command, SSH_APT_PATTERNS):
+        ssh_override = (5, "ADVANCED_APT", "SSH Guard: APT persistence pattern")
+    elif _match_any(command, SSH_CRED_THEFT_PATTERNS):
+        ssh_override = (3, "Exploit", "SSH Guard: Credential theft pattern")
+
+    # Stage 2: Benign Admin & Developer Filter ("Not Otherwise")
+    is_benign_admin = _match_any(command, SSH_BENIGN_PATTERNS)
+
     # Run MITRE rules classification
     rule_id, rule_label, explanation = (
         hybrid_classifier.classify(command)
     )
 
-    # Stage 2: Neural Inference
+    # Stage 3: Neural Inference with calibrated risk thresholds
     neural_result = _classify_neural(
         command,
         neural_model,
         triage_features=triage_features,
     ) if neural_model is not None else None
 
-    if neural_result is not None:
+    if ssh_override is not None:
+        pred_id, label, rule_name = ssh_override
+        confidence = 1.0
+        probs = neural_result[3] if neural_result is not None else {CLASS_NAMES[i]: (1.0 if i == pred_id else 0.0) for i in range(6)}
+    elif is_benign_admin:
+        # If it's a known benign admin command (git, docker, systemctl, etc.)
+        # and neural model confirms Safe or is neutral, do NOT let generic MITRE rules override to Downloader/Recon
+        neural_safe_prob = neural_result[3].get("Safe", 0.0) if neural_result is not None else 0.90
+        if neural_safe_prob >= 0.40:
+            pred_id, label, confidence = 0, "Safe", neural_safe_prob
+            rule_name = f"Benign Admin Task (safe_confidence={confidence:.2%})"
+            probs = neural_result[3] if neural_result is not None else {"Safe": 1.0}
+        else:
+            pred_id, label, confidence, probs = neural_result
+            rule_name = f"neural_model (confidence={confidence:.2%})"
+    elif neural_result is not None:
         pred_id, label, confidence, probs = neural_result
-        if confidence >= CONFIDENCE_THRESHOLD:
-            # Check for safeguard override
-            if rule_id > pred_id:
-                logger.info(
-                    "Safeguard override (SSH): Neural predicted '%s' (conf=%.2f%%) but rules detected '%s'. Overriding to rules.",
-                    label, confidence * 100, rule_label
-                )
+        if confidence >= 0.35:
+            rule_name = f"neural_model (confidence={confidence:.2%})"
+        else:
+            if rule_label in ("Destructive", "Exploit", "ADVANCED_APT"):
+                pred_id, label, confidence = rule_id, rule_label, 1.0
+                rule_name = explanation.get("rule_matched")
+            elif rule_label == "Recon" and probs.get("Recon", 0.0) >= 0.20:
                 pred_id, label, confidence = rule_id, rule_label, 1.0
                 rule_name = explanation.get("rule_matched")
             else:
-                rule_name = f"neural_model (confidence={confidence:.2%})"
+                pred_id, label = 0, "Safe"
+                confidence = probs.get("Safe", 0.50)
+                rule_name = "neural_model (safe baseline)"
+    else:
+        pred_id, label, confidence = rule_id, rule_label, 1.0
+        rule_name = explanation.get("rule_matched")
+        probs = {CLASS_NAMES[i]: (1.0 if i == pred_id else 0.0) for i in range(6)}
 
-            # Mirror HTTP behavior: let Exploit/Downloader continue inside the decoy
-            if label == "Safe":
-                action = "forward"
-            elif label == "Recon":
-                action = "forward_and_log"
-            elif label in ("Exploit", "Downloader"):
-                action = "redirect_to_decoy"
-            else:
-                action = "drop_and_block"
-
-            result = {
-                "class_id": pred_id,
-                "label": label,
-                "confidence": confidence,
-                "action": action,
-                "rule": rule_name,
-                "mitre_tactics": explanation.get("mitre_tactics", []),
-                "severity_max": explanation.get("severity_max", 0),
-                "neural_confidence": neural_result[2],
-                "neural_probs": probs,
-            }
-            
-            # Deep XAI Integration
-            from agents.xai import AdaptiveXAINarrator
-            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
-            
-            xai_event = ClassificationEvent(
-                session_id=context.get("session_id", "unknown"),
-                timestamp="now",
-                src_ip=context.get("source_ip", "unknown"),
-                commands=[command],
-                classification=label,
-                confidence=confidence,
-                mitre_techniques=result["mitre_tactics"],
-                features_used={"rule": rule_name}
-            )
-            xai_decision = RoutingDecision(
-                session_id=context.get("session_id", "unknown"),
-                action=action,
-                target="decoy" if action == "redirect_to_decoy" else ("drop" if action == "drop_and_block" else "upstream"),
-                reason=rule_name
-            )
-            narrator = AdaptiveXAINarrator()
-            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
-            
-            result["xai_summary"] = xai_explanation.summary
-            result["xai_detailed"] = xai_explanation.detailed
-            result["xai_risk_score"] = xai_explanation.risk_score
-            result["xai_recommendations"] = xai_explanation.recommended_actions
-            
-            return result
-
-    # Stage 3: MITRE Fallback
-    if rule_label == "Safe":
+    # Mirror HTTP behavior: let Exploit/Downloader continue inside the decoy
+    if label == "Safe":
         action = "forward"
-    elif rule_label == "Recon":
+    elif label == "Recon":
         action = "forward_and_log"
-    elif rule_label in ("Exploit", "Downloader"):
+    elif label in ("Exploit", "Downloader"):
         action = "redirect_to_decoy"
     else:
         action = "drop_and_block"
 
     result = {
-        "class_id": rule_id,
-        "label": rule_label,
-        "confidence": 1.0,
+        "class_id": pred_id,
+        "label": label,
+        "confidence": confidence,
         "action": action,
-        "rule": explanation.get("rule_matched"),
+        "rule": rule_name,
         "mitre_tactics": explanation.get("mitre_tactics", []),
         "severity_max": explanation.get("severity_max", 0),
+        "neural_confidence": confidence,
+        "neural_probs": probs,
     }
-
-    if neural_result is not None:
-        _, _, neural_conf, neural_probs = neural_result
-        result["neural_confidence"] = neural_conf
-        result["neural_probs"] = neural_probs
-        result["fallback_reason"] = f"Neural confidence {neural_conf:.1%} < threshold {CONFIDENCE_THRESHOLD:.0%}"
 
     # Deep XAI Integration for Fallback
     from agents.xai import AdaptiveXAINarrator

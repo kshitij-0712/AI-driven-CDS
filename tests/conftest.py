@@ -29,10 +29,9 @@ def model():
     """Load the UnifiedThreatClassifier once for the session."""
     from training.neural.model import UnifiedThreatClassifier
 
-    # Try loading the latest trained model
+    # Target strictly the trained brain_neural.pt model
     model_paths = [
         PROJECT_ROOT / "models" / "brain_neural.pt",
-        PROJECT_ROOT / "models" / "brain_neural_1.pt",
     ]
 
     for path in model_paths:

