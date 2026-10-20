@@ -12,7 +12,11 @@ Tests:
 import os
 import json
 import pytest
-from fastapi.testclient import TestClient
+import warnings
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    from fastapi.testclient import TestClient
 from interceptor.http_proxy import create_http_guard_app
 from agents.insider.corporate_directory import CorporateDirectory
 
