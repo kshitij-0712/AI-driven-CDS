@@ -28,6 +28,10 @@ class DecoyInstance:
     session_id: str = ""
     host_dir: str = ""
 
+    @property
+    def html_dir(self) -> str:
+        return self.host_dir
+
 
 class DecoyManager:
     """Manage decoy containers using Docker API.

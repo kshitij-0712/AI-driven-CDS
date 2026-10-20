@@ -18,6 +18,14 @@ from deception.session_tracker import (
     AdversarySessionProfile,
     SessionTracker,
 )
+from deception.orchestrator import (
+    DeceptionPromptComposer,
+    DeceptionOrchestrator,
+    OrchestrationResult,
+)
+from deception.mutator import (
+    DecoyEnvironmentMutator,
+)
 
 __all__ = [
     "DeceptionTactic",
@@ -29,4 +37,8 @@ __all__ = [
     "CanaryGenerator",
     "AdversarySessionProfile",
     "SessionTracker",
+    "DeceptionPromptComposer",
+    "DeceptionOrchestrator",
+    "OrchestrationResult",
+    "DecoyEnvironmentMutator",
 ]

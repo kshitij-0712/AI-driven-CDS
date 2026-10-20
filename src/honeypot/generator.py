@@ -18,6 +18,8 @@ from agents.deception import (
     generate_fallback_decoy,
     generate_physical_decoy_files,
 )
+from deception.orchestrator import DeceptionOrchestrator
+from deception.mutator import DecoyEnvironmentMutator
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,8 @@ class HoneypotGenerator:
         self.state_manager = SessionStateManager(store)
         self.router = LLMRouter(config)
         self.cache = HoneypotCache(config)
+        self.orchestrator = DeceptionOrchestrator(config=config, router=self.router)
+        self.mutator = DecoyEnvironmentMutator()
         
         galah_cfg = config.get("galah_honeypot", {})
         crawler_cfg = galah_cfg.get("crawler", {})
@@ -547,42 +551,35 @@ class HoneypotGenerator:
             parsed_res = cached_response
         else:
             try:
-                # 3. Load persistent attacker session memory
-                session_memory = self.state_manager.load_state(session_id)
-
-                # 4. Build system instruction and user prompt
-                system_instruction = PromptBuilder.build_system_instruction()
-                
                 request_context = {
                     "method": method,
                     "path": path,
                     "query": query,
                     "body": body_str,
                     "headers": dict(request.headers),
-                    "binary_triage": decision.get("binary_triage")
+                    "binary_triage": decision.get("binary_triage"),
+                    "insider_context": decision.get("insider_context"),
                 }
-                
-                user_prompt = PromptBuilder.build_user_prompt(
+                client_ip = request.client.host if getattr(request, "client", None) else "127.0.0.1"
+                orch_result = await self.orchestrator.orchestrate_turn(
                     request_context=request_context,
-                    intent_label=label,
+                    decision=decision,
+                    session_id=session_id,
                     app_structure=self.app_structure,
-                    session_memory=session_memory
+                    client_ip=client_ip,
                 )
-
-                # 5. Call LLM Router (Ollama/Mock fallback)
-                raw_response = await self.router.generate(label, system_instruction, user_prompt)
-
-                # 6. Parse Response JSON
-                parsed_res = self._parse_json_response(raw_response)
-
-                # 7. Update persistent attacker session memory
-                updates = parsed_res.get("session_updates", {})
-                self.state_manager.update_state(session_id, updates)
-
-                # 8. Store in cache
+                parsed_res = {
+                    "status_code": orch_result.status_code,
+                    "headers": orch_result.headers,
+                    "body": orch_result.body,
+                    "session_updates": orch_result.session_updates,
+                    "generated_files": orch_result.generated_files,
+                }
+                if orch_result.session_updates:
+                    self.state_manager.update_state(session_id, orch_result.session_updates)
                 self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
             except Exception as e:
-                logger.error(f"Error during LLM decoy generation: {e}. Falling back to static decoy.")
+                logger.error(f"Error during DeceptionOrchestrator turn: {e}. Falling back to static decoy.")
                 fallback_files = generate_fallback_decoy(session_id)
                 parsed_res = {
                     "status_code": 200,
@@ -751,39 +748,43 @@ class HoneypotGenerator:
         # Ensure we have crawled application knowledge
         await self._ensure_app_structure()
 
-        # Load persistent attacker session memory
-        session_memory = self.state_manager.load_state(session_id)
-
-        # Build system instruction and user prompt
-        system_instruction = PromptBuilder.build_system_instruction()
-        
-        request_context = {
-            "method": method,
-            "path": path,
-            "query": query,
-            "body": body_str,
-            "headers": dict(request.headers)
-        }
-        
-        user_prompt = PromptBuilder.build_user_prompt(
-            request_context=request_context,
-            intent_label=label,
-            app_structure=self.app_structure,
-            session_memory=session_memory
-        )
-
-        # Call LLM Router (Ollama/Gemini/Mock fallback)
-        raw_response = await self.router.generate(label, system_instruction, user_prompt)
-
-        # Parse Response JSON
-        parsed_res = self._parse_json_response(raw_response)
-
-        # Update persistent attacker session memory
-        updates = parsed_res.get("session_updates", {})
-        self.state_manager.update_state(session_id, updates)
-
-        # Store in cache
-        self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
+        # Load persistent attacker session memory & orchestrate deception turn
+        try:
+            request_context = {
+                "method": method,
+                "path": path,
+                "query": query,
+                "body": body_str,
+                "headers": dict(request.headers),
+                "binary_triage": decision.get("binary_triage"),
+                "insider_context": decision.get("insider_context"),
+            }
+            client_ip = request.client.host if getattr(request, "client", None) else "127.0.0.1"
+            orch_result = await self.orchestrator.orchestrate_turn(
+                request_context=request_context,
+                decision=decision,
+                session_id=session_id,
+                app_structure=self.app_structure,
+                client_ip=client_ip,
+            )
+            parsed_res = {
+                "status_code": orch_result.status_code,
+                "headers": orch_result.headers,
+                "body": orch_result.body,
+                "session_updates": orch_result.session_updates,
+                "generated_files": orch_result.generated_files,
+            }
+            if orch_result.session_updates:
+                self.state_manager.update_state(session_id, orch_result.session_updates)
+            self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
+        except Exception as e:
+            logger.error(f"Error during DeceptionOrchestrator generation: {e}. Falling back to static decoy.")
+            parsed_res = {
+                "status_code": 200,
+                "headers": {"Content-Type": "text/html"},
+                "body": "<html><body><div style='background-color:#1e293b; color:#cbd5e1; font-family:sans-serif; padding:40px; border-radius:8px;'><h1>Access Blocked</h1><p>Your request lacks required authorization parameters. Security audit initiated.</p></div></body></html>",
+                "session_updates": {}
+            }
 
         # Construct FastAPI Response
         resp_headers = parsed_res.get("headers", {})

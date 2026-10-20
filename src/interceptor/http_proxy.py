@@ -768,9 +768,10 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                     target_file = "index.html"
                 else:
                     target_file = f"{target_rel_path}.html"
+                decoy_html = getattr(decoy, "html_dir", getattr(decoy, "host_dir", "")) or ""
                 file_exists = (
-                    os.path.exists(os.path.join(decoy.html_dir, target_file)) or 
-                    os.path.exists(os.path.join(decoy.html_dir, target_rel_path))
+                    os.path.exists(os.path.join(decoy_html, target_file)) or 
+                    os.path.exists(os.path.join(decoy_html, target_rel_path))
                 )
 
                 is_attack = decision.get("label", "Safe") != "Safe"

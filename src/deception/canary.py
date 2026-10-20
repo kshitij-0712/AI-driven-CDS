@@ -283,13 +283,24 @@ class CanaryGenerator:
                 "session_prefix": sid_prefix,
             })
 
-        # 4. Database canary username scan
-        db_user_matches = re.findall(r"canary_usr_([A-Za-z0-9]{8})", text)
-        for sig in db_user_matches:
-            findings.append({
-                "token_type": CanaryType.DB_CONN_STR.value,
-                "matched_value": f"canary_usr_{sig}",
-                "signature": sig,
-            })
+        # 4. Database canary scan (full URI or username)
+        db_full_matches = re.findall(r"postgresql://canary_usr_[A-Za-z0-9]{8}:[A-Za-z0-9]+@[^\s'\"&]+", text)
+        if db_full_matches:
+            for full_str in db_full_matches:
+                sig_match = re.search(r"canary_usr_([A-Za-z0-9]{8})", full_str)
+                sig = sig_match.group(1) if sig_match else ""
+                findings.append({
+                    "token_type": CanaryType.DB_CONN_STR.value,
+                    "matched_value": full_str,
+                    "signature": sig,
+                })
+        else:
+            db_user_matches = re.findall(r"canary_usr_([A-Za-z0-9]{8})", text)
+            for sig in db_user_matches:
+                findings.append({
+                    "token_type": CanaryType.DB_CONN_STR.value,
+                    "matched_value": f"canary_usr_{sig}",
+                    "signature": sig,
+                })
 
         return findings
