@@ -174,3 +174,10 @@ internal_http_guard:
   listen_port: 8001
   real_service_host: "127.0.0.1"
   real_service_port: 8090
+
+deception:
+  enabled: true
+  tarpit_delay_ms: 850
+  insider_anomaly_threshold: 0.70
+  canary_secret: "${ADSHIELD_CANARY_SECRET:-adaptiveshield_canary_deterministic_master_key_2026}"
+
