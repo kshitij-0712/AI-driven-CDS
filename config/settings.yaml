@@ -42,8 +42,8 @@ ml:
   neural_v5_state_path: "./models/brain_v5_neural.pt"
   neural_v5_results_path: "./models/brain_v5_neural_results.json"
   
-  # Phase 6: Unified 4-Modality Model
-  neural_v6_model_path: "./models/brain_v5_neural.pt"
+  # Phase 6: Unified 4-Modality Model (current production target)
+  neural_v6_model_path: "./models/brain_neural.pt"
 
 insider:
   export_dataset_path: "./data/exports/sessions_complete.csv"
@@ -107,7 +107,7 @@ http_guard:
   listen_port: 8000
   listen_port_ssl: 8443
   real_service_host: "127.0.0.1"
-  real_service_port: 8090
+  real_service_port: 8080
   request_timeout_sec: 10
   session_idle_timeout_sec: 900
   brute_force_threshold: 8
@@ -151,6 +151,9 @@ decoys:
 runtime:
   db_path: "./runtime/adaptiveshield.db"
   threat_log_path: "./runtime/logs/threat_events.jsonl"
+  insider_log_path: "./runtime/logs/insider_events.jsonl"
+  corporate_db_path: "./runtime/corporate_directory.db"
+  host_runtime_dir: "/home/me/data/AdaptiveShield/runtime"
 
 galah_honeypot:
   enabled: true
@@ -159,12 +162,11 @@ galah_honeypot:
     output_path: "./runtime/app_structure.json"
     auto_crawl: true
   llm:
-    default_provider: "ollama"
-    router_policy: "dynamic"
-    gemini_model: "gemini-3.1-flash-lite"
-    ollama_model: "qwen2.5-coder:7b-instruct-q4_K_M"
-    ollama_url: "http://192.168.56.1:11434"
-    ollama_timeout: 1200
+    provider: "gemini"
+    api_url: "https://generativelanguage.googleapis.com/v1beta"
+    api_key: "${GEMINI_API_KEY}"
+    model: "gemini-2.5-flash"
+    timeout_sec: 8
   cache:
     enabled: true
     ttl_seconds: 3600

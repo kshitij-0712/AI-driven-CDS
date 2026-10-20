@@ -163,6 +163,9 @@ class ThreatDataset(Dataset):
         self.changes_mask = (self.changes.sum(axis=1) == 0)
         self.triage_mask = (self.triage.sum(axis=1) == 0)
         
+        # Multi-hot MITRE targets: 14 tactics (tactic count > 0 -> 1.0)
+        self.mitre_targets = (self.mitre[:, :14] > 0).astype(np.float32)
+        
         self.labels = data['label_id'].values.astype(np.int64)
 
     @property
@@ -184,8 +187,9 @@ class ThreatDataset(Dataset):
         
         return {
             'commands': torch.tensor(indices, dtype=torch.long),
-            'length': torch.tensor(min(len(self.commands[idx]), self.tokenizer.max_length)),
+            'length': torch.tensor(max(1, min(len(self.commands[idx]), self.tokenizer.max_length))),
             'mitre': torch.tensor(self.mitre[idx], dtype=torch.float32),
+            'mitre_targets': torch.tensor(self.mitre_targets[idx], dtype=torch.float32),
             'changes': torch.tensor(self.changes[idx], dtype=torch.float32),
             'triage': torch.tensor(self.triage[idx], dtype=torch.float32),
             'modality_mask': torch.tensor(mask, dtype=torch.bool),
@@ -200,6 +204,7 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'commands': torch.stack([item['commands'][:max_len] for item in batch]),
         'lengths': torch.stack([item['length'] for item in batch]),
         'mitre': torch.stack([item['mitre'] for item in batch]),
+        'mitre_targets': torch.stack([item['mitre_targets'] for item in batch]),
         'changes': torch.stack([item['changes'] for item in batch]),
         'triage': torch.stack([item['triage'] for item in batch]),
         'modality_mask': torch.stack([item['modality_mask'] for item in batch]),

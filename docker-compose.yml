@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   adaptiveshield:
     build:
@@ -16,12 +14,13 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./src:/app/src
       - ./runtime:/app/runtime
       - ./config:/app/config
       - ./models:/app/models:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
-      interval: 10s
+      interval: 60s
       timeout: 5s
       retries: 3
 

@@ -180,7 +180,16 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         
         if self.is_decoy:
             # --- EXTERNAL THREAT (Brute-forced into Cowrie) ---
-            decision = classify_ssh_command(self.classifier, full_command, context)
+            neural_model = getattr(self.classifier, "neural_model", None)
+            ctx = self.store._get_context(self.session_id)
+            triage_features = ctx.get("triage_features")
+            decision = classify_ssh_command(
+                self.classifier,
+                full_command,
+                context,
+                neural_model=neural_model,
+                triage_features=triage_features
+            )
             
             confidence = decision.get("neural_confidence", 1.0)
             ext_label = decision["label"].lower()
@@ -315,7 +324,13 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             f.write(json.dumps(event) + "\n")
 
         if decision["action"] == "drop_and_block":
-            self.nft.block_ip(self.src_ip, reason=decision.get("rule"))
+            is_bruteforce = (
+                "brute_force" in str(decision.get("rule", "")).lower()
+                or "brute-force" in str(decision.get("rule", "")).lower()
+                or "brute force" in str(decision.get("rule", "")).lower()
+            )
+            if is_bruteforce:
+                self.nft.block_ip(self.src_ip, reason=decision.get("rule"))
             self.chan.close()
         elif decision["action"] == "redirect_to_decoy":
             if not self.is_decoy:

@@ -5,7 +5,7 @@ import asyncio
 import threading
 from unittest.mock import MagicMock, AsyncMock
 from core.triage.watcher import TriageWatcher
-from agents.decision import build_hybrid_classifier, _neural_model
+from agents.decision import build_hybrid_classifier
 from interceptor.session_store import SessionStore
 from orchestrator.main import load_config
 

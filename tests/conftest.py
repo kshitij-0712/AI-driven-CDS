@@ -29,10 +29,9 @@ def model():
     """Load the UnifiedThreatClassifier once for the session."""
     from training.neural.model import UnifiedThreatClassifier
 
-    # Try loading the latest trained model
+    # Target strictly the trained brain_neural.pt model
     model_paths = [
-        PROJECT_ROOT / "models" / "brain_v5_neural.pt",
-        PROJECT_ROOT / "models" / "brain_v6_unified.pt",
+        PROJECT_ROOT / "models" / "brain_neural.pt",
     ]
 
     for path in model_paths:
@@ -48,6 +47,19 @@ def model():
             return m
 
     pytest.skip("No trained model file found")
+
+
+@pytest.fixture(scope="session")
+def insider_bundle():
+    """Load the trained internal insider model bundle once for the session."""
+    from agents.insider.internal_insider_inference import load_internal_insider_model
+    model_path = PROJECT_ROOT / "models" / "internal_insider_model.pkl"
+    if not model_path.exists():
+        pytest.skip("No trained internal insider model file found")
+    bundle = load_internal_insider_model(str(model_path))
+    if bundle is None:
+        pytest.skip("Failed to load internal insider model bundle")
+    return bundle
 
 
 @pytest.fixture(scope="session")

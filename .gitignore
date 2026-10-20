@@ -102,8 +102,8 @@ data/processed/
 data/dionaea/
 data/cowrie/
 data/insider/
-# Trained models (large binary files)
-models/*.pkl
+data/cert*
+
 
 # Ghidra output (generated)
 data/processed/ghidra_features/
@@ -121,10 +121,13 @@ runtime/
 # Secrets / credentials
 .env
 .env.*
+!.env.example
 secrets/
 credentials/
 *.pem
 *.key
+config/company*
+!config/company_profile.json.example
 
 # Temporary files
 verify/
@@ -137,3 +140,19 @@ temp/
 # OpenCode session files and config
 session-*.md
 .opencode/
+
+# External ML datasets (shared folder artifacts, too large for git)
+ssh_attacks.csv
+MOTIF/
+unified_external_corpus_dedup.csv
+
+# Symlinked shared-folder corpora (transfer to Windows training host via
+# the VirtualBox shared folder, not git)
+data/exports/training
+
+data/external
+# Regenerable assembly input (build_external_corpus.py, ~4 min); too large to commit
+data/exports/unified_external_corpus*
+
+# Regenerable relabel intermediate (relabel_sessions.py, ~90 s)
+data/exports/sessions_complete_v3*
