@@ -13,6 +13,7 @@ from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
 from agents.insider.insider_adapter import AdaptiveInsiderDetector
+from agents.insider.corporate_directory import CorporateDirectory
 from agents.xai import AdaptiveXAINarrator
 import ipaddress
 from datetime import datetime
@@ -70,6 +71,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     classifier = build_hybrid_classifier()
     insider_detector = AdaptiveInsiderDetector()
     xai_detector = AdaptiveXAINarrator()
+    corporate_dir = CorporateDirectory()
 
     decoys = DecoyManager(
         http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
@@ -266,6 +268,62 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         insider_detector.session_states.clear()
         return {"status": "success", "message": "All sessions and blocks cleared successfully."}
 
+    # ---------------- Interactive SOC Console (GlassShield) ----------------
+
+    @app.post("/api/soc/whitelist_ip")
+    async def soc_whitelist_ip(request: Request):
+        """Allows SOC analyst to 1-click whitelist an IP in CorporateDirectory."""
+        data = await request.json()
+        user_id = data.get("user_id")
+        client_ip = data.get("client_ip")
+        if not user_id or not client_ip:
+            return JSONResponse(
+                {"status": "error", "message": "Missing user_id or client_ip"}, status_code=400
+            )
+
+        try:
+            updated = corporate_dir.add_whitelisted_ip(user_id, client_ip)
+            if not updated:
+                return JSONResponse(
+                    {"status": "error", "message": f"User '{user_id}' not found in CorporateDirectory."},
+                    status_code=404,
+                )
+            emp = corporate_dir.get_employee(user_id)
+            return JSONResponse({
+                "status": "success",
+                "message": f"Successfully whitelisted {client_ip} for user {user_id}.",
+                "whitelisted_ips": emp.get("whitelisted_ips", []) if emp else [],
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+    @app.post("/api/soc/grant_scope")
+    async def soc_grant_scope(request: Request):
+        """Allows SOC analyst to grant an authorized scope exception."""
+        data = await request.json()
+        department = data.get("department")
+        scope = data.get("scope")
+        if not department or not scope:
+            return JSONResponse(
+                {"status": "error", "message": "Missing department or scope"}, status_code=400
+            )
+
+        try:
+            # Dynamically register authorized scope in company_profile (persisted)
+            dept_cfg = corporate_dir.grant_scope(department, scope)
+            if not dept_cfg:
+                return JSONResponse(
+                    {"status": "error", "message": f"Failed to update profile for '{department}'."},
+                    status_code=500,
+                )
+            return JSONResponse({
+                "status": "success",
+                "message": f"Granted scope '{scope}' to department '{department}'.",
+                "authorized_scopes": dept_cfg.get("authorized_scopes", []),
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
     async def get_dashboard():
@@ -335,6 +393,11 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             event["xai_detailed"] = explanation.detailed
             event["xai_risk_score"] = explanation.risk_score
             event["xai_recommendations"] = explanation.recommended_actions
+            event["xai_feature_attributions"] = explanation.feature_attributions
+            event["xai_token_attributions"] = explanation.token_attributions
+            event["xai_counterfactual"] = explanation.counterfactual_recourse
+            event["xai_telemetry_audit"] = explanation.telemetry_audit
+            event["xai_deception"] = explanation.deception_rationale
             
             try:
                 if active_event_queue is not None:
@@ -631,44 +694,79 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         
         event["risk_score"] = risk_score
         event["policy_decision"] = policy_decision
+        event["user_id"] = request.headers.get("x-user-id", "") if is_internal else ""
+        event["client_ip"] = src_ip
         if is_insider_active:
             event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
 
-        xai_features = {
-            "risk_score": risk_score,
-            "policy_decision": policy_decision
-        }
-        if is_insider_active:
-            xai_features.update({
-                "insider_threat": True if action == "drop_and_block" else False,
+        if is_internal:
+            # --- GlassShield Deep XAI for the Internal Guard ---
+            # Internal HTTP Guard EXCLUSIVELY uses insider risk scoring; the
+            # narrator computes TreeSHAP attribution + counterfactual recourse.
+            xai_features = {
+                "insider_threat": is_insider_active,
+                "is_internal": True,
                 "role": request.headers.get("x-user-role", "normal"),
-                "anomaly_factors": insider_threat.anomaly_factors,
-                "evidence_features": insider_threat.features
-            })
+                "department": request.headers.get("x-dept", ""),
+                "risk_score": risk_score,
+                "policy_decision": policy_decision,
+                "evidence_features": insider_threat.features if insider_threat else {},
+                "anomaly_factors": insider_threat.anomaly_factors if insider_threat else [],
+                "headers": dict(request.headers),
+            }
+            xai_event = ClassificationEvent(
+                session_id=session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                src_ip=src_ip,
+                commands=[extracted_cmd] if extracted_cmd else [path],
+                classification="Insider Anomaly" if is_insider_active else "Safe",
+                confidence=1.0,
+                mitre_techniques=decision.get("mitre_tactics", []),
+                features_used=xai_features,
+            )
+            xai_decision = RoutingDecision(
+                session_id=session_id,
+                action=action,
+                target="decoy" if action == "redirect_to_decoy" else ("blocked" if action == "drop_and_block" else "upstream"),
+                reason=decision.get("rule") or "Internal behavior monitoring",
+            )
+            explanation = xai_detector.generate_explanation(xai_event, xai_decision)
+        else:
+            xai_features = {
+                "risk_score": risk_score,
+                "policy_decision": policy_decision,
+                "headers": dict(request.headers),
+            }
+            xai_event = ClassificationEvent(
+                session_id=session_id,
+                timestamp=datetime.now().isoformat() + "Z",
+                src_ip=src_ip,
+                commands=[extracted_cmd] if extracted_cmd else [],
+                classification=decision["label"],
+                confidence=decision.get("neural_confidence", 1.0),
+                mitre_techniques=decision.get("mitre_tactics", []),
+                features_used=xai_features,
+            )
+            xai_decision = RoutingDecision(
+                session_id=session_id,
+                action=action,
+                target=target,
+                reason=decision.get("rule", "Classification triggered"),
+            )
+            # Pass the live neural model handle for gradient-based token saliency
+            from agents.decision import _neural_model as active_neural_model
+            explanation = xai_detector.generate_explanation(xai_event, xai_decision, active_neural_model)
 
-        xai_event = ClassificationEvent(
-            session_id=session_id,
-            timestamp=datetime.now().isoformat() + "Z",
-            src_ip=src_ip,
-            commands=[decision.get("extracted_command", "")] if decision.get("extracted_command") else [],
-            classification=decision["label"],
-            confidence=decision.get("neural_confidence", 1.0),
-            mitre_techniques=decision.get("mitre_tactics", []),
-            features_used=xai_features
-        )
-        xai_decision = RoutingDecision(
-            session_id=session_id,
-            action=action,
-            target=target,
-            reason=decision.get("rule", "Classification triggered")
-        )
-        
-        explanation = xai_detector.generate_explanation(xai_event, xai_decision)
-        
+        # --- Event Packing: attach the full GlassShield structure to the SSE stream ---
         event["xai_summary"] = explanation.summary
         event["xai_detailed"] = explanation.detailed
         event["xai_risk_score"] = explanation.risk_score
         event["xai_recommendations"] = explanation.recommended_actions
+        event["xai_feature_attributions"] = explanation.feature_attributions
+        event["xai_token_attributions"] = explanation.token_attributions
+        event["xai_counterfactual"] = explanation.counterfactual_recourse
+        event["xai_telemetry_audit"] = explanation.telemetry_audit
+        event["xai_deception"] = explanation.deception_rationale
 
         # Push to live dashboard stream queue
         try:

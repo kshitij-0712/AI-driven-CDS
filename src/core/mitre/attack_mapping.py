@@ -83,6 +83,60 @@ TACTIC_NAMES = sorted(TACTICS.keys(), key=lambda t: TACTICS[t]["order"])
 
 _RAW_PATTERNS = [
     # =================================================================
+    # WEB EXPLOITATION / INITIAL ACCESS (TA0001)
+    # HTTP-layer injection fingerprints consumed by the GlassShield
+    # token-saliency fallback (SQLi, XSS, traversal, stacked commands).
+    # =================================================================
+    {
+        "pattern": r"(union\s+(all\s+)?select|;\s*drop\s+(table|database)|insert\s+into.*(values|select))",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: SQL Injection (UNION/Stacked)",
+        "tactic": "initial_access",
+        "severity": 9,
+        "description": "UNION-based, stacked, or destructive SQL injection in a payload",
+    },
+    {
+        "pattern": r"(%27|')\s*(or|and)\s*%?\s*1\s*%?=?%?\s*1|--($|\s)|\b(or|and)\b\s+\d+\s*=\s*\d+",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: SQL Tautology Injection",
+        "tactic": "initial_access",
+        "severity": 8,
+        "description": "Tautology SQLi (' OR 1=1--) bypassing credential comparison",
+    },
+    {
+        "pattern": r"(waitfor\s+delay|benchmark\s*\(|sleep\s*\(\s*[0-9]+\s*\)|pg_sleep\s*\()",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: Blind SQLi (Time-Based)",
+        "tactic": "initial_access",
+        "severity": 7,
+        "description": "Time-delay primitives probing for blind SQL injection",
+    },
+    {
+        "pattern": r"(<script|</script|onerror\s*=|onload\s*=|javascript\s*:|document\.cookie)",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: Cross-Site Scripting",
+        "tactic": "initial_access",
+        "severity": 7,
+        "description": "Inline script or event-handler XSS payload",
+    },
+    {
+        "pattern": r"(?:%2e%2e(%2f|%5c))+|(?:\.\./){2,}|\.\.%2f/etc|/\.\./\.\./",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application: Path Traversal",
+        "tactic": "initial_access",
+        "severity": 8,
+        "description": "Repeated or encoded directory-climbing traversal sequence",
+    },
+    {
+        "pattern": r"['\"]\s*(;|%3b|\||%7c|&&|%26%26)\s*(rm\s+-rf|rm\s+|wget\s|curl\s|bash|sh\s+-c|nc\s|whoami|cat\s+/etc)",
+        "technique_id": "T1059.004",
+        "technique_name": "Command and Scripting Interpreter: Injected Shell Chaining",
+        "tactic": "execution",
+        "severity": 8,
+        "description": "OS command chained onto a quoted parameter value (param injection)",
+    },
+
+    # =================================================================
     # EXECUTION (TA0002)
     # =================================================================
     {

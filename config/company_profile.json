@@ -1,0 +1,97 @@
+{
+  "company_name": "NexusCorp",
+  "departments": {
+    "AI_Platform": {
+      "authorized_scopes": [
+        "/models/",
+        "/workspace/",
+        "/src/"
+      ]
+    },
+    "Finance_HR": {
+      "authorized_scopes": [
+        "/hr/",
+        "/payroll/",
+        "/billing/"
+      ]
+    },
+    "Security": {
+      "authorized_scopes": [
+        "/admin/",
+        "/vault/",
+        "/logs/"
+      ]
+    }
+  },
+  "employees": [
+    {
+      "user_id": "usr_dev_01",
+      "email": "sarah.chen@nexuscorp.com",
+      "name": "Dr. Sarah Chen",
+      "role": "developer",
+      "department": "AI_Platform",
+      "assigned_device": "WS-DEV-0141",
+      "assigned_ip": "10.10.4.52",
+      "is_active": true
+    },
+    {
+      "user_id": "usr_admin_01",
+      "email": "admin@nexuscorp.com",
+      "name": "Core Admin",
+      "role": "admin",
+      "department": "Security",
+      "assigned_device": "WS-ADM-0001",
+      "assigned_ip": "10.10.0.2",
+      "is_active": true
+    },
+    {
+      "user_id": "usr_fin_01",
+      "email": "charlie.fin@nexuscorp.com",
+      "name": "Charlie Ruiz",
+      "role": "finance",
+      "department": "Finance_HR",
+      "assigned_device": "WS-FIN-0077",
+      "assigned_ip": "10.10.6.77",
+      "is_active": true
+    },
+    {
+      "user_id": "usr_hr_01",
+      "email": "bob.hr@nexuscorp.com",
+      "name": "Bob Nakamura",
+      "role": "hr",
+      "department": "Finance_HR",
+      "assigned_device": "WS-HR-0031",
+      "assigned_ip": "10.10.6.31",
+      "is_active": true
+    }
+  ],
+  "test_personas": {
+    "developer": {
+      "user_id": "usr_dev_01",
+      "name": "Dr. Sarah Chen",
+      "role": "developer",
+      "department": "AI_Platform",
+      "assigned_device": "WS-DEV-0141",
+      "assigned_ip": "10.10.4.52",
+      "test_scenario": "Access /models (authorized) vs /hr (violation)"
+    },
+    "finance": {
+      "user_id": "usr_fin_01",
+      "name": "Charlie Ruiz",
+      "role": "finance",
+      "department": "Finance_HR",
+      "assigned_device": "WS-FIN-0077",
+      "assigned_ip": "10.10.6.77",
+      "test_scenario": "Exfiltrate payroll archive to cloud storage"
+    },
+    "hr": {
+      "user_id": "usr_hr_01",
+      "name": "Bob Nakamura",
+      "role": "hr",
+      "department": "Finance_HR",
+      "assigned_device": "WS-HR-0031",
+      "assigned_ip": "10.10.6.31",
+      "test_scenario": "Attempt /src/ repository access (violation)"
+    }
+  }
+}
