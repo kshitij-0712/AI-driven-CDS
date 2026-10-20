@@ -102,8 +102,13 @@ def run(config_path: str):
                 int_server.serve()
             )
         finally:
-            logging.info("Shutting down... stopping background watchers.")
+            logging.info("Shutting down... stopping background watchers and cleaning up decoy containers.")
             watcher.stop()
+            try:
+                ext_app.state.decoys.shutdown_all_decoys()
+                int_app.state.decoys.shutdown_all_decoys()
+            except Exception as e:
+                logging.error(f"Error during decoy cleanup: {e}")
 
     asyncio.run(main_loop())
 
