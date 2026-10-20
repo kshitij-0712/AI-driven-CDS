@@ -73,6 +73,7 @@ HTTP_ATTACK_PATTERNS = {
     ],
     "command_injection": [
         r"[;&|`]\s*(?:whoami|id|uname|cat|ls|bash|sh|rm|wget|curl)",
+        r"(?:cmd|exec|command|run)=\s*(?:rm|cat|ls|wget|curl|bash|sh|python)",
         r"\$\([^)]+\)",
         r"`[^`]+`",
         r"system\s*\(",
@@ -459,15 +460,12 @@ def classify_http_request(
     if body:
         raw_request += f"\n{unquote(body)}"
         
+    # Keep full HTTP envelope intact (BiLSTM is trained on full request syntax)
     synthetic_cmd = raw_request.strip()
 
-    # Clean HTTP boilerplate to isolate the context
-    import re
-    synthetic_cmd = re.sub(r'^(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+', '', synthetic_cmd)
-    synthetic_cmd = re.sub(r'\s+HTTP/1\.[01]', '', synthetic_cmd)
-
-    # Combine history with current command for context-aware classification
-    full_command = f"{command_history}\n\n{synthetic_cmd}".strip() if command_history else synthetic_cmd
+    # For HTTP requests, each request is self-contained within its HTTP envelope.
+    # Do not chain full HTTP past history as it pushes the current request beyond the 512-char window.
+    full_command = synthetic_cmd
 
     # 1. Match HTTP attack syntax (XSS, SQLi, Path Traversal, Command Injection)
     http_findings = _match_http_patterns(full_command)
@@ -480,6 +478,19 @@ def classify_http_request(
             http_override = (3, "Exploit", f"HTTP Guard: Exploit injection ({', '.join(http_findings)})")
         elif "scanner" in http_findings:
             http_override = (1, "Recon", f"HTTP Guard: Web scanner recon ({', '.join(http_findings)})")
+
+    # --- Stage 1.5: Binary Triage Distiller (if payload contains binary features) ---
+    binary_override = None
+    if triage_features is not None and len(triage_features) >= 12:
+        try:
+            from core.malware.binary_classifier import classify_binary
+            b_res = classify_binary(triage_features)
+            if b_res.get("confidence", 0.0) >= 0.70 and b_res.get("label") in ("Destructive", "Downloader", "Exploit", "ADVANCED_APT"):
+                b_label = b_res["label"]
+                b_id = CLASS_NAMES.index(b_label) if b_label in CLASS_NAMES else 2
+                binary_override = (b_id, b_label, f"MOTIF Binary Distiller: {b_label} ({b_res['confidence']:.1%})", b_res)
+        except Exception as e:
+            logger.debug("Binary distiller evaluation in HTTP classifier failed: %s", e)
 
     # Run MITRE rules classification
     rule_id, rule_label, explanation = hybrid_classifier.classify(full_command)
@@ -496,6 +507,20 @@ def classify_http_request(
         pred_id, label, rule_name = http_override
         confidence = 1.0
         probs = neural_result[3] if neural_result is not None else {CLASS_NAMES[i]: (1.0 if i == pred_id else 0.0) for i in range(6)}
+    elif binary_override is not None:
+        pred_id, label, rule_name, b_info = binary_override
+        confidence = b_info["confidence"]
+        probs = {CLASS_NAMES[i]: b_info["probabilities"].get(CLASS_NAMES[i], 0.0) for i in range(len(CLASS_NAMES))}
+    elif not http_findings and rule_label == "Safe":
+        # No attack pattern in query/body/path/headers, and rule classifier confirms safe
+        neural_safe_prob = neural_result[3].get("Safe", 0.0) if neural_result is not None else 0.90
+        if neural_safe_prob >= 0.30:
+            pred_id, label, confidence = 0, "Safe", neural_safe_prob
+            rule_name = f"Benign Web Request (safe_confidence={confidence:.2%})"
+            probs = neural_result[3] if neural_result is not None else {"Safe": 1.0}
+        else:
+            pred_id, label, confidence, probs = neural_result
+            rule_name = f"neural_model (confidence={confidence:.2%})"
     elif neural_result is not None:
         pred_id, label, confidence, probs = neural_result
         if confidence >= 0.35:
@@ -537,6 +562,8 @@ def classify_http_request(
     }
 
     result["extracted_command"] = synthetic_cmd
+    if binary_override is not None:
+        result["binary_triage"] = binary_override[3]
     
     # Deep XAI Integration for Fallback
     from agents.xai import AdaptiveXAINarrator
@@ -547,8 +574,8 @@ def classify_http_request(
         timestamp="now",
         src_ip=source_ip,
         commands=[synthetic_cmd],
-        classification=rule_label,
-        confidence=1.0,
+        classification=label,
+        confidence=confidence,
         mitre_techniques=result["mitre_tactics"],
         features_used={"rule": result["rule"]}
     )
@@ -626,10 +653,27 @@ def classify_ssh_command(
         triage_features=triage_features,
     ) if neural_model is not None else None
 
+    # Stage 3.5: Binary Triage Distiller (if binary payload dropped/analyzed)
+    binary_override = None
+    if triage_features is not None and len(triage_features) >= 12:
+        try:
+            from core.malware.binary_classifier import classify_binary
+            b_res = classify_binary(triage_features)
+            if b_res.get("confidence", 0.0) >= 0.70 and b_res.get("label") in ("Destructive", "Downloader", "Exploit", "ADVANCED_APT"):
+                b_label = b_res["label"]
+                b_id = CLASS_NAMES.index(b_label) if b_label in CLASS_NAMES else 2
+                binary_override = (b_id, b_label, f"MOTIF Binary Distiller: {b_label} ({b_res['confidence']:.1%})", b_res)
+        except Exception as e:
+            logger.debug("Binary distiller evaluation in SSH classifier failed: %s", e)
+
     if ssh_override is not None:
         pred_id, label, rule_name = ssh_override
         confidence = 1.0
         probs = neural_result[3] if neural_result is not None else {CLASS_NAMES[i]: (1.0 if i == pred_id else 0.0) for i in range(6)}
+    elif binary_override is not None:
+        pred_id, label, rule_name, b_info = binary_override
+        confidence = b_info["confidence"]
+        probs = {CLASS_NAMES[i]: b_info["probabilities"].get(CLASS_NAMES[i], 0.0) for i in range(len(CLASS_NAMES))}
     elif is_benign_admin:
         # If it's a known benign admin command (git, docker, systemctl, etc.)
         # and neural model confirms Safe or is neutral, do NOT let generic MITRE rules override to Downloader/Recon
@@ -683,6 +727,9 @@ def classify_ssh_command(
         "neural_probs": probs,
     }
 
+    if binary_override is not None:
+        result["binary_triage"] = binary_override[3]
+
     # Deep XAI Integration for Fallback
     from agents.xai import AdaptiveXAINarrator
     from interfaces.xai_contract import ClassificationEvent, RoutingDecision
@@ -692,8 +739,8 @@ def classify_ssh_command(
         timestamp="now",
         src_ip=context.get("source_ip", "unknown"),
         commands=[command],
-        classification=rule_label,
-        confidence=1.0,
+        classification=label,
+        confidence=confidence,
         mitre_techniques=result["mitre_tactics"],
         features_used={"rule": result["rule"]}
     )

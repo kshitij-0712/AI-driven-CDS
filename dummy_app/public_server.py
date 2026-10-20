@@ -105,7 +105,7 @@ async def public_index():
             </p>
             <form onsubmit="event.preventDefault(); submitDiagnostic()">
                 <div class="flex-row">
-                    <input type="text" id="target-domain" placeholder="e.g. google.com, api.github.com" required>
+                    <input type="text" id="ping-address" placeholder="e.g. google.com, api.github.com" required>
                     <button type="submit" class="btn-submit">Test Latency</button>
                 </div>
             </form>
@@ -135,7 +135,7 @@ async def public_index():
 
         <script>
             async function submitDiagnostic() {
-                const domain = document.getElementById('target-domain').value;
+                const domain = document.getElementById('ping-address').value;
                 const resDiv = document.getElementById('diagnostic-result');
                 resDiv.style.display = 'block';
                 resDiv.className = 'result-box';
@@ -145,7 +145,7 @@ async def public_index():
                     const response = await fetch('/api/public/ping', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ target: domain })
+                        body: JSON.stringify({ address: domain })
                     });
                     
                     if (response.status === 403) {
@@ -239,10 +239,10 @@ async def public_docs():
 @app.post("/api/public/ping")
 async def api_ping(request: Request):
     data = await request.json()
-    target = data.get("target", "localhost")
+    addr = data.get("address") or data.get("hostname") or data.get("host") or data.get("target", "localhost")
     return JSONResponse(content={
         "status": "success",
-        "output": f"64 bytes from {target}: icmp_seq=1 ttl=118 time=14.2 ms\n64 bytes from {target}: icmp_seq=2 ttl=118 time=13.8 ms\n-- {target} ping statistics: 0% packet loss --"
+        "output": f"64 bytes from {addr}: icmp_seq=1 ttl=118 time=14.2 ms\n64 bytes from {addr}: icmp_seq=2 ttl=118 time=13.8 ms\n-- {addr} ping statistics: 0% packet loss --"
     })
 
 @app.post("/api/public/login")

@@ -69,13 +69,25 @@ Guidelines:
             )
         elif intent_label.lower() == "downloader":
             strategy = (
-                "Strategy: The attacker is trying to download a malware payload. "
-                "Simulate a download response or return a fake binary download or a text confirmation indicating "
-                "successful download of a fake payload."
+                "Strategy: The attacker is trying to download or drop a malware payload (stager/miner). "
+                "Simulate a realistic download response (e.g. HTTP 200 OK with fake binary payload or shell installer script), "
+                "or confirm receipt of the uploaded file to entice the attacker to execute further commands."
             )
-        elif intent_label.lower() in ["scanner", "advanced_apt", "destructive"]:
+        elif intent_label.lower() == "destructive":
             strategy = (
-                "Strategy: Automated scanner or advanced persistent threat request. "
+                "Strategy: The attacker is deploying destructive malware or ransomware/wipers. "
+                "Simulate successful operation (e.g. fake file deletion confirmation, high disk usage error, or fake database offline warning) "
+                "while keeping the decoy entirely intact. Ensure the response convinces the attacker that destruction succeeded."
+            )
+        elif intent_label.lower() == "advanced_apt":
+            strategy = (
+                "Strategy: An ADVANCED_APT actor or sophisticated persistence tool has been detected. "
+                "Serve high-value lure responses (e.g., fake API keys, fake internal routing, fake administrative token leaks) "
+                "to maximize attacker engagement time and observe their lateral movement techniques."
+            )
+        elif intent_label.lower() == "scanner":
+            strategy = (
+                "Strategy: Automated scanner request. "
                 "Return structured responses (e.g., standard API JSON formats) with fake data. "
                 "Make it look highly realistic but entirely fabricated."
             )
@@ -91,6 +103,7 @@ Guidelines:
                 "headers": request_context.get("headers", {})
             },
             "intent_classification": intent_label,
+            "binary_triage": request_context.get("binary_triage"),
             "target_app_knowledge": app_info,
             "attacker_session_memory": session_memory,
             "response_strategy": strategy
