@@ -494,13 +494,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         # Always fetch command history and classify the current request
         command_history = store.get_command_history(session_id)
         neural_model = getattr(request.app.state, "neural_model", None)
-        decision = classify_http_request(
-            classifier,
-            context,
-            command_history=command_history,
-            neural_model=neural_model,
-            triage_features=triage_features
-        )
+        decision = classify_http_request(classifier, context, command_history=command_history, neural_model=neural_model)
         
         # Update command history with meaningful commands / payloads
         extracted_cmd = decision.get("extracted_command", "")

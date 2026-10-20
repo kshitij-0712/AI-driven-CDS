@@ -318,12 +318,7 @@ def main():
         w = csv.DictWriter(out, fieldnames=FIELDS)
         w.writeheader()
         for row in reader:
-            # Full-string key: a 512-char prefix merged distinct long sessions
-            # (same lossy-key flaw fixed in the assembly); exact means exact.
-            # Near-duplicate families surviving here are capped per signature
-            # at assembly time (TEMPLATE_CAP), which is where mass control
-            # belongs.
-            key = (row["source"], row["commands"])
+            key = (row["source"], row["commands"][:512])
             if key in seen:
                 continue
             seen.add(key)

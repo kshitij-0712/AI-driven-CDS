@@ -25,7 +25,6 @@ def proxy_config(tmp_path):
             "threat_log_path": str(tmp_path / "test_threat_events.jsonl"),
             "insider_log_path": str(tmp_path / "test_insider_events.jsonl"),
             "corporate_db_path": str(tmp_path / "test_corporate_directory.db"),
-            "decoy_runtime_dir": str(tmp_path / "runtime"),
         },
         "http_guard": {
             "real_service_host": "127.0.0.1",
@@ -82,11 +81,11 @@ def test_internal_proxy_policy_driven_insider_detection(proxy_config):
 
     # 2. Normal access to authorized departmental resource (AI_Platform scope: /models/)
     resp1 = client.get("/models/weights/llama3_nexus.bin")
-    assert resp1.status_code in [200, 404, 405, 502, 503, 504]
+    assert resp1.status_code in [200, 502, 503, 504]
 
     # 3. Cross-department scope violation: AI Engineer attempting to access Finance_HR restricted scope
     resp2 = client.get("/hr/payroll/q3_executive_salaries.csv")
-    assert resp2.status_code in [200, 302, 307, 403, 404, 502, 503, 504]
+    assert resp2.status_code in [200, 302, 307, 403, 502, 503, 504]
 
     # 4. Exfiltration attempt with cloud upload trigger
     resp3 = client.post(
@@ -96,7 +95,7 @@ def test_internal_proxy_policy_driven_insider_detection(proxy_config):
             "cloud_upload": True,
         },
     )
-    assert resp3.status_code in [200, 302, 307, 403, 404, 502, 503, 504]
+    assert resp3.status_code in [200, 302, 307, 403, 502, 503, 504]
 
     # 5. Remote unlisted IP test (Sarah Chen connecting from unauthorized external IP)
     untrusted_client = TestClient(int_app, client=("198.51.100.44", 50000))
@@ -104,7 +103,7 @@ def test_internal_proxy_policy_driven_insider_detection(proxy_config):
     token = login_resp.json()["token"]
     untrusted_client.cookies.set("nexus_session", token)
     resp4 = untrusted_client.get("/models/weights/llama3_nexus.bin")
-    assert resp4.status_code in [200, 404, 502, 503, 504]
+    assert resp4.status_code in [200, 502, 503, 504]
 
     # 6. Verify dedicated insider log output in insider_events.jsonl
     insider_log_path = proxy_config["runtime"]["insider_log_path"]
