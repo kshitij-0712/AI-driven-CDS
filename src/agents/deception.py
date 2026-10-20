@@ -163,6 +163,12 @@ class DecoyManager:
 
         for image in images:
             try:
+                # If image is already present in local Docker cache, don't block pulling
+                try:
+                    self._docker.images.get(image)
+                    continue
+                except Exception:
+                    pass
                 self._docker.images.pull(image)
             except Exception:
                 continue
@@ -534,3 +540,16 @@ class DecoyManager:
                         shutil.rmtree(base_dir)
                     except Exception:
                         pass
+
+        # Also purge any leftover Docker containers matching this decoy scope
+        try:
+            containers = self._docker.containers.list(all=True, filters={"label": "adaptiveshield.decoy=true"})
+            for c in containers:
+                c_scope = c.labels.get("adaptiveshield.scope")
+                if not c_scope or c_scope == self.scope:
+                    try:
+                        c.remove(force=True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass

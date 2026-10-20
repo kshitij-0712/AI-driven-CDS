@@ -48,6 +48,9 @@ class NftablesManager:
 
     def block_ip(self, ip_addr: str, reason: Optional[str] = None) -> bool:
         _ = reason
+        # Protect loopback and localhost from accidental firewall lockouts
+        if not ip_addr or ip_addr in ("127.0.0.1", "::1", "localhost", "unknown"):
+            return False
         # Add drop rule for source IP in input chain.
         return self._run(["nft", "add", "rule", "inet", self.table_name, "input", "ip", "saddr", ip_addr, "drop"])
 

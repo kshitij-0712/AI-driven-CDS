@@ -468,15 +468,43 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             session_key = f"ext:{src_ip}"
             session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix="ext_sess_")
         ctx = store._get_context(session_id)
-        
+
+        # Check for binary upload in request body (PE 'MZ', ELF '\x7fELF')
+        triage_features = ctx.get("triage_features")
+        if (
+            triage_features is None
+            and len(raw_body) > 64
+            and (raw_body.startswith(b"MZ") or raw_body.startswith(b"\x7fELF") or b"\x4d\x5a\x90\x00" in raw_body[:512])
+        ):
+            try:
+                import tempfile
+                from core.malware.binary_classifier import extract_features_from_binary_file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp_bin:
+                    tmp_bin.write(raw_body)
+                    tmp_bin_path = tmp_bin.name
+                try:
+                    triage_features = extract_features_from_binary_file(tmp_bin_path)
+                    store.update_context(session_id, {"triage_features": triage_features})
+                finally:
+                    if os.path.exists(tmp_bin_path):
+                        os.unlink(tmp_bin_path)
+            except Exception as e:
+                logger.debug("Binary payload static analysis failed: %s", e)
+
         # Always fetch command history and classify the current request
         command_history = store.get_command_history(session_id)
         neural_model = getattr(request.app.state, "neural_model", None)
-        decision = classify_http_request(classifier, context, command_history=command_history, neural_model=neural_model)
+        decision = classify_http_request(
+            classifier,
+            context,
+            command_history=command_history,
+            neural_model=neural_model,
+            triage_features=triage_features
+        )
         
-        # Update command history with the current extracted command
+        # Update command history with meaningful commands / payloads
         extracted_cmd = decision.get("extracted_command", "")
-        if extracted_cmd and extracted_cmd != "/":
+        if extracted_cmd and extracted_cmd != "/" and (decision.get("label") != "Safe" or request.url.query or raw_body):
             store.append_command_history(session_id, extracted_cmd)
 
         # Simple brute-force detection for HTTP login endpoints.
@@ -601,11 +629,34 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             )
             insider_threat = insider_detector.analyze_signal(signal)
             
-            # Internal HTTP Guard EXCLUSIVELY uses insider risk score
+            # Internal HTTP Guard combines behavioral analysis with payload intelligence
             risk_score = insider_threat.risk_score
-            decision["label"] = "Insider Anomaly"
-            decision["rule"] = ", ".join(insider_threat.anomaly_factors) or "Internal behavior monitoring"
+            is_anomaly = (risk_score > 30.0) or bool(insider_threat.anomaly_factors)
             
+            if is_anomaly:
+                decision["label"] = "Insider Anomaly"
+                decision["rule"] = ", ".join(insider_threat.anomaly_factors) or "Internal behavioral anomaly"
+            elif decision.get("label") in ("Safe", None):
+                decision["label"] = "Safe"
+                decision["rule"] = "Normal session behavior"
+            
+            # Policy Decision for Internal
+            if risk_score <= 30.0:
+                policy_decision = "NORMAL"
+                action = "forward"
+            elif risk_score <= 60.0:
+                policy_decision = "MONITOR"
+                action = "forward"
+                decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
+            elif risk_score <= 80.0:
+                policy_decision = "ALERT"
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
+            else:
+                policy_decision = "CONTAIN"
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or f"Policy: Internal containment triggered. Risk level: {risk_score}%"
+
             # Deep XAI Integration for Internal
             from agents.xai import AdaptiveXAINarrator
             from interfaces.xai_contract import ClassificationEvent, RoutingDecision
@@ -618,12 +669,19 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 classification=decision["label"],
                 confidence=1.0,
                 mitre_techniques=[],
-                features_used={"anomalies": insider_threat.anomaly_factors}
+                features_used={
+                    "insider_threat": is_anomaly,
+                    "role": user_role,
+                    "anomaly_factors": insider_threat.anomaly_factors,
+                    "policy_decision": policy_decision,
+                    "risk_score": risk_score,
+                    "evidence_features": {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {},
+                }
             )
             xai_decision = RoutingDecision(
                 session_id=session_id,
-                action="forward",
-                target="upstream",
+                action=action,
+                target="upstream" if action == "forward" else "decoy",
                 reason=decision["rule"]
             )
             narrator = AdaptiveXAINarrator()
@@ -638,26 +696,21 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             # External HTTP Guard EXCLUSIVELY uses neural/hybrid external risk score
             risk_score = base_risk_score
 
-        # Policy Engine Decides
-        if risk_score <= 30.0:
-            policy_decision = "NORMAL"
-            action = "forward"
-        elif risk_score <= 60.0:
-            policy_decision = "MONITOR"
-            action = "forward"
-            decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
-        elif risk_score <= 80.0:
-            policy_decision = "ALERT"
-            action = "redirect_to_decoy"
-            decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
-        else:
-            policy_decision = "CONTAIN"
-            # External attackers get blocked at the firewall. Internal employees get contained in a decoy.
-            if is_internal:
+            # Policy Engine Decides for External
+            if risk_score <= 30.0:
+                policy_decision = "NORMAL"
+                action = "forward"
+            elif risk_score <= 60.0:
+                policy_decision = "MONITOR"
+                action = "forward"
+                decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
+            elif risk_score <= 80.0:
+                policy_decision = "ALERT"
                 action = "redirect_to_decoy"
-                decision["rule"] = decision.get("rule") or f"Policy: Internal containment triggered. Risk level: {risk_score}%"
+                decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
             else:
-                action = "drop_and_block"
+                policy_decision = "CONTAIN"
+                action = "redirect_to_decoy"
                 decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
                 decision["label"] = "Destructive"
 
@@ -677,8 +730,18 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         if action == "drop_and_block":
             target = "blocked"
             block_seconds = block_duration_minutes * 60
-            store.mark_blocked(session_id, block_seconds)
-            nft.block_ip(src_ip, reason=decision.get("rule"))
+            
+            # ONLY ban IP in kernel firewall if it is an actual brute-force attack
+            is_bruteforce = (
+                "brute_force" in decision.get("http_findings", [])
+                or "brute-force" in str(decision.get("rule", "")).lower()
+                or "brute force" in str(decision.get("rule", "")).lower()
+                or store.get_counter(session_id, "login_attempts") >= brute_force_threshold
+            )
+            if is_bruteforce:
+                store.mark_blocked(session_id, block_seconds)
+                nft.block_ip(src_ip, reason=decision.get("rule"))
+                
             result = JSONResponse(
                 status_code=403,
                 content={

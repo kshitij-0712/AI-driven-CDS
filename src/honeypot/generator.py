@@ -287,7 +287,8 @@ class HoneypotGenerator:
                 "path": path,
                 "query": query,
                 "body": body_str,
-                "headers": dict(request.headers)
+                "headers": dict(request.headers),
+                "binary_triage": decision.get("binary_triage")
             }
             
             user_prompt = PromptBuilder.build_user_prompt(
