@@ -116,13 +116,25 @@ class DecoyDownloadHandler(FileSystemEventHandler):
         features = map_to_triage_features(result)
         logger.info(f"Triage features extracted for {session_id}: entropy={features[1]:.2f}")
 
-        # 2. Update session store
-        self.store.update_context(session_id, {"triage_features": features})
+        # Distilled runtime inference (<10ms)
+        from core.malware.binary_classifier import classify_binary
+        b_res = classify_binary(features)
+        logger.info(
+            f"Binary triage distilled classification for {session_id}: "
+            f"{b_res['label']} ({b_res['confidence']:.2%}) in {b_res['latency_ms']:.2f}ms"
+        )
+
+        # 2. Update session store with both features and binary classification
+        self.store.update_context(session_id, {
+            "triage_features": features,
+            "binary_triage": b_res
+        })
 
         # 3. Re-classify the session history using the new triage features
         history = self.store.get_command_history(session_id)
         if not history:
-            return
+            # Fallback if no SSH commands logged yet (e.g. direct SCP/SFTP drop)
+            history = f"./{os.path.basename(filepath)}"
 
         # Fetch IP from session store to build context
         cur = self.store.conn.cursor()
@@ -144,6 +156,7 @@ class DecoyDownloadHandler(FileSystemEventHandler):
             triage_features=features
         )
         decision["triage_enriched"] = True
+        decision["binary_triage"] = b_res
 
         logger.info(
             f"Session {session_id} re-classified with malware features: "
@@ -155,29 +168,33 @@ class DecoyDownloadHandler(FileSystemEventHandler):
             "session_id": session_id,
             "source_ip": src_ip,
             "protocol": "ssh",
-            "command": "TRIAGE_RECLASSIFICATION",
+            "command": f"TRIAGE_RECLASSIFICATION:{b_res['label']}",
             "label": decision["label"],
             "action": decision["action"],
             "rule": decision.get("rule"),
             "mitre_tactics": decision.get("mitre_tactics", []),
             "severity_max": decision.get("severity_max", 0),
             "is_reclassification": True,
-            "triage_features": features
+            "triage_features": features,
+            "binary_triage": b_res,
         }
         if "neural_confidence" in decision:
             event["neural_confidence"] = decision["neural_confidence"]
             
         self.store.write_event(session_id, event)
-        with open("./runtime/logs/threat_events.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(event) + "\n")
+        try:
+            with open("./runtime/logs/threat_events.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(event) + "\n")
+        except Exception:
+            pass
 
-
-        # 4. Trigger the LLM Deception Agent to regenerate the environment
-        # We need the cowrie_base_dir and container_id
+        # 4. Trigger the Deception Agent to mutate and regenerate the environment
         decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(session_id)
         if decoy:
-            logger.info(f"Regenerating decoy files for {session_id} using LLM...")
-            # We schedule this into our dedicated event loop
+            logger.info(
+                f"Regenerating decoy files for {session_id} based on {b_res['label']} binary intelligence..."
+            )
+            # Schedule into our dedicated event loop
             asyncio.run_coroutine_threadsafe(
                 self.builder.prepare_decoy_files(
                     session_id,
@@ -193,21 +210,26 @@ class DecoyDownloadHandler(FileSystemEventHandler):
 class TriageWatcher:
     def __init__(
         self,
-        watch_dir: str,
+        watch_dir: Any,
         store: SessionStore,
         classifier: Any,
         builder: Any,
         decoy_mgr: Any
     ):
-        self.watch_dir = watch_dir
+        if isinstance(watch_dir, (list, tuple)):
+            self.watch_dirs = list(watch_dir)
+        else:
+            self.watch_dirs = [watch_dir]
         self.observer = Observer()
         self.handler = DecoyDownloadHandler(store, classifier, builder, decoy_mgr)
         
     def start(self):
-        os.makedirs(self.watch_dir, exist_ok=True)
-        self.observer.schedule(self.handler, self.watch_dir, recursive=True)
+        for d in self.watch_dirs:
+            os.makedirs(d, exist_ok=True)
+            self.observer.schedule(self.handler, d, recursive=True)
+            logger.info(f"Triage watcher scheduled on {d}")
         self.observer.start()
-        logger.info(f"Triage watcher started on {self.watch_dir}")
+        logger.info("Triage watcher observer started.")
 
     def stop(self):
         self.observer.stop()
