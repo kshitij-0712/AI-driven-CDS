@@ -7,6 +7,7 @@ PyYAML>=6.0
 fastapi>=0.110.0
 uvicorn[standard]>=0.30.0
 httpx>=0.27.0
+requests>=2.31.0          # honeypot LLM client HTTP calls (imported at module level)
 docker>=7.0.0
 
 # Phase 1: Lightweight static binary analysis
