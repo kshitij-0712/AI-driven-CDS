@@ -455,11 +455,12 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
             )
 
-        # Resolve token from cookie or header to isolate sessions by persona on internal guard
+        # Resolve token from cookie or header to isolate sessions by persona on internal guard (F2)
         auth_cookie = request.cookies.get("nexus_session")
         auth_header = request.headers.get("authorization", "")
         auth_bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
-        token = auth_cookie or auth_bearer
+        user_header = request.headers.get("x-user-id")
+        token = auth_cookie or auth_bearer or user_header
 
         if is_internal:
             session_key = f"int:corp_{token}" if token else f"int:{src_ip}"
