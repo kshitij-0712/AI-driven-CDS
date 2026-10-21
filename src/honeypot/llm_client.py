@@ -35,13 +35,13 @@ class GenericLLMClient(BaseLLMClient):
         api_url: str = "https://generativelanguage.googleapis.com/v1beta",
         api_key: str = "",
         model: str = "gemini-2.5-flash",
-        timeout: int = 8,
+        timeout: int = 30,
     ):
         self.provider = (provider or "gemini").lower().strip()
         self.api_url = (api_url or "").rstrip("/")
         self.api_key = resolve_config_value(api_key) or os.environ.get("GEMINI_API_KEY", "")
         self.model = model or "gemini-2.5-flash"
-        self.timeout = max(2, int(timeout))
+        self.timeout = max(5, int(timeout))
 
     async def generate_response(self, system_instruction: str, prompt: str) -> str:
         """Generate response using the configured LLM API provider."""
@@ -104,13 +104,13 @@ class GenericLLMClient(BaseLLMClient):
         }
         headers = {"Content-Type": "application/json"}
 
-        connect_timeout = min(3.0, float(self.timeout))
+        timeout_val = float(self.timeout)
         response = await asyncio.to_thread(
             requests.post,
             url,
             json=payload,
             headers=headers,
-            timeout=(connect_timeout, float(self.timeout))
+            timeout=timeout_val
         )
         if response.status_code != 200:
             raise Exception(f"Gemini API returned error {response.status_code}: {response.text}")
@@ -149,13 +149,13 @@ class GenericLLMClient(BaseLLMClient):
             "max_tokens": 2048,
         }
 
-        connect_timeout = min(3.0, float(self.timeout))
+        timeout_val = float(self.timeout)
         response = await asyncio.to_thread(
             requests.post,
             endpoint,
             json=payload,
             headers=headers,
-            timeout=(connect_timeout, float(self.timeout))
+            timeout=timeout_val
         )
         if response.status_code != 200:
             raise Exception(f"OpenAI-compatible API error {response.status_code}: {response.text}")
@@ -176,12 +176,12 @@ class GenericLLMClient(BaseLLMClient):
             "stream": False,
             "options": {"temperature": 0.7, "num_predict": 2048}
         }
-        connect_timeout = min(2.0, float(self.timeout))
+        timeout_val = float(self.timeout)
         response = await asyncio.to_thread(
             requests.post,
             url,
             json=payload,
-            timeout=(connect_timeout, float(self.timeout))
+            timeout=timeout_val
         )
         if response.status_code != 200:
             raise Exception(f"Ollama error {response.status_code}: {response.text}")
@@ -195,12 +195,12 @@ class GenericLLMClient(BaseLLMClient):
             "stream": False,
             "options": {"temperature": 0.7, "num_predict": 2000}
         }
-        connect_timeout = min(2.0, float(self.timeout))
+        timeout_val = float(self.timeout)
         response = await asyncio.to_thread(
             requests.post,
             url,
             json=payload,
-            timeout=(connect_timeout, float(self.timeout))
+            timeout=timeout_val
         )
         if response.status_code != 200:
             raise Exception(f"Ollama chat error {response.status_code}: {response.text}")

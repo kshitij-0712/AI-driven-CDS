@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -29,3 +29,9 @@ class XAIExplanation:
     detailed: str
     risk_score: float
     recommended_actions: List[str]
+    # GlassShield First-Class Additions
+    feature_attributions: Dict[str, float] = field(default_factory=dict)
+    token_attributions: List[Dict[str, Any]] = field(default_factory=list)
+    counterfactual_recourse: Dict[str, Any] = field(default_factory=dict)
+    telemetry_audit: Dict[str, Any] = field(default_factory=dict)
+    deception_rationale: Optional[Dict[str, Any]] = None

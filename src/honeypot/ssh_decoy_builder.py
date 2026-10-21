@@ -350,38 +350,47 @@ JSON schema:
         merged = dict(fallback_data)
         merged.update({k: v for k, v in data.items() if v})
 
-        # 1. Write txtcmds (dynamic simulated commands in Cowrie)
+        # 1. Write txtcmds (dynamic simulated commands in Cowrie across all command prefixes)
         txtcmd_map = {
             "whoami": merged.get("whoami", "root\n"),
             "id": merged.get("id", "uid=0(root) gid=0(root) groups=0(root)\n"),
-            "uname": merged.get("uname", "Linux ubuntu-prod-01 5.15.0-91-generic\n"),
+            "uname": merged.get("uname", "Linux corp-bastion-01 5.15.0-105-generic #115-Ubuntu SMP x86_64 GNU/Linux\n"),
             "ps": merged.get("ps", ""),
             "df": merged.get("df", ""),
             "netstat": merged.get("netstat", ""),
+            "hostname": merged.get("hostname", "corp-bastion-01\n"),
         }
-        for cmd_name, cmd_content in txtcmd_map.items():
-            if cmd_content:
-                with open(os.path.join(txtcmds_dir, cmd_name), "w") as f:
-                    f.write(str(cmd_content).strip() + "\n")
+        for sub in ["", "bin", "usr/bin", "sbin", "usr/sbin"]:
+            target_sub = os.path.join(cowrie_base_dir, "txtcmds", sub) if sub else os.path.join(cowrie_base_dir, "txtcmds")
+            os.makedirs(target_sub, exist_ok=True)
+            for cmd_name, cmd_content in txtcmd_map.items():
+                if cmd_content:
+                    with open(os.path.join(target_sub, cmd_name), "w", encoding="utf-8") as f:
+                        f.write(str(cmd_content).strip() + "\n")
 
-        # 2. Write honeyfs files (/etc, /home/admin)
-        with open(os.path.join(honeyfs_etc, "passwd"), "w") as f:
+        # 2. Write honeyfs files (/etc, /home/admin, /root)
+        with open(os.path.join(honeyfs_etc, "passwd"), "w", encoding="utf-8") as f:
             f.write(merged.get("passwd", "").strip() + "\n")
-        with open(os.path.join(honeyfs_etc, "shadow"), "w") as f:
+        with open(os.path.join(honeyfs_etc, "shadow"), "w", encoding="utf-8") as f:
             f.write(merged.get("shadow", "").strip() + "\n")
-        with open(os.path.join(honeyfs_etc, "hostname"), "w") as f:
-            hostname = "ubuntu-prod-01"
+        with open(os.path.join(honeyfs_etc, "hostname"), "w", encoding="utf-8") as f:
+            hostname = "corp-bastion-01"
             if intent == "Destructive":
                 hostname = "prod-db-primary"
-            elif intent == "ADVANCED_APT":
-                hostname = "corp-bastion-01"
             elif intent == "Downloader":
                 hostname = "worker-node-04"
             f.write(f"{hostname}\n")
-        with open(os.path.join(honeyfs_etc, "hosts"), "w") as f:
+        with open(os.path.join(honeyfs_etc, "hosts"), "w", encoding="utf-8") as f:
             f.write(merged.get("hosts", "").strip() + "\n")
-        with open(os.path.join(honeyfs_home, ".bash_history"), "w") as f:
-            f.write(merged.get("bash_history", "").strip() + "\n")
+
+        # Write bash history across operator and root homes
+        bash_hist = merged.get("bash_history", "").strip() + "\n"
+        with open(os.path.join(honeyfs_home, ".bash_history"), "w", encoding="utf-8") as f:
+            f.write(bash_hist)
+        root_home = os.path.join(cowrie_base_dir, "honeyfs", "root")
+        os.makedirs(root_home, exist_ok=True)
+        with open(os.path.join(root_home, ".bash_history"), "w", encoding="utf-8") as f:
+            f.write(bash_hist)
 
         # 3. Seed threat-specific lure files in honeyfs
         if cowrie_base_dir:

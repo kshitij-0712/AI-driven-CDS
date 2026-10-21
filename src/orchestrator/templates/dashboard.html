@@ -1083,6 +1083,30 @@
                         </div>
                     ` : ''}
 
+                    ${evt.xai_token_attributions && evt.xai_token_attributions.length > 0 ? `
+                        <div class="detail-block">
+                            <span class="section-title">Neural Token Saliency (Triggering Glyphs)</span>
+                            <div class="detail-card" style="padding: 10px; background: rgba(0,0,0,0.25);">
+                                <div style="display:flex; flex-wrap: wrap; gap: 2px; font-family: 'JetBrains Mono', monospace; word-break: break-all;">
+                                    ${evt.xai_token_attributions.slice(0, 400).map(tok => {
+                                        const w = Math.min(1, Math.abs(Number(tok.weight) || 0));
+                                        if (w <= 0.12 || !tok.token || !tok.token.trim()) {
+                                            return `<span style="color: #94a3b8; font-size: 0.78rem;">${tok.token === ' ' ? '&nbsp;' : tok.token.replace(/</g, '&lt;')}</span>`;
+                                        }
+                                        const hotspot = w > 0.4;
+                                        const bg = hotspot ? `rgba(239, 68, 68, ${(0.15 + w * 0.75).toFixed(2)})` : `rgba(250, 204, 21, ${(w * 0.35).toFixed(2)})`;
+                                        const color = hotspot ? '#fecaca' : '#fde68a';
+                                        const title = tok.technique_id ? ` title="${tok.token} (${tok.technique_id})"` : '';
+                                        return `<span${title} style="background:${bg}; color:${color}; border-radius: 3px; padding: 0 2px; font-size: 0.78rem; font-weight: ${hotspot ? 700 : 400};">${tok.token === ' ' ? '&nbsp;' : tok.token.replace(/</g, '&lt;')}</span>`;
+                                    }).join('')}
+                                </div>
+                                <div style="margin-top: 8px; font-size: 0.7rem; color: var(--text-muted);">
+                                    <span style="color: #fecaca; font-weight: 700;">red glyph</span> = gradient saliency &gt; 0.4 (decisive attack trigger) · <span style="color: #fde68a;">yellow</span> = partial signal
+                                </div>
+                            </div>
+                        </div>
+                    ` : ''}
+
                     <div class="detail-block">
                         <span class="section-title">Recommended Mitigation Actions</span>
                         <ul class="recs-list">
@@ -1092,9 +1116,60 @@
                         </ul>
                     </div>
 
-                    <div class="detail-block" style="margin-top: 20px;">
-                        <button onclick="resetSessionRisk('${evt.session_id}')" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; width: 100%; font-family: 'Outfit', sans-serif;">
-                            🔄 Reset Session Risk to 0% (Demo Mode)
+                    ${evt.xai_feature_attributions && Object.keys(evt.xai_feature_attributions).length > 0 ? `
+                        <div class="detail-block">
+                            <span class="section-title">TreeSHAP Mathematical Feature Contributions</span>
+                            <div class="detail-card" style="padding: 10px; background: rgba(0,0,0,0.25);">
+                                ${Object.entries(evt.xai_feature_attributions).map(([feat, val]) => `
+                                    <div style="margin-bottom: 8px;">
+                                        <div style="display:flex; justify-content:space-between; font-size: 0.75rem; margin-bottom: 2px;">
+                                            <span style="color: #cbd5e1;">${String(feat).replace(/_/g, ' ').toUpperCase()}</span>
+                                            <span style="font-weight:700; color: ${val > 0 ? '#f87171' : '#34d399'}">${val > 0 ? '+' : ''}${Number(val).toFixed(1)}%</span>
+                                        </div>
+                                        <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
+                                            <div style="width: ${Math.min(100, Math.abs(val))}%; height: 100%; background: ${val > 0 ? '#ef4444' : '#10b981'};"></div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${evt.xai_counterfactual && evt.xai_counterfactual.actionable_steps ? `
+                        <div class="detail-block">
+                            <span class="section-title">Counterfactual Recourse (Actionable What-If)</span>
+                            <div class="detail-card" style="border-left: 3px solid #60a5fa; background: rgba(37, 99, 235, 0.08);">
+                                <p style="font-size: 0.8rem; color: #93c5fd; margin-bottom: 6px; font-weight: 600;">
+                                    To return risk to ${evt.xai_counterfactual.projected_compliant_risk}% (${evt.xai_counterfactual.target_policy_band}):
+                                </p>
+                                <ul style="margin: 0; padding-left: 18px; font-size: 0.75rem; color: #cbd5e1;">
+                                    ${evt.xai_counterfactual.actionable_steps.map(step => `<li>${step}</li>`).join('')}
+                                </ul>
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${evt.xai_deception ? `
+                        <div class="detail-block">
+                            <span class="section-title">Deception Strategy Rationalization</span>
+                            <div class="detail-card" style="border-left: 3px solid #c084fc; background: rgba(192, 132, 252, 0.08);">
+                                <div style="font-size: 0.8rem; font-weight: 700; color: #e9d5ff;">${evt.xai_deception.decoy_type}</div>
+                                <div style="font-size: 0.75rem; color: #d8b4fe; margin-top: 2px;">Objective: ${evt.xai_deception.objective}</div>
+                                <p style="font-size: 0.75rem; color: #cbd5e1; margin-top: 6px;">${evt.xai_deception.justification}</p>
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="detail-block" style="margin-top: 20px; display: flex; gap: 8px;">
+                        ${evt.is_insider && evt.client_ip ? `
+                            <button onclick="socWhitelistIP('${evt.user_id || 'usr_hr_01'}', '${evt.client_ip}')"
+                                    style="flex: 1; padding: 8px; font-size: 0.75rem; background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #93c5fd; border-radius: 6px; cursor: pointer;">
+                                🛡️ Whitelist IP
+                            </button>
+                        ` : ''}
+                        <button onclick="resetSessionRisk('${evt.session_id}')"
+                                style="flex: 1; padding: 8px; font-size: 0.75rem; background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; color: #fca5a5; border-radius: 6px; cursor: pointer;">
+                            🔄 Reset Session
                         </button>
                     </div>
 
@@ -1117,6 +1192,26 @@
                 }
             } catch (e) {
                 console.error("Failed to reset session risk:", e);
+            }
+        }
+
+        async function socWhitelistIP(userId, clientIp) {
+            try {
+                const response = await fetch('/api/soc/whitelist_ip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userId, client_ip: clientIp })
+                });
+                const res = await response.json();
+                if (res.status === 'success') {
+                    writeConsole(`[SOC] Identity ${userId}: IP ${clientIp} whitelisted in CorporateDirectory.`, 'info');
+                    alert(res.message);
+                } else {
+                    alert(`Whitelist failed: ${res.message}`);
+                }
+            } catch (e) {
+                console.error("Failed to whitelist IP:", e);
+                alert("Whitelist request failed (network error).");
             }
         }
 

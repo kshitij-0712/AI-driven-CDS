@@ -9,13 +9,13 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from agents.decision import build_hybrid_classifier, classify_http_request
+from agents.decision import build_hybrid_classifier, classify_http_request, aggregate_threat_signals
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
 from agents.insider.insider_adapter import AdaptiveInsiderDetector
 from agents.insider.corporate_directory import CorporateDirectory
-from agents.xai import AdaptiveXAINarrator
+from agents.xai import get_shared_narrator
 import ipaddress
 from datetime import datetime
 import asyncio
@@ -81,7 +81,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
 
     classifier = build_hybrid_classifier()
     insider_detector = AdaptiveInsiderDetector(directory_db_path=corporate_db_path)
-    xai_detector = AdaptiveXAINarrator()
+    xai_detector = get_shared_narrator()
 
     scope = "internal" if is_internal else "external"
     if decoys is None:
@@ -97,7 +97,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         )
 
     galah_enabled = bool(config.get("galah_honeypot", {}).get("enabled", False))
-    honeypot_gen = HoneypotGenerator(config, store) if galah_enabled else None
+    honeypot_gen = HoneypotGenerator(config, store, is_internal=is_internal) if galah_enabled else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -327,6 +327,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         return {"status": "simulation_fired"}
 
     @app.post("/api/unblock")
+    @app.post("/api/release-ip")
     async def release_blocked_ip(request: Request):
         payload = await request.json()
         ip = payload.get("ip")
@@ -336,6 +337,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         return {"status": "unblocked", "ip": ip}
 
     @app.post("/api/reset_session")
+    @app.post("/api/reset-session")
     async def reset_session_risk(request: Request):
         payload = await request.json()
         session_id = payload.get("session_id")
@@ -358,12 +360,74 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         return {"status": "success", "session_id": session_id}
 
     @app.post("/api/reset_all")
+    @app.post("/api/reset-all")
     async def reset_all_sessions(request: Request):
         store.conn.execute("DELETE FROM request_events")
         store.conn.execute("DELETE FROM sessions")
         store.conn.commit()
         insider_detector.session_states.clear()
+        if nft:
+            nft.flush_all()
         return {"status": "success", "message": "All sessions and blocks cleared successfully."}
+
+    # ---------------- Interactive SOC Console (GlassShield) ----------------
+
+    @app.post("/api/soc/whitelist_ip")
+    async def soc_whitelist_ip(request: Request):
+        """Allows SOC analyst to 1-click whitelist an IP in CorporateDirectory."""
+        data = await request.json()
+        user_id = data.get("user_id")
+        client_ip = data.get("client_ip")
+        if not user_id or not client_ip:
+            return JSONResponse(
+                {"status": "error", "message": "Missing user_id or client_ip"}, status_code=400
+            )
+
+        try:
+            updated = corporate_dir.add_whitelisted_ip(user_id, client_ip)
+            if not updated:
+                return JSONResponse(
+                    {"status": "error", "message": f"User '{user_id}' not found in CorporateDirectory."},
+                    status_code=404,
+                )
+            emp = corporate_dir.get_employee(user_id)
+            return JSONResponse({
+                "status": "success",
+                "message": f"Successfully whitelisted {client_ip} for user {user_id}.",
+                "whitelisted_ips": emp.get("whitelisted_ips", []) if emp else [],
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+    @app.post("/api/soc/grant_scope")
+    async def soc_grant_scope(request: Request):
+        """Allows SOC analyst to grant an authorized scope exception."""
+        data = await request.json()
+        department = data.get("department")
+        scope = data.get("scope")
+        if not department or not scope:
+            return JSONResponse(
+                {"status": "error", "message": "Missing department or scope"}, status_code=400
+            )
+
+        try:
+            # Dynamically register authorized scope in company_profile (persisted)
+            dept_cfg = corporate_dir.grant_scope(department, scope)
+            if not dept_cfg:
+                return JSONResponse(
+                    {"status": "error", "message": f"Failed to update profile for '{department}'."},
+                    status_code=500,
+                )
+            # Live-refresh the insider adapter's profile snapshot so the
+            # exception takes effect without a restart.
+            insider_detector.company_profile = corporate_dir.get_company_profile()
+            return JSONResponse({
+                "status": "success",
+                "message": f"Granted scope '{scope}' to department '{department}'.",
+                "authorized_scopes": dept_cfg.get("authorized_scopes", []),
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
     from fastapi.responses import HTMLResponse
     @app.get("/dashboard", response_class=HTMLResponse)
@@ -436,6 +500,11 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             event["xai_detailed"] = explanation.detailed
             event["xai_risk_score"] = explanation.risk_score
             event["xai_recommendations"] = explanation.recommended_actions
+            event["xai_feature_attributions"] = explanation.feature_attributions
+            event["xai_token_attributions"] = explanation.token_attributions
+            event["xai_counterfactual"] = explanation.counterfactual_recourse
+            event["xai_telemetry_audit"] = explanation.telemetry_audit
+            event["xai_deception"] = explanation.deception_rationale
             
             try:
                 if active_event_queue is not None:
@@ -495,13 +564,73 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         # Always fetch command history and classify the current request
         command_history = store.get_command_history(session_id)
         neural_model = getattr(request.app.state, "neural_model", None)
-        decision = classify_http_request(
-            classifier,
-            context,
-            command_history=command_history,
-            neural_model=neural_model,
-            triage_features=triage_features
-        )
+
+        # --- LOCAL SERVICE-DISCOVERY SAFELIST (loopback socket only) ---
+        # Development agents (e.g. opencode) sweep for local OpenAI-compatible
+        # servers (GET /v1/models) every ~30s. The gateway owns :8000, so these
+        # probes previously fell into the neural OOD void -> Exploit + honeypot
+        # trap. Allowed ONLY when: real loopback peer, GET, exact probe path,
+        # no query/body, external perimeter. Everything else classifies normally.
+        _peer = request.client.host if request.client else ""
+        if (
+            not is_internal
+            and _peer == "127.0.0.1"
+            and request.method.upper() == "GET"
+            and request.url.path in ("/v1/models", "/v1/models/")
+            and not request.url.query
+            and not raw_body
+        ):
+            decision = {
+                "class_id": 0,
+                "label": "Safe",
+                "rule": "Local service discovery probe (loopback agent safelist)",
+                "neural_confidence": 1.0,
+                "suspicious": False,
+                "severity_max": 0,
+                "mitre_tactics": [],
+                "action": "forward",
+                "risk_score": 0.0,
+            }
+            # GlassShield narration so the Safe event stays fully explained
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            probe_expl = xai_detector.generate_explanation(
+                ClassificationEvent(
+                    session_id=session_id,
+                    timestamp=datetime.now().isoformat() + "Z",
+                    src_ip=src_ip,
+                    commands=[],
+                    classification="Safe",
+                    confidence=1.0,
+                    mitre_techniques=[],
+                    features_used={"insider_threat": False, "is_internal": False,
+                                   "headers": dict(request.headers)},
+                ),
+                RoutingDecision(
+                    session_id=session_id,
+                    action="forward",
+                    target=f"http://{real_host}:{real_port}",
+                    reason=decision["rule"],
+                ),
+            )
+            decision["xai_summary"] = probe_expl.summary
+            decision["xai_detailed"] = probe_expl.detailed
+            decision["xai_risk_score"] = probe_expl.risk_score
+            decision["xai_recommendations"] = probe_expl.recommended_actions
+            decision["xai_feature_attributions"] = probe_expl.feature_attributions
+            decision["xai_token_attributions"] = probe_expl.token_attributions
+            decision["xai_counterfactual"] = probe_expl.counterfactual_recourse
+            decision["xai_telemetry_audit"] = probe_expl.telemetry_audit
+            decision["xai_deception"] = probe_expl.deception_rationale
+            # Release a previously trapped loopback session from the sticky decoy
+            store.update_context(session_id, {"redirected_to_decoy": False})
+        else:
+            decision = classify_http_request(
+                classifier,
+                context,
+                command_history=command_history,
+                neural_model=neural_model,
+                triage_features=triage_features
+            )
         
         # Update command history with meaningful commands / payloads
         extracted_cmd = decision.get("extracted_command", "")
@@ -536,22 +665,8 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 if "discovery" not in decision.get("mitre_tactics", []):
                     decision.setdefault("mitre_tactics", []).append("discovery")
                 decision["severity_max"] = max(decision.get("severity_max", 0), 4)
-        # Determine base risk score from external neural network classification
-        confidence = decision.get("neural_confidence", 1.0)
-        ext_label = decision["label"].lower()
-        if decision.get("action") == "drop_and_block":
-            base_risk_score = 100.0
-        elif ext_label == "safe":
-            base_risk_score = confidence * 10.0
-        elif ext_label == "recon":
-            base_risk_score = 30.0 + (confidence * 20.0)
-        elif ext_label in ("downloader", "exploit"):
-            base_risk_score = 50.0 + (confidence * 25.0)
-        else: # Destructive, APT
-            base_risk_score = 75.0 + (confidence * 25.0)
-
         # Check for Insider Threat if this is the Internal HTTP Guard
-        risk_score = base_risk_score
+        risk_score = 0.0
         insider_threat = None
         
         if is_internal:
@@ -618,7 +733,42 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             if cmd_val and cmd_val.strip().lower().startswith("sudo"):
                 if "admin" not in role_val and "devops" not in user_dept.lower():
                     action_details["sudo_failed"] = True
-            
+
+            # Use Neural Model and MITRE annotator to determine command intention
+            neural_model = getattr(app.state, "neural_model", None)
+            cmd_intent = "Safe"
+            cmd_confidence = 1.0
+            cmd_mitre_tactics = []
+            cmd_severity_max = 0
+
+            if cmd_val and cmd_val.strip() and cmd_val != "/":
+                from core.mitre.session_annotator import annotate_session
+                try:
+                    ann = annotate_session([cmd_val])
+                    cmd_mitre_tactics = [t for t, v in ann.get("tactic_vector", {}).items() if v > 0]
+                    cmd_severity_max = ann.get("severity_max", 0)
+                except Exception:
+                    pass
+
+                if neural_model is not None:
+                    from agents.decision import _classify_neural
+                    try:
+                        n_res = _classify_neural(cmd_val, neural_model, is_http=False)
+                        if n_res:
+                            cmd_intent = n_res[1]
+                            cmd_confidence = n_res[2]
+                    except Exception:
+                        pass
+
+            action_details["neural_intent"] = cmd_intent
+            action_details["neural_confidence"] = cmd_confidence
+            action_details["mitre_tactics"] = cmd_mitre_tactics
+            action_details["severity_max"] = cmd_severity_max
+
+            if cmd_mitre_tactics:
+                decision["mitre_tactics"] = list(set(decision.get("mitre_tactics", []) + cmd_mitre_tactics))
+                decision["severity_max"] = max(decision.get("severity_max", 0), cmd_severity_max)
+
             signal = UserBehaviorSignal(
                 user_id=user_id,
                 session_id=session_id,
@@ -659,9 +809,8 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 decision["rule"] = decision.get("rule") or f"Policy: Internal containment triggered. Risk level: {risk_score}%"
 
             # Deep XAI Integration for Internal
-            from agents.xai import AdaptiveXAINarrator
             from interfaces.xai_contract import ClassificationEvent, RoutingDecision
-            
+
             xai_event = ClassificationEvent(
                 session_id=session_id,
                 timestamp=signal.timestamp,
@@ -672,11 +821,16 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 mitre_techniques=[],
                 features_used={
                     "insider_threat": is_anomaly,
+                    "is_internal": True,
                     "role": user_role,
+                    "department": user_dept,
+                    "user_id": user_id,
+                    "employee_name": (session_profile or {}).get("name", ""),
                     "anomaly_factors": insider_threat.anomaly_factors,
                     "policy_decision": policy_decision,
                     "risk_score": risk_score,
                     "evidence_features": {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {},
+                    "headers": dict(request.headers),
                 }
             )
             xai_decision = RoutingDecision(
@@ -685,35 +839,41 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 target="upstream" if action == "forward" else "decoy",
                 reason=decision["rule"]
             )
-            narrator = AdaptiveXAINarrator()
+            narrator = xai_detector
             xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
-            
+
             decision["xai_summary"] = xai_explanation.summary
             decision["xai_detailed"] = xai_explanation.detailed
             decision["xai_risk_score"] = xai_explanation.risk_score
             decision["xai_recommendations"] = xai_explanation.recommended_actions
+            decision["xai_feature_attributions"] = xai_explanation.feature_attributions
+            decision["xai_token_attributions"] = xai_explanation.token_attributions
+            decision["xai_counterfactual"] = xai_explanation.counterfactual_recourse
+            decision["xai_telemetry_audit"] = xai_explanation.telemetry_audit
+            decision["xai_deception"] = xai_explanation.deception_rationale
             
         else:
-            # External HTTP Guard EXCLUSIVELY uses neural/hybrid external risk score
-            risk_score = base_risk_score
+            # External Guard operates SOLELY on neural threat classification
+            ext_label = decision["label"]
+            risk_score = 0.0
 
-            # Policy Engine Decides for External
-            if risk_score <= 30.0:
+            if decision.get("action") == "drop_and_block":
+                policy_decision = "CONTAIN"
+                action = "drop_and_block"
+            elif ext_label == "Safe":
                 policy_decision = "NORMAL"
                 action = "forward"
-            elif risk_score <= 60.0:
+            elif ext_label == "Recon":
                 policy_decision = "MONITOR"
                 action = "forward"
-                decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
-            elif risk_score <= 80.0:
+            elif ext_label in ("Downloader", "Exploit"):
                 policy_decision = "ALERT"
                 action = "redirect_to_decoy"
-                decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
-            else:
+                decision["rule"] = decision.get("rule") or f"Policy: Threat detected ({ext_label}), rerouted to decoy"
+            else:  # Destructive, ADVANCED_APT
                 policy_decision = "CONTAIN"
                 action = "redirect_to_decoy"
-                decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
-                decision["label"] = "Destructive"
+                decision["rule"] = decision.get("rule") or f"Policy: Severe threat detected ({ext_label}), rerouted to decoy"
 
         decision["action"] = action
         target = f"http://{real_host}:{real_port}"
@@ -757,12 +917,35 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             if decoy:
                 target = decoy.base_url
                 
-                # Check for first-time redirection or behavior escalation
+                # Check for first-time redirection, missing page, new path, or behavior escalation
                 prev_label = ctx.get("decoy_label")
                 prev_severity = ctx.get("decoy_severity_max", 0)
+                prev_path = ctx.get("decoy_last_path")
+                prev_query = ctx.get("decoy_last_query", "")
+                
+                target_rel_path = request.url.path.strip("/")
+                if not target_rel_path:
+                    target_file = "index.html"
+                else:
+                    target_file = f"{target_rel_path}.html"
+                decoy_html = getattr(decoy, "html_dir", getattr(decoy, "host_dir", "")) or ""
+                file_exists = (
+                    os.path.exists(os.path.join(decoy_html, target_file)) or 
+                    os.path.exists(os.path.join(decoy_html, target_rel_path))
+                )
+
+                is_attack = decision.get("label", "Safe") != "Safe"
+                is_in_decoy = bool(ctx.get("redirected_to_decoy"))
+                is_interactive_action = (
+                    request.method.upper() in ("POST", "PUT", "DELETE", "PATCH") or
+                    bool(request.url.query) or
+                    request.url.path != prev_path
+                )
                 is_escalation = (
-                    not ctx.get("redirected_to_decoy") or 
-                    (decision["label"] != "Safe" and (
+                    not is_in_decoy or 
+                    not file_exists or
+                    is_interactive_action or
+                    (is_attack and (
                         decision["label"] != prev_label or 
                         decision["severity_max"] > prev_severity
                     ))
@@ -791,6 +974,13 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                         "decoy_rule": decision.get("rule"),
                         "decoy_mitre_tactics": decision.get("mitre_tactics", []),
                         "decoy_severity_max": decision.get("severity_max", 0),
+                        "decoy_last_path": request.url.path,
+                        "decoy_last_query": str(request.url.query or ""),
+                    })
+                else:
+                    store.update_context(session_id, {
+                        "redirected_to_decoy": True,
+                        "decoy_base_url": target,
                     })
                 
                 # Decoy Cold-Start Fix
@@ -822,10 +1012,14 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                     content={"error": "real_service_unreachable"},
                 )
 
+        aggregated = aggregate_threat_signals(decision, {}, is_internal_traffic=False)
+
         event = {
             "timestamp": time.time(),
             "session_id": session_id,
             "source_ip": src_ip,
+            "threat_type": aggregated.get("threat_type", "EXTERNAL"),
+            "threat_score": aggregated.get("score", 0.0),
             "method": request.method,
             "path": request.url.path,
             "query": str(request.url.query or ""),
@@ -851,16 +1045,23 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 event["suspicious"] = True
 
         is_insider_active = is_internal and insider_threat is not None
-        
+
         event["risk_score"] = risk_score
         event["policy_decision"] = policy_decision
         if is_insider_active:
+            event["user_id"] = user_id
             event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
-            
+        event["client_ip"] = src_ip
+
         event["xai_summary"] = decision.get("xai_summary", "")
         event["xai_detailed"] = decision.get("xai_detailed", "")
         event["xai_risk_score"] = decision.get("xai_risk_score", risk_score)
         event["xai_recommendations"] = decision.get("xai_recommendations", [])
+        event["xai_feature_attributions"] = decision.get("xai_feature_attributions", {})
+        event["xai_token_attributions"] = decision.get("xai_token_attributions", [])
+        event["xai_counterfactual"] = decision.get("xai_counterfactual", {})
+        event["xai_telemetry_audit"] = decision.get("xai_telemetry_audit", {})
+        event["xai_deception"] = decision.get("xai_deception", None)
 
         # Push to live dashboard stream queue
         try:
@@ -893,6 +1094,8 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 "policy_decision": policy_decision,
                 "action": action,
                 "risk_score": risk_score,
+                "mitre_tactics": decision.get("mitre_tactics", []),
+                "severity_max": decision.get("severity_max", 0),
                 "evidence_features": event.get("evidence_features", {}),
                 "xai_summary": decision.get("xai_summary", ""),
                 "xai_detailed": decision.get("xai_detailed", ""),
@@ -905,6 +1108,12 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 pass
 
         print(json.dumps(event), flush=True)
+
+        if is_internal and token and hasattr(result, "set_cookie"):
+            try:
+                result.set_cookie(key="nexus_session", value=token, path="/", samesite="lax")
+            except Exception:
+                pass
 
         return result
 

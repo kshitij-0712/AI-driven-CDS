@@ -256,3 +256,49 @@ class CorporateDirectory:
                 "scenario": p.get("test_scenario")
             })
         return result
+
+    def add_whitelisted_ip(self, user_id: str, client_ip: str) -> bool:
+        """Append a client IP to the employee's whitelisted-IP list (SOC analyst override)."""
+        if not user_id or not client_ip:
+            return False
+        emp = self.get_employee(user_id)
+        if not emp:
+            return False
+        whitelisted = list(emp.get("whitelisted_ips", []))
+        clean_ip = client_ip.strip()
+        if clean_ip and clean_ip not in whitelisted:
+            whitelisted.append(clean_ip)
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE employees SET whitelisted_ips_json = ? WHERE user_id = ?",
+                (json.dumps(whitelisted), user_id),
+            )
+            conn.commit()
+        return True
+
+    def grant_scope(self, department: str, scope: str) -> Dict[str, Any]:
+        """Persist an authorized-scope exception for a department into company_profile.json.
+
+        Returns the updated departments entry so callers can report the change.
+        """
+        if not department or not scope:
+            return {}
+
+        profile = self.get_company_profile()
+        departments = profile.setdefault("departments", {})
+        dept_cfg = departments.get(department)
+        if dept_cfg is None:
+            dept_cfg = {}
+            departments[department] = dept_cfg
+        auth_scopes = dept_cfg.setdefault("authorized_scopes", [])
+        if scope not in auth_scopes:
+            auth_scopes.append(scope)
+
+        try:
+            os.makedirs(os.path.dirname(self.profile_path), exist_ok=True)
+            with open(self.profile_path, "w", encoding="utf-8") as f:
+                json.dump(profile, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to persist granted scope to {self.profile_path}: {e}")
+
+        return dept_cfg

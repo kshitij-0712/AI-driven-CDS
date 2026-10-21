@@ -107,6 +107,10 @@ class SessionStore:
 
     @thread_safe
     def get_blocked_until(self, src_ip: str) -> Optional[float]:
+        # Exemption commented out per user request so local test IP can be verified getting blocked:
+        # if src_ip in ("127.0.0.1", "::1", "localhost"):
+        #     return None
+
         cur = self.conn.cursor()
         cur.execute(
             "SELECT blocked_until_ts FROM sessions WHERE src_ip = ? AND blocked = 1 ORDER BY last_seen_ts DESC LIMIT 1",

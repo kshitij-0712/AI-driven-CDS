@@ -130,6 +130,10 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 self.chan.close()
 
     def data_received(self, data, datatype):
+        # If mid-session glitch drop is active, swallow keystrokes to simulate frozen/dropped pipe
+        if getattr(self, "_is_dropping", False):
+            return
+
         # Forward keystrokes to backend
         if self.backend_chan and not self.backend_chan.is_closing():
             self.backend_chan.write(data)
@@ -253,7 +257,7 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             }
             
             # Deep XAI Integration for Insider
-            from agents.xai import AdaptiveXAINarrator
+            from agents.xai import get_shared_narrator
             from interfaces.xai_contract import ClassificationEvent, RoutingDecision
             xai_event = ClassificationEvent(
                 session_id=self.session_id,
@@ -263,7 +267,15 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 classification=decision["label"],
                 confidence=1.0,
                 mitre_techniques=[],
-                features_used={"anomalies": insider_threat.anomaly_factors}
+                features_used={
+                    "insider_threat": True,
+                    "is_internal": not self.is_decoy,
+                    "role": signal.action_details.get("role", "") if isinstance(signal.action_details, dict) else "",
+                    "user_id": getattr(signal, "user_id", ""),
+                    "risk_score": risk_score,
+                    "anomalies": insider_threat.anomaly_factors,
+                    "evidence_features": {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {},
+                }
             )
             xai_decision = RoutingDecision(
                 session_id=self.session_id,
@@ -271,13 +283,18 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 target="upstream",
                 reason=decision["rule"]
             )
-            narrator = AdaptiveXAINarrator()
+            narrator = get_shared_narrator()
             xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
-            
+
             decision["xai_summary"] = xai_explanation.summary
             decision["xai_detailed"] = xai_explanation.detailed
             decision["xai_risk_score"] = xai_explanation.risk_score
             decision["xai_recommendations"] = xai_explanation.recommended_actions
+            decision["xai_feature_attributions"] = xai_explanation.feature_attributions
+            decision["xai_token_attributions"] = xai_explanation.token_attributions
+            decision["xai_counterfactual"] = xai_explanation.counterfactual_recourse
+            decision["xai_telemetry_audit"] = xai_explanation.telemetry_audit
+            decision["xai_deception"] = xai_explanation.deception_rationale
 
         # Policy Engine Decides based on unified risk_score
         if risk_score <= 30.0:
@@ -320,6 +337,13 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             "policy_decision": policy_decision,
             "xai_summary": decision.get("xai_summary", ""),
             "xai_detailed": decision.get("xai_detailed", ""),
+            "xai_risk_score": decision.get("xai_risk_score", risk_score),
+            "xai_recommendations": decision.get("xai_recommendations", []),
+            "xai_feature_attributions": decision.get("xai_feature_attributions", {}),
+            "xai_token_attributions": decision.get("xai_token_attributions", []),
+            "xai_counterfactual": decision.get("xai_counterfactual", {}),
+            "xai_telemetry_audit": decision.get("xai_telemetry_audit", {}),
+            "xai_deception": decision.get("xai_deception", None),
         }
         
         if not self.is_decoy and insider_threat:
@@ -352,20 +376,45 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         elif decision["action"] == "redirect_to_decoy":
             if not self.is_decoy:
                 # Mid-session insider threat containment! 
-                # Mark them for decoy routing on next reconnect and kick them out now.
+                # Mark them for decoy routing on next reconnect and drop with realistic network timeout behavior.
                 ctx = self.store._get_context(self.session_id)
                 ctx["ssh_flagged_for_decoy"] = True
                 ctx["ssh_locked_password"] = self.auth_password
                 self.store.conn.execute("UPDATE sessions SET context_json = ? WHERE id = ?", (json.dumps(ctx), self.session_id))
                 self.store.conn.commit()
-                logger.info("Insider threat detected mid-session. Connection dropped. Next login will route to decoy.")
-                self.chan.close()
+                logger.info("Insider threat detected mid-session. Initiating realistic network timeout drop. Next login will route to decoy.")
+                asyncio.create_task(self._simulate_network_timeout_drop())
             else:
                 # Attacker is already inside Cowrie — just log the escalation, let them continue
                 logger.info(
                     "SSH exploit detected in decoy session %s: %s (letting attacker continue in sandbox)",
                     self.session_id, cmd
                 )
+
+    async def _simulate_network_timeout_drop(self):
+        """Simulate a realistic network drop/freeze before abrupt termination.
+        Wireshark and client terminal observe a realistic timeout rather than an application-layer alert."""
+        self._is_dropping = True
+        try:
+            if self.backend_chan and not self.backend_chan.is_closing():
+                self.backend_chan.close()
+        except Exception:
+            pass
+
+        # Simulate unresponsive network freeze/stall
+        try:
+            await asyncio.sleep(2.5)
+        except Exception:
+            pass
+
+        # Abruptly terminate the client transport connection without graceful SSH channel close
+        try:
+            conn = self.chan.get_connection()
+            if conn and not conn.is_closing():
+                conn.close()
+        except Exception:
+            if not self.chan.is_closing():
+                self.chan.close()
 
 
 class AdaptiveSSHServer(asyncssh.SSHServer):

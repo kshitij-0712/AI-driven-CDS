@@ -1,8 +1,9 @@
 # AdaptiveShield: Autonomous Multi-Agent Cyber Deception Gateway via Cross-Representation Distillation and Multi-Modal Threat Modeling
 
 [![Target Venue: IEEE S&P / ACM CCS](https://img.shields.io/badge/Publication-Target%3A%20IEEE%20S%26P%20%2F%20ACM%20CCS-blue.svg)](#academic-references--bibliography)
-[![Pipeline Status: Verified](https://img.shields.io/badge/Tests-123%20Passed-brightgreen.svg)](#manual-pipeline-showcase--testing-suite)
+[![Pipeline Status: Verified](https://img.shields.io/badge/Tests-188%20Passed-brightgreen.svg)](#manual-pipeline-showcase--testing-suite)
 [![Architecture: Dual-Perimeter Inline Gateway](https://img.shields.io/badge/Architecture-Dual--Perimeter%20Gateway-orange.svg)](#dual-perimeter-system-architecture)
+[![XAI: GlassShield Glass-Box](https://img.shields.io/badge/XAI-GlassShield%20TreeSHAP%20%2B%20Saliency-9333ea.svg)](#glassshield-glass-box-explainable-defense)
 [![Binary Distiller Latency: 10.8ms](https://img.shields.io/badge/Binary%20Triage-10.8ms%20%2898.06%25%20Acc%29-purple.svg)](#knowledge-distillation-for-in-flight-binary-triage)
 
 AdaptiveShield is an autonomous, multi-agent cyber deception and real-time threat interception gateway engineered for inline production defense. Sited directly in front of enterprise services as a non-disruptive protective layer, AdaptiveShield intercepts incoming L7 application traffic, transparently relays legitimate user requests to production backends, and silently redirects adversarial interactions into dynamically synthesized, high-interaction Docker honeypots. The system combines multi-modal neural threat classification, cross-representation knowledge distillation for sub-11ms binary triage, and fail-safe generative decoy synthesis to trap adversaries without degrading authentic customer transactions.
@@ -13,10 +14,11 @@ AdaptiveShield is an autonomous, multi-agent cyber deception and real-time threa
 
 Traditional intrusion detection systems (IDS) and web application firewalls (WAF) face a fundamental trilemma: passive detection fails to disrupt lateral movement, signature-based blocking generates high false-positive rates on complex inputs, and static honeypots are readily fingerprinted by modern automated scanners. 
 
-AdaptiveShield addresses this challenge through three primary contributions:
+AdaptiveShield addresses this challenge through four primary contributions:
 1. **Multi-Modal Threat Modeling with Early Fusion & Auxiliary Taxonomical Alignment**: A character-level bidirectional LSTM with temporal self-attention coupled with a 21-dimensional MITRE ATT&CK tactical vector, behavioral system changes, and binary triage metrics. An auxiliary multi-task objective aligns character-level representation learning with formal cyber threat taxonomy.
 2. **Cross-Representation Knowledge Distillation ($\mathcal{T} \rightarrow \mathcal{S}$)**: An offline-to-online distillation framework transferring deep semantic AST/CFG representations (extracted from Ghidra headless decompilation and angr symbolic execution over 3,095 real-world MOTIF malware binaries and honeypot captures) into an ultra-fast runtime student classifier achieving **98.06% accuracy**, **0.9952 ROC-AUC**, and **~10.8ms inference latency**.
 3. **Provider-Agnostic Generative Deception with Anti-Blackhole Invariants**: A generic LLM abstraction for dynamic honeypot trace generation with a bounded connect-timeout failover ($\tau_{\text{connect}} \le 2.0\text{s}$) guaranteeing zero proxy stalling during upstream cloud degradation, and a kernel firewall invariant strictly isolating OS-level IP bans to high-frequency brute-force attacks to protect shared enterprise NAT infrastructure.
+4. **GlassShield — Glass-Box Explainable Defense**: A mathematical attribution engine operating inline with every verdict. It computes **exact TreeSHAP Shapley values** on the 35-feature insider-threat Random Forest, **gradient-based token saliency** over the production BiLSTM embedding layer for perimeter payloads, **counterfactual recourse** advising insiders on minimal compliant behavioral adjustments, a **deception strategy rationalizer** explaining every honeypot spawn, and an interactive **SOC console** (`/api/soc/*`) enabling zero-retraining analyst overrides.
 
 ---
 
@@ -34,6 +36,9 @@ AdaptiveShield partitions network traffic across two operational perimeters:
                                   │  • Real-Time SOC Command Dashboard (:8000/dashboard)   │
                                   │  • 4-Modality Neural Threat Classifier (BiLSTM)        │
                                   │  • MOTIF Distilled Binary Triage Engine (<11ms)        │
+                                  │  • GlassShield XAI Attribution Engine (TreeSHAP +      │
+                                  │    Gradient Token Saliency + Counterfactual Recourse)  │
+                                  │  • Interactive SOC Console (/api/soc/*)                │
                                   └───────────┬────────────────────────────────┬───────────┘
                                               │                                │
                                   [ SAFE TRAFFIC ]                    [ ATTACK TRAFFIC ]
@@ -162,6 +167,54 @@ To ensure maximal threat observability without introducing blackholing vulnerabi
 
 ---
 
+## GlassShield: Glass-Box Explainable Defense
+
+Every verdict AdaptiveShield issues is paired with a mathematical attribution produced by the **GlassShield XAI engine** (`src/agents/xai.py`) — no decision path terminates in a black box. The engine consumes the `ClassificationEvent` / `RoutingDecision` contracts (`src/interfaces/xai_contract.py`) and enriches the `XAIExplanation` object with first-class attribution fields streamed live over the `/api/events` SSE channel:
+
+```python
+@dataclass
+class XAIExplanation:
+    session_id: str
+    summary: str                    # plain-English executive summary
+    detailed: str                   # technical rationale
+    risk_score: float               # 0.0 – 100.0
+    recommended_actions: List[str]  # SOC analyst guidance
+    feature_attributions: Dict[str, float]      # TreeSHAP signed % contributions
+    token_attributions: List[Dict[str, Any]]    # gradient saliency per glyph
+    counterfactual_recourse: Dict[str, Any]     # actionable "what-if" prescription
+    telemetry_audit: Dict[str, Any]             # client telemetry health
+    deception_rationale: Optional[Dict[str, Any]]  # why THIS decoy was spawned
+```
+
+### A. TreeSHAP Attribution (Insider Threat)
+For every flagged internal session, exact Shapley values are computed on the production Random Forest (`models/internal_insider_model.pkl`, 35 CERT-derived behavioral features):
+
+$$\phi_i(x) = \sum_{S \subseteq F \setminus \{i\}} \frac{|S|!(|F| - |S| - 1)!}{|F|!} \left[ f_x(S \cup \{i\}) - f_x(S) \right]$$
+
+TreeSHAP evaluates in $O(T \cdot L \cdot D^2)$ — low single-digit milliseconds inline — and the SOC dashboard renders the top-$k$ signed contributions ($\phi_i > 0$ pushes toward *Malicious Insider*, $\phi_i < 0$ toward *benign*) as red/green attribution bars. A heuristic fallback keeps bars rendering even if the model bundle is missing.
+
+### B. Neural Token Saliency (Perimeter Threats)
+For hostile external payloads, glyph-level attribution is computed against the production 4-modality classifier (`UnifiedThreatClassifier`, `brain_neural.pt`):
+
+$$S(t) = \left\| \frac{\partial \, \text{logit}_{c^\star}}{\partial \mathbf{E}(c_t)} \right\|_2, \quad \bar{S}(t) = \frac{S(t)}{\max_k S(k)} \in [0,1]$$
+
+The embedding-gradient path engages the live model handle (`app.state.neural_model`); a BI-LSTM attention-weights path and MITRE ATT&CK regex-span highlighting serve as deterministic fallbacks. On the SOC dashboard, glyphs with $\bar{S}(t) > 0.4$ render as **red hotspots** (decisive attack triggers), lower weights as yellow — pinpointing exactly which substring of a payload (e.g. `' OR 1=1--`) triggered the verdict.
+
+### C. Counterfactual Recourse ("What-If" Compliance)
+For insiders, the engine computes the minimum actionable perturbation $\Delta x$ returning a session below the containment threshold ($\tau_{\text{contain}} = 80\%$):
+
+$$\min_{\Delta x} \|\mathbf{W} \Delta x\|_1 \quad \text{s.t.} \quad \text{Risk}(x + \Delta x) < \tau_{\text{contain}}, \quad \Delta x_{\text{immutable}} = 0$$
+
+Role and identity features are immutable; actionable levers (working hours, scope confinement, execution density) yield plain-English prescriptions such as *"Confining operations to authorized department scopes reduces session risk from 88.0% to 25.0% (NORMAL policy band)."*
+
+### D. Interactive SOC Console (Zero-Retraining Overrides)
+| Endpoint | Effect |
+| :--- | :--- |
+| `POST /api/soc/whitelist_ip` | One-click IP whitelist for an employee in `CorporateDirectory` (persisted in SQLite). |
+| `POST /api/soc/grant_scope` | Grants an authorized-scope exception for a department (persisted into `config/company_profile.json` and applied **live** — no restart, no retraining loop). |
+
+---
+
 ## Empirical Benchmark Suite
 
 AdaptiveShield models have been evaluated on large-scale benchmarks combining real-world honeypot captures, the MOTIF PE malware dataset, and the CSIC 2010 HTTP corpus:
@@ -236,7 +289,35 @@ curl -i "http://127.0.0.1:8000/admin/shell?cmd=rm%20-rf%20/"
 ```
 * **Result:** Intercepted and classified as `Destructive`. The honeypot returns a simulated terminal output (`[ERROR] Permission denied: Cannot remove '/'`).
 
-### 4. Resetting Trapped Sessions
+### 4. Insider Scope Violation (GlassShield TreeSHAP + Sticky Decoy Containment)
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -H "x-user-id: usr_hr_04" http://127.0.0.1:8001/src/core
+```
+* **Result:** An HR persona touching `/src/` (a restricted scope for the `Finance_HR` department) is flagged as `Insider Anomaly` by the behavioral RF model. Per the Pure Containment Doctrine the employee is **never** IP-blocked — the session silently lands in the persona-mirrored intranet decoy.
+* **On the dashboard (`http://127.0.0.1:8001/dashboard`):** click the incident to open the XAI Inspector. Verify the **TreeSHAP attribution bars** (e.g. `+38% Access Unauthorized Scope`), the **Counterfactual Recourse card** (steps to return below the 80% containment band), the **Deception Strategy Rationalization card** (why the Nginx workspace decoy spawned), and the **🛡️ Whitelist IP** button.
+
+### 5. Interactive SOC Console Overrides
+```bash
+# 1-click whitelist the analyst-approved IP for the flagged user
+curl -s -X POST http://127.0.0.1:8001/api/soc/whitelist_ip \
+     -H "Content-Type: application/json" \
+     -d '{"user_id": "usr_hr_04", "client_ip": "192.168.1.50"}'
+
+# Grant a live scope exception for an entire department (no restart needed)
+curl -s -X POST http://127.0.0.1:8001/api/soc/grant_scope \
+     -H "Content-Type: application/json" \
+     -d '{"department": "Finance_HR", "scope": "/src/"}'
+```
+* **Result:** first call persists the whitelist into the corporate SQLite directory; second call rewrites `config/company_profile.json` and **live-refreshes** the insider detector's profile snapshot. A repeat of step 4 with the granted scope is no longer a boundary violation (**zero retraining loops; models remain static**).
+
+### 6. Neural Token Saliency Verification
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8000/login \
+     -d "username=admin' OR 1=1--&password=secret"
+```
+* **On the dashboard:** open the matching event's XAI Inspector — glyphs of `' OR 1=1--` should carry elevated weights (red hotspots for $\bar{S}(t) > 0.4$), proving the embedding-gradient attribution over the live BiLSTM engaged.
+
+### 7. Resetting Trapped Sessions
 Because AdaptiveShield isolates attackers in decoys once flagged, reset all sessions anytime for a clean demonstration:
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/reset_all
@@ -259,11 +340,14 @@ The [`dummy_app/`](file:///home/me/data/AdaptiveShield/dummy_app) directory prov
 
 ## Manual Pipeline Showcase & Testing Suite
 
-Execute the full verification suite (123 unit and integration tests) and the 7-stage interactive pipeline demonstrator:
+Execute the full verification suite (**188 unit, regression, and integration tests** — including the dedicated GlassShield XAI suite) and the 7-stage interactive pipeline demonstrator:
 
 ```bash
 # Run pytest verification suite
 .venv/bin/pytest tests/
+
+# Run the dedicated GlassShield XAI suite (TreeSHAP, saliency, counterfactual, SOC)
+.venv/bin/pytest tests/unit/test_xai.py -v
 
 # Automated canonical pipeline scenarios
 PYTHONPATH=src python3 verify/showcase_decision_pipeline.py

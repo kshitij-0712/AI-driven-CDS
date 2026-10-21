@@ -3,3 +3,8 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 asyncssh
+
+# Deterministic vendored wheel (container Python 3.11): pip's shap resolution
+# from the network indexes intermittently returns "(from versions: none)";
+# the find-links wheel in Dockerfile (--find-links=/app/wheels) guarantees it.
+shap==0.46.0

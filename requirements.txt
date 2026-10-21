@@ -1,6 +1,7 @@
 # Core dependencies
 numpy>=1.21.0
 scikit-learn>=1.8.0,<1.9.0
+shap>=0.46.0
 PyYAML>=6.0
 
 # Runtime HTTP guard dependencies
@@ -22,6 +23,7 @@ asyncssh
 
 # Testing
 pytest>=7.0
+pytest-asyncio>=0.21.0
 watchdog>=4.0.0
 
 # Deep Learning / ML (Required for neural models)
