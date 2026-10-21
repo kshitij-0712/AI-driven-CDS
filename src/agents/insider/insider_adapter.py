@@ -18,6 +18,12 @@ class AdaptiveInsiderDetector:
             print(f"Warning: Could not load internal insider model from {model_path}. Running with rule-based fallback only.")
         else:
             print(f"Loaded internal insider model from {model_path}")
+            # F7: Set n_jobs=1 at inference to eliminate OpenMP/thread-pool contention latency
+            try:
+                if "model" in self.model_bundle and hasattr(self.model_bundle["model"], "n_jobs"):
+                    self.model_bundle["model"].n_jobs = 1
+            except Exception:
+                pass
 
         # Corporate Directory & Company Policy Profile
         if directory_db_path or profile_path:
@@ -26,8 +32,10 @@ class AdaptiveInsiderDetector:
             self.corporate_dir = CorporateDirectory()
         self.company_profile = self.corporate_dir.get_company_profile()
             
-        # In-memory session tracking for live user state
+        # In-memory session tracking for live user state (F4: bounded capacity & TTL)
         self.session_states: Dict[str, Dict[str, Any]] = {}
+        self.session_ttl_sec: float = 3600.0
+        self.max_session_capacity: int = 5000
 
     def reset_session_state(self, session_id: str):
         if session_id in self.session_states:
@@ -35,6 +43,18 @@ class AdaptiveInsiderDetector:
 
     def _get_or_create_session_state(self, signal: UserBehaviorSignal) -> Dict[str, Any]:
         session_id = signal.session_id
+        import time
+        now = time.time()
+
+        # F4: Session TTL eviction & LRU bound
+        expired = [sid for sid, s in self.session_states.items() if (now - s.get("last_seen_ts", now)) > self.session_ttl_sec]
+        for sid in expired:
+            self.session_states.pop(sid, None)
+
+        if len(self.session_states) >= self.max_session_capacity and session_id not in self.session_states:
+            oldest_sid = min(self.session_states.keys(), key=lambda k: self.session_states[k].get("last_seen_ts", 0))
+            self.session_states.pop(oldest_sid, None)
+
         if session_id not in self.session_states:
             # Resolve corporate profile if user_id is recognized
             user_id = signal.user_id
@@ -78,8 +98,11 @@ class AdaptiveInsiderDetector:
                 "network_connection_count": 0,
                 "suspicious_process_spawned": 0,
                 "first_seen": None,
-                "src_ip": signal.source_ip
+                "src_ip": signal.source_ip,
+                "last_seen_ts": now
             }
+        else:
+            self.session_states[session_id]["last_seen_ts"] = now
         return self.session_states[session_id]
 
     def _update_session_with_signal(self, state: Dict[str, Any], signal: UserBehaviorSignal):
@@ -137,8 +160,14 @@ class AdaptiveInsiderDetector:
             if "su " in cmd_lower or "sudo " in cmd_lower:
                 state["switch_user_count"] += 1
                 
-            # Log deletion cover-up indicators
-            if any(k in cmd_lower for k in ["rm -rf /var/log", "history -c", "shred ", "clear_history"]):
+            # Direct raw disk / USB write (F10)
+            if "dd " in cmd_lower and any(dev in cmd_lower for dev in ["of=/dev/sd", "of=/dev/nvme", "of=/dev/usb"]):
+                state["usb_write_count"] += 1
+                state["usb_mount_attempt"] = 1
+
+            # Log deletion & destructive cover-up (F10)
+            if any(k in cmd_lower for k in ["rm -rf /var/log", "history -c", "shred ", "clear_history"]) or \
+               ("rm -rf " in cmd_lower and any(s in cmd_lower for s in ["/hr", "/finance", "/payroll", "/vault", "/models", "/etc", "/data"])):
                 state["log_deletion_attempt"] = 1
                 
             # Sudoers modification
