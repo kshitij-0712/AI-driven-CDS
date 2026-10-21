@@ -7,13 +7,32 @@ import uuid
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
-DEFAULT_PROFILE_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "company_profile.json")
-)
 DEFAULT_DB_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "runtime", "corporate_directory.db")
 )
 
+def resolve_profile_path(custom_path: Optional[str] = None) -> str:
+    """
+    Resolves the company profile path with fallback priority:
+    1. Explicitly passed custom_path (if exists)
+    2. COMPANY_PROFILE_PATH environment variable
+    3. config/company_profile.json
+    4. runtime/company_profile.json
+    """
+    if custom_path and os.path.exists(custom_path):
+        return os.path.abspath(custom_path)
+    env_path = os.environ.get("COMPANY_PROFILE_PATH")
+    if env_path and os.path.exists(env_path):
+        return os.path.abspath(env_path)
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "company_profile.json"))
+    if os.path.exists(config_path):
+        return config_path
+    runtime_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "runtime", "company_profile.json"))
+    if os.path.exists(runtime_path):
+        return runtime_path
+    return custom_path or config_path
+
+DEFAULT_PROFILE_PATH = resolve_profile_path()
 DEFAULT_PASSWORD = "qwerty"
 
 
@@ -28,9 +47,9 @@ class CorporateDirectory:
     whitelisted remote IPs, and session lifecycle.
     """
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, profile_path: str = DEFAULT_PROFILE_PATH):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, profile_path: Optional[str] = None):
         self.db_path = os.path.abspath(db_path)
-        self.profile_path = os.path.abspath(profile_path)
+        self.profile_path = resolve_profile_path(profile_path)
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -70,16 +89,24 @@ class CorporateDirectory:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM employees")
             count = cur.fetchone()[0]
-            if count == 0 and os.path.exists(self.profile_path):
+            if count == 0:
                 self._seed_from_profile(conn)
 
     def _seed_from_profile(self, conn: sqlite3.Connection):
-        try:
-            with open(self.profile_path, "r", encoding="utf-8") as f:
-                profile = json.load(f)
-        except Exception as e:
-            print(f"Warning: Failed to load company profile from {self.profile_path}: {e}")
-            return
+        profile = None
+        if os.path.exists(self.profile_path):
+            try:
+                with open(self.profile_path, "r", encoding="utf-8") as f:
+                    profile = json.load(f)
+            except Exception as e:
+                print(f"Warning: Failed to load company profile from {self.profile_path}: {e}")
+
+        if not profile:
+            try:
+                from agents.insider.default_company_profile import DEFAULT_COMPANY_PROFILE
+                profile = DEFAULT_COMPANY_PROFILE
+            except ImportError:
+                return
 
         default_hash = hash_password(DEFAULT_PASSWORD)
         employees = profile.get("employees", [])
@@ -115,58 +142,19 @@ class CorporateDirectory:
             ))
         conn.commit()
 
-    def add_whitelisted_ip(self, user_id: str, client_ip: str) -> bool:
-        """Append a client IP to the employee's whitelisted-IP list (SOC analyst override)."""
-        if not user_id or not client_ip:
-            return False
-        emp = self.get_employee(user_id)
-        if not emp:
-            return False
-        whitelisted = list(emp.get("whitelisted_ips", []))
-        clean_ip = client_ip.strip()
-        if clean_ip and clean_ip not in whitelisted:
-            whitelisted.append(clean_ip)
-        with self._get_connection() as conn:
-            conn.execute(
-                "UPDATE employees SET whitelisted_ips_json = ? WHERE user_id = ?",
-                (json.dumps(whitelisted), user_id),
-            )
-            conn.commit()
-        return True
-
-    def grant_scope(self, department: str, scope: str) -> Dict[str, Any]:
-        """Persist an authorized-scope exception for a department into company_profile.json.
-
-        Returns the updated departments entry so callers can report the change.
-        """
-        if not department or not scope:
-            return {}
-
-        profile = self.get_company_profile()
-        departments = profile.setdefault("departments", {})
-        dept_cfg = departments.get(department)
-        if dept_cfg is None:
-            dept_cfg = {}
-            departments[department] = dept_cfg
-        auth_scopes = dept_cfg.setdefault("authorized_scopes", [])
-        if scope not in auth_scopes:
-            auth_scopes.append(scope)
-
-        try:
-            os.makedirs(os.path.dirname(self.profile_path), exist_ok=True)
-            with open(self.profile_path, "w", encoding="utf-8") as f:
-                json.dump(profile, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Failed to persist granted scope to {self.profile_path}: {e}")
-
-        return dept_cfg
-
     def get_company_profile(self) -> Dict[str, Any]:
-        """Load the raw company_profile.json dict."""
+        """Load the company profile, falling back to built-in default if missing."""
         if os.path.exists(self.profile_path):
-            with open(self.profile_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return {}
+            try:
+                with open(self.profile_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        try:
+            from agents.insider.default_company_profile import DEFAULT_COMPANY_PROFILE
+            return DEFAULT_COMPANY_PROFILE
+        except ImportError:
+            return {}
 
     def authenticate_employee(self, username_or_email: str, password: str) -> Optional[Dict[str, Any]]:
         """Verify employee credentials and return employee record if valid."""
@@ -268,3 +256,49 @@ class CorporateDirectory:
                 "scenario": p.get("test_scenario")
             })
         return result
+
+    def add_whitelisted_ip(self, user_id: str, client_ip: str) -> bool:
+        """Append a client IP to the employee's whitelisted-IP list (SOC analyst override)."""
+        if not user_id or not client_ip:
+            return False
+        emp = self.get_employee(user_id)
+        if not emp:
+            return False
+        whitelisted = list(emp.get("whitelisted_ips", []))
+        clean_ip = client_ip.strip()
+        if clean_ip and clean_ip not in whitelisted:
+            whitelisted.append(clean_ip)
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE employees SET whitelisted_ips_json = ? WHERE user_id = ?",
+                (json.dumps(whitelisted), user_id),
+            )
+            conn.commit()
+        return True
+
+    def grant_scope(self, department: str, scope: str) -> Dict[str, Any]:
+        """Persist an authorized-scope exception for a department into company_profile.json.
+
+        Returns the updated departments entry so callers can report the change.
+        """
+        if not department or not scope:
+            return {}
+
+        profile = self.get_company_profile()
+        departments = profile.setdefault("departments", {})
+        dept_cfg = departments.get(department)
+        if dept_cfg is None:
+            dept_cfg = {}
+            departments[department] = dept_cfg
+        auth_scopes = dept_cfg.setdefault("authorized_scopes", [])
+        if scope not in auth_scopes:
+            auth_scopes.append(scope)
+
+        try:
+            os.makedirs(os.path.dirname(self.profile_path), exist_ok=True)
+            with open(self.profile_path, "w", encoding="utf-8") as f:
+                json.dump(profile, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to persist granted scope to {self.profile_path}: {e}")
+
+        return dept_cfg

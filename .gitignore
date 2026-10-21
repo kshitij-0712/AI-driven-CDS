@@ -97,19 +97,20 @@ Desktop.ini
 *~
 
 # Project-specific: Data files (too large/sensitive for git)
-data/raw_logs/
+data/zeek
 data/processed/
-data/binaries/
-data/input/
+data/dionaea/
+data/cowrie/
+data/insider/
+data/cert*
 
-# Trained models (large binary files)
-models/*.pkl
 
 # Ghidra output (generated)
 data/processed/ghidra_features/
 
 # Local configuration overrides
-config/settings.local.yaml
+config/authorized_keys
+config/ssh_host_rsa_key.pub
 *.local.yaml
 
 # Logs
@@ -120,14 +121,15 @@ runtime/
 # Secrets / credentials
 .env
 .env.*
+!.env.example
 secrets/
 credentials/
 *.pem
 *.key
-config/ssh_host_rsa_key
+config/company*
+!config/company_profile.json.example
 
 # Temporary files
-data
 verify/
 tmp/
 temp/
@@ -138,3 +140,19 @@ temp/
 # OpenCode session files and config
 session-*.md
 .opencode/
+
+# External ML datasets (shared folder artifacts, too large for git)
+ssh_attacks.csv
+MOTIF/
+unified_external_corpus_dedup.csv
+
+# Symlinked shared-folder corpora (transfer to Windows training host via
+# the VirtualBox shared folder, not git)
+data/exports/training
+
+data/external
+# Regenerable assembly input (build_external_corpus.py, ~4 min); too large to commit
+data/exports/unified_external_corpus*
+
+# Regenerable relabel intermediate (relabel_sessions.py, ~90 s)
+data/exports/sessions_complete_v3*

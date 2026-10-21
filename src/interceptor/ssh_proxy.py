@@ -10,6 +10,7 @@ from agents.decision import classify_ssh_command, build_hybrid_classifier
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
+from honeypot.ssh_decoy_builder import SSHDecoyBuilder
 
 logger = logging.getLogger(__name__)
 logging.getLogger("asyncssh").setLevel(logging.DEBUG)
@@ -31,7 +32,8 @@ class BackendProxySession(asyncssh.SSHClientSession):
 class SSHGuardSession(asyncssh.SSHServerSession):
     def __init__(self, target_host: str, target_port: int, session_id: str, src_ip: str, 
                  store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, 
-                 is_decoy: bool, auth_username: str = None, auth_password: str = None, real_conn = None):
+                 is_decoy: bool, auth_username: str = None, auth_password: str = None, real_conn = None,
+                 insider_detector = None):
         self.target_host = target_host
         self.target_port = target_port
         self.session_id = session_id
@@ -43,14 +45,12 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         self.is_decoy = is_decoy
         self.auth_username = auth_username
         self.auth_password = auth_password
+        self.insider_detector = insider_detector
         
         self.chan = None
         self.backend_conn = real_conn
         self.backend_chan = None
         self.cmd_buffer = ""
-
-    def connection_made(self, chan):
-        self.chan = chan
 
     def pty_requested(self, term_type, term_size, term_modes):
         self._term_type = term_type
@@ -58,9 +58,22 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         self._term_modes = term_modes
         return True
 
+    def connection_made(self, chan):
+        self.chan = chan
+
     def shell_requested(self):
         asyncio.create_task(self._proxy_shell())
         return True
+
+    def session_started(self):
+        # Disable asyncssh's built-in line editor and echo now that the session has started.
+        # This prevents the double-echo issue since the backend PTY handles its own echoing.
+        if self.chan:
+            try:
+                self.chan.set_line_mode(False)
+                self.chan.set_echo(False)
+            except AssertionError:
+                pass
 
     def exec_requested(self, command):
         self.cmd_buffer = command
@@ -117,19 +130,31 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 self.chan.close()
 
     def data_received(self, data, datatype):
+        # If mid-session glitch drop is active, swallow keystrokes to simulate frozen/dropped pipe
+        if getattr(self, "_is_dropping", False):
+            return
+
         # Forward keystrokes to backend
         if self.backend_chan and not self.backend_chan.is_closing():
-            if isinstance(data, str):
-                self.backend_chan.write(data.replace('\r', '\r\n'))
-            else:
-                self.backend_chan.write(data.replace(b'\r', b'\r\n'))
+            self.backend_chan.write(data)
 
         # Buffer for command reconstruction
         if isinstance(data, bytes):
-            # Sometimes data is bytes depending on asyncssh version
             data = data.decode('utf-8', 'ignore')
 
-        for char in data:
+        i = 0
+        while i < len(data):
+            char = data[i]
+            if char == '\x1b':
+                # Skip the escape sequence
+                i += 1
+                if i < len(data) and data[i] == '[':
+                    i += 1
+                    while i < len(data) and not data[i].isalpha():
+                        i += 1
+                i += 1
+                continue
+                
             if char == '\r' or char == '\n':
                 if self.cmd_buffer.strip():
                     self._process_command(self.cmd_buffer.strip())
@@ -138,11 +163,9 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 self.cmd_buffer = self.cmd_buffer[:-1]
             elif char.isprintable():
                 self.cmd_buffer += char
+            i += 1
 
     def _process_command(self, cmd: str):
-        if not self.is_decoy:
-            return  # Deferred real server monitoring
-
         # Save to history
         history = self.store.get_command_history(self.session_id)
         self.store.append_command_history(self.session_id, cmd)
@@ -155,43 +178,64 @@ class SSHGuardSession(asyncssh.SSHServerSession):
         
         full_command = f"{history}; {cmd}".strip("; ") if history else cmd
         
-        decision = classify_ssh_command(self.classifier, full_command, context)
-        
-        # Determine base risk score from external neural network classification
-        confidence = decision.get("neural_confidence", 1.0)
-        ext_label = decision["label"].lower()
-        if decision.get("action") == "drop_and_block":
-            base_risk_score = 100.0
-        elif ext_label == "safe":
-            base_risk_score = confidence * 10.0
-        elif ext_label == "recon":
-            base_risk_score = 30.0 + (confidence * 20.0)
-        elif ext_label in ("downloader", "exploit"):
-            base_risk_score = 50.0 + (confidence * 25.0)
-        else: # Destructive, APT
-            base_risk_score = 75.0 + (confidence * 25.0)
-
-        # Check for Insider Threat if source IP is internal/private
-        import ipaddress
-        is_insider = False
-        try:
-            addr = ipaddress.ip_address(self.src_ip.strip())
-            is_insider = addr.is_private or addr.is_loopback
-        except ValueError:
-            pass
-
-        risk_score = base_risk_score
+        risk_score = 0.0
         insider_threat = None
-
-        if is_insider:
-            from interfaces.insider_contract import UserBehaviorSignal
-            from agents.insider.insider_adapter import AdaptiveInsiderDetector
-            from datetime import datetime
+        decision = {}
+        action = "forward"
+        policy_decision = "NORMAL"
+        
+        if self.is_decoy:
+            # --- EXTERNAL THREAT (Brute-forced into Cowrie) ---
+            neural_model = getattr(self.classifier, "neural_model", None)
+            ctx = self.store._get_context(self.session_id)
+            triage_features = ctx.get("triage_features")
+            decision = classify_ssh_command(
+                self.classifier,
+                full_command,
+                context,
+                neural_model=neural_model,
+                triage_features=triage_features
+            )
             
+            confidence = decision.get("neural_confidence", 1.0)
+            ext_label = decision["label"].lower()
+            if decision.get("action") == "drop_and_block":
+                risk_score = 100.0
+            elif ext_label == "safe":
+                risk_score = confidence * 10.0
+            elif ext_label == "recon":
+                risk_score = 30.0 + (confidence * 20.0)
+            elif ext_label in ("downloader", "exploit"):
+                risk_score = 50.0 + (confidence * 25.0)
+            else: # Destructive, APT
+                risk_score = 75.0 + (confidence * 25.0)
+                
+            # XAI is already populated in decision by classify_ssh_command
+        else:
+            # --- INTERNAL THREAT (Successfully authenticated to real backend) ---
+            from interfaces.insider_contract import UserBehaviorSignal
+            from datetime import datetime
+
+            if self.insider_detector is None:
+                from agents.insider.insider_adapter import AdaptiveInsiderDetector
+                self.insider_detector = AdaptiveInsiderDetector()
+            
+            # F1: Wire employee identity from Corporate Directory
+            emp = None
+            if self.auth_username and hasattr(self.insider_detector, "corporate_dir"):
+                try:
+                    emp = self.insider_detector.corporate_dir.get_employee(self.auth_username)
+                except Exception:
+                    emp = None
+
+            user_role = emp["role"] if emp else ("sys_admin" if self.auth_username == "root" else "normal")
+            user_dept = emp["department"] if emp else ("Cloud_DevOps" if self.auth_username == "root" else "General_Staff")
+
             action_details = {
                 "command": cmd,
                 "file_path": f"ssh://{self.src_ip}",
-                "role": "sys_admin",
+                "role": user_role,
+                "department": user_dept,
             }
             signal = UserBehaviorSignal(
                 user_id=self.auth_username or "ssh_user",
@@ -202,11 +246,57 @@ class SSHGuardSession(asyncssh.SSHServerSession):
                 source_ip=self.src_ip,
                 is_internal=True
             )
-            insider_detector = AdaptiveInsiderDetector()
-            insider_threat = insider_detector.analyze_signal(signal)
-            risk_score = max(insider_threat.risk_score, base_risk_score)
+            # F1: Single detector instance preserves behavioral state across SSH commands
+            insider_threat = self.insider_detector.analyze_signal(signal)
+            risk_score = insider_threat.risk_score
+            decision = {
+                "label": "Insider Anomaly",
+                "rule": ", ".join(insider_threat.anomaly_factors) or "Internal behavior monitoring",
+                "mitre_tactics": [],
+                "severity_max": int(risk_score / 10.0)
+            }
+            
+            # Deep XAI Integration for Insider
+            from agents.xai import get_shared_narrator
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            xai_event = ClassificationEvent(
+                session_id=self.session_id,
+                timestamp=signal.timestamp,
+                src_ip=self.src_ip,
+                commands=[cmd],
+                classification=decision["label"],
+                confidence=1.0,
+                mitre_techniques=[],
+                features_used={
+                    "insider_threat": True,
+                    "is_internal": not self.is_decoy,
+                    "role": signal.action_details.get("role", "") if isinstance(signal.action_details, dict) else "",
+                    "user_id": getattr(signal, "user_id", ""),
+                    "risk_score": risk_score,
+                    "anomalies": insider_threat.anomaly_factors,
+                    "evidence_features": {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {},
+                }
+            )
+            xai_decision = RoutingDecision(
+                session_id=self.session_id,
+                action="forward",
+                target="upstream",
+                reason=decision["rule"]
+            )
+            narrator = get_shared_narrator()
+            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
 
-        # Policy Engine Decides
+            decision["xai_summary"] = xai_explanation.summary
+            decision["xai_detailed"] = xai_explanation.detailed
+            decision["xai_risk_score"] = xai_explanation.risk_score
+            decision["xai_recommendations"] = xai_explanation.recommended_actions
+            decision["xai_feature_attributions"] = xai_explanation.feature_attributions
+            decision["xai_token_attributions"] = xai_explanation.token_attributions
+            decision["xai_counterfactual"] = xai_explanation.counterfactual_recourse
+            decision["xai_telemetry_audit"] = xai_explanation.telemetry_audit
+            decision["xai_deception"] = xai_explanation.deception_rationale
+
+        # Policy Engine Decides based on unified risk_score
         if risk_score <= 30.0:
             policy_decision = "NORMAL"
             action = "forward"
@@ -220,9 +310,16 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
         else:
             policy_decision = "CONTAIN"
-            action = "drop_and_block"
-            decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
-            decision["label"] = "Destructive"
+            # External attackers get blocked at the firewall. Internal employees get contained in a decoy.
+            if not self.is_decoy:
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or f"Policy: Internal containment triggered. Risk level: {risk_score}%"
+            else:
+                action = "drop_and_block"
+                decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
+                decision["label"] = "Destructive"
+                
+        decision["action"] = action
 
         event = {
             "timestamp": time.time(),
@@ -230,90 +327,105 @@ class SSHGuardSession(asyncssh.SSHServerSession):
             "source_ip": self.src_ip,
             "protocol": "ssh",
             "command": cmd,
-            "label": decision["label"],
+            "label": decision.get("label", "Unknown"),
             "action": action,
-            "rule": decision.get("rule"),
+            "rule": decision.get("rule", ""),
             "mitre_tactics": decision.get("mitre_tactics", []),
             "severity_max": decision.get("severity_max", 0),
-            "is_insider": is_insider,
+            "is_insider": not self.is_decoy,
             "risk_score": risk_score,
             "policy_decision": policy_decision,
+            "xai_summary": decision.get("xai_summary", ""),
+            "xai_detailed": decision.get("xai_detailed", ""),
+            "xai_risk_score": decision.get("xai_risk_score", risk_score),
+            "xai_recommendations": decision.get("xai_recommendations", []),
+            "xai_feature_attributions": decision.get("xai_feature_attributions", {}),
+            "xai_token_attributions": decision.get("xai_token_attributions", []),
+            "xai_counterfactual": decision.get("xai_counterfactual", {}),
+            "xai_telemetry_audit": decision.get("xai_telemetry_audit", {}),
+            "xai_deception": decision.get("xai_deception", None),
         }
         
-        if is_insider and insider_threat:
+        if not self.is_decoy and insider_threat:
             event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
 
         if "neural_confidence" in decision:
             event["neural_confidence"] = decision["neural_confidence"]
 
-        # Generate XAI Explanation
+        # Push to the dashboard event queue asynchronously
         try:
-            from agents.xai import AdaptiveXAINarrator
-            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
-            from datetime import datetime
-            
-            xai_detector = AdaptiveXAINarrator()
-            
-            xai_features = {
-                "risk_score": risk_score,
-                "policy_decision": policy_decision,
-                "protocol": "ssh"
-            }
-            if is_insider and insider_threat:
-                xai_features.update({
-                    "insider_threat": True if action == "drop_and_block" else False,
-                    "role": "sys_admin",
-                    "anomaly_factors": insider_threat.anomaly_factors,
-                    "evidence_features": insider_threat.features
-                })
-
-            xai_event = ClassificationEvent(
-                session_id=self.session_id,
-                timestamp=datetime.now().isoformat() + "Z",
-                src_ip=self.src_ip,
-                commands=[cmd] if cmd else [],
-                classification=decision["label"],
-                confidence=decision.get("neural_confidence", 1.0),
-                mitre_techniques=decision.get("mitre_tactics", []),
-                features_used=xai_features
-            )
-            xai_decision = RoutingDecision(
-                session_id=self.session_id,
-                action=action,
-                target="decoy" if action == "redirect_to_decoy" else ("blocked" if action == "drop_and_block" else "real_ssh"),
-                reason=decision.get("rule", "SSH command classification")
-            )
-            
-            explanation = xai_detector.generate_explanation(xai_event, xai_decision)
-            
-            event["xai_summary"] = explanation.summary
-            event["xai_detailed"] = explanation.detailed
-            event["xai_risk_score"] = explanation.risk_score
-            event["xai_recommendations"] = explanation.recommended_actions
-            
-            # Push to the dashboard event queue asynchronously
             from interceptor.http_proxy import active_event_queue
             if active_event_queue is not None:
                 asyncio.create_task(active_event_queue.put(event))
-        except Exception as e:
-            logger.error(f"XAI parsing failed for SSH: {e}")
+        except Exception:
+            pass
 
         self.store.write_event(self.session_id, event)
         with open("./runtime/logs/threat_events.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
 
         if decision["action"] == "drop_and_block":
-            self.nft.block_ip(self.src_ip, reason=decision.get("rule"))
+            is_bruteforce = (
+                "brute_force" in str(decision.get("rule", "")).lower()
+                or "brute-force" in str(decision.get("rule", "")).lower()
+                or "brute force" in str(decision.get("rule", "")).lower()
+            )
+            if is_bruteforce:
+                self.nft.block_ip(self.src_ip, reason=decision.get("rule"))
             self.chan.close()
+        elif decision["action"] == "redirect_to_decoy":
+            if not self.is_decoy:
+                # Mid-session insider threat containment! 
+                # Mark them for decoy routing on next reconnect and drop with realistic network timeout behavior.
+                ctx = self.store._get_context(self.session_id)
+                ctx["ssh_flagged_for_decoy"] = True
+                ctx["ssh_locked_password"] = self.auth_password
+                self.store.conn.execute("UPDATE sessions SET context_json = ? WHERE id = ?", (json.dumps(ctx), self.session_id))
+                self.store.conn.commit()
+                logger.info("Insider threat detected mid-session. Initiating realistic network timeout drop. Next login will route to decoy.")
+                asyncio.create_task(self._simulate_network_timeout_drop())
+            else:
+                # Attacker is already inside Cowrie — just log the escalation, let them continue
+                logger.info(
+                    "SSH exploit detected in decoy session %s: %s (letting attacker continue in sandbox)",
+                    self.session_id, cmd
+                )
+
+    async def _simulate_network_timeout_drop(self):
+        """Simulate a realistic network drop/freeze before abrupt termination.
+        Wireshark and client terminal observe a realistic timeout rather than an application-layer alert."""
+        self._is_dropping = True
+        try:
+            if self.backend_chan and not self.backend_chan.is_closing():
+                self.backend_chan.close()
+        except Exception:
+            pass
+
+        # Simulate unresponsive network freeze/stall
+        try:
+            await asyncio.sleep(2.5)
+        except Exception:
+            pass
+
+        # Abruptly terminate the client transport connection without graceful SSH channel close
+        try:
+            conn = self.chan.get_connection()
+            if conn and not conn.is_closing():
+                conn.close()
+        except Exception:
+            if not self.chan.is_closing():
+                self.chan.close()
 
 
 class AdaptiveSSHServer(asyncssh.SSHServer):
-    def __init__(self, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, config: Dict):
+    def __init__(self, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, config: Dict, builder: SSHDecoyBuilder, insider_detector = None):
         self.store = store
         self.nft = nft
         self.classifier = classifier
         self.decoy_mgr = decoy_mgr
         self.config = config
+        self.builder = builder
+        self.insider_detector = insider_detector
         
         self.brute_force_threshold = int(config.get("brute_force_threshold", 20))
         self.real_host = config.get("real_service_host", "127.0.0.1")
@@ -345,6 +457,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                 self.route_to_decoy = True
                 self.auth_username = username
                 self.auth_password = password
+                
+                decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+                if decoy:
+                     await self.builder.prepare_decoy_files(
+                         self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                     )
+                     
                 print("Accepting password (routed to decoy)")
                 return True
             else:
@@ -382,6 +501,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                 self.route_to_decoy = True
                 self.auth_username = username
                 self.auth_password = password
+                
+                decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+                if decoy:
+                     await self.builder.prepare_decoy_files(
+                         self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                     )
+                     
                 return True
             return False
 
@@ -395,6 +521,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
             self.route_to_decoy = True
             self.auth_username = username
             self.auth_password = "password" # Cowrie default
+            
+            decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+            if decoy:
+                 await self.builder.prepare_decoy_files(
+                     self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                 )
+                 
             return True
             
         allowed_keys_path = self.config.get("allowed_keys_path", "./config/authorized_keys")
@@ -441,6 +574,13 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
             self.route_to_decoy = True
             self.auth_username = username
             self.auth_password = "password"
+            
+            decoy = self.decoy_mgr.get_or_spawn_ssh_decoy(self.session_id)
+            if decoy:
+                 await self.builder.prepare_decoy_files(
+                     self.session_id, {"label": "Exploit"}, decoy.host_dir, decoy.container_id, self.decoy_mgr
+                 )
+                 
             return True
         return False
 
@@ -457,7 +597,8 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                         store=self.store, nft=self.nft, classifier=self.classifier,
                         decoy_mgr=self.decoy_mgr, is_decoy=True,
                         auth_username=getattr(self, 'auth_username', 'root'),
-                        auth_password=getattr(self, 'auth_password', 'password')
+                        auth_password=getattr(self, 'auth_password', 'password'),
+                        insider_detector=self.insider_detector
                     )
             else:
                 return SSHGuardSession(
@@ -467,14 +608,15 @@ class AdaptiveSSHServer(asyncssh.SSHServer):
                     decoy_mgr=self.decoy_mgr, is_decoy=False,
                     auth_username=getattr(self, 'auth_username', 'root'),
                     auth_password=getattr(self, 'auth_password', 'password'),
-                    real_conn=getattr(self, 'real_conn', None)
+                    real_conn=getattr(self, 'real_conn', None),
+                    insider_detector=self.insider_detector
                 )
         
         print("Rejecting session request because route_to_decoy is not set or decoy is None")
         self.conn.close()
         return None
 
-async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager):
+async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManager, classifier, decoy_mgr: DecoyManager, builder: SSHDecoyBuilder = None):
     ssh_cfg = config.get("ssh_guard", {})
     if not ssh_cfg.get("enabled", False):
         return
@@ -482,8 +624,19 @@ async def start_ssh_proxy(config: Dict, store: SessionStore, nft: NftablesManage
     port = int(ssh_cfg.get("listen_port", 22))
     server_key = ssh_cfg.get("server_key_path", "./config/ssh_host_rsa_key.key")
     
+    if builder is None:
+        builder = SSHDecoyBuilder(config, store)
+    
+    # F1: App-scoped detector shared across SSH sessions to prevent per-command model reloads
+    try:
+        from agents.insider.insider_adapter import AdaptiveInsiderDetector
+        insider_detector = AdaptiveInsiderDetector()
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm AdaptiveInsiderDetector in SSH proxy: {e}")
+        insider_detector = None
+
     def server_factory():
-        return AdaptiveSSHServer(store, nft, classifier, decoy_mgr, ssh_cfg)
+        return AdaptiveSSHServer(store, nft, classifier, decoy_mgr, ssh_cfg, builder, insider_detector=insider_detector)
 
     await asyncssh.create_server(
         server_factory, '', port,

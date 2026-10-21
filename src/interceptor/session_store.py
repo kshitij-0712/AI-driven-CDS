@@ -52,7 +52,7 @@ class SessionStore:
         self.conn.commit()
 
     @thread_safe
-    def get_or_create_session(self, src_ip: str, idle_timeout_sec: int = 900) -> str:
+    def get_or_create_session(self, src_ip: str, idle_timeout_sec: int = 900, prefix: str = "sess_") -> str:
         now = time.time()
         cur = self.conn.cursor()
         cur.execute(
@@ -70,7 +70,7 @@ class SessionStore:
                 self.conn.commit()
                 return session_id
 
-        session_id = str(uuid.uuid4())
+        session_id = f"{prefix}{uuid.uuid4().hex[:12]}"
         cur.execute(
             """
             INSERT INTO sessions(id, src_ip, first_seen_ts, last_seen_ts, request_count, context_json)
@@ -107,6 +107,10 @@ class SessionStore:
 
     @thread_safe
     def get_blocked_until(self, src_ip: str) -> Optional[float]:
+        # Exemption commented out per user request so local test IP can be verified getting blocked:
+        # if src_ip in ("127.0.0.1", "::1", "localhost"):
+        #     return None
+
         cur = self.conn.cursor()
         cur.execute(
             "SELECT blocked_until_ts FROM sessions WHERE src_ip = ? AND blocked = 1 ORDER BY last_seen_ts DESC LIMIT 1",

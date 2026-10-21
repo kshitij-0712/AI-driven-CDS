@@ -1,25 +1,28 @@
 import json
 import os
+import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, Optional, Any
 
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from agents.decision import build_hybrid_classifier, classify_http_request
+from agents.decision import build_hybrid_classifier, classify_http_request, aggregate_threat_signals
 from agents.deception import DecoyManager
 from interceptor.nftables_manager import NftablesManager
 from interceptor.session_store import SessionStore
 from agents.insider.insider_adapter import AdaptiveInsiderDetector
 from agents.insider.corporate_directory import CorporateDirectory
-from agents.xai import AdaptiveXAINarrator
+from agents.xai import get_shared_narrator
 import ipaddress
 from datetime import datetime
 import asyncio
 from fastapi.responses import StreamingResponse
 from honeypot import HoneypotGenerator
+
+logger = logging.getLogger(__name__)
 
 # Global event queue will be attached to app.state inside create_http_guard_app
 active_event_queue = None
@@ -45,10 +48,12 @@ def _request_to_context(request: Request, body: str) -> Dict:
     }
 
 
-def create_http_guard_app(config: Dict) -> FastAPI:
+def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optional[DecoyManager] = None) -> FastAPI:
 
     runtime_cfg = config.get("runtime", {})
-    http_cfg = config.get("http_guard", {})
+    http_cfg = dict(config.get("http_guard", {}))
+    if is_internal:
+        http_cfg.update(config.get("internal_http_guard", {}))
     decoy_cfg = config.get("decoys", {})
 
     db_path = runtime_cfg.get("db_path", "./runtime/adaptiveshield.db")
@@ -61,30 +66,56 @@ def create_http_guard_app(config: Dict) -> FastAPI:
     fallback_on_error = bool(http_cfg.get("fallback_on_error", True))
     listen_port = int(http_cfg.get("listen_port", 80))
     session_idle_timeout_sec = int(http_cfg.get("session_idle_timeout_sec", 900))
+    internal_paths = http_cfg.get("internal_paths", [])
 
     os.makedirs(os.path.dirname(threat_log_path), exist_ok=True)
+
+    corporate_db_path = runtime_cfg.get("corporate_db_path", "./runtime/corporate_directory.db")
+    corporate_dir = CorporateDirectory(db_path=corporate_db_path)
+    insider_log_path = runtime_cfg.get("insider_log_path", "./runtime/logs/insider_events.jsonl")
+    os.makedirs(os.path.dirname(insider_log_path), exist_ok=True)
 
     store = SessionStore(db_path)
     nft = NftablesManager()
     nft.ensure_base_ruleset()
 
     classifier = build_hybrid_classifier()
-    insider_detector = AdaptiveInsiderDetector()
-    xai_detector = AdaptiveXAINarrator()
-    corporate_dir = CorporateDirectory()
+    insider_detector = AdaptiveInsiderDetector(directory_db_path=corporate_db_path)
+    xai_detector = get_shared_narrator()
 
-    decoys = DecoyManager(
-        http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
-        max_instances=int(decoy_cfg.get("max_instances", 5)),
-        idle_timeout_sec=int(decoy_cfg.get("idle_timeout_sec", 300)),
-        fallback_url=decoy_cfg.get("fallback_url"),
-    )
+    scope = "internal" if is_internal else "external"
+    if decoys is None:
+        decoys = DecoyManager(
+            http_image=decoy_cfg.get("http_image", "adaptiveshield/http-decoy:latest"),
+            max_instances=int(decoy_cfg.get("max_instances", 5)),
+            idle_timeout_sec=int(decoy_cfg.get("idle_timeout_sec", 300)),
+            fallback_url=decoy_cfg.get("fallback_url"),
+            scope=scope,
+            host_runtime_dir=runtime_cfg.get(
+                "host_runtime_dir", "/home/me/data/AdaptiveShield/runtime"
+            ),
+        )
 
     galah_enabled = bool(config.get("galah_honeypot", {}).get("enabled", False))
-    honeypot_gen = HoneypotGenerator(config, store) if galah_enabled else None
+    honeypot_gen = HoneypotGenerator(config, store, is_internal=is_internal) if galah_enabled else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Load neural model at startup
+        from agents.decision import load_neural_model
+        neural_model = load_neural_model()
+        if neural_model is not None:
+            logger.info("Neural model loaded at startup")
+            app.state.neural_model = neural_model
+            # Attach to classifier for SSH proxy access
+            if hasattr(app.state, "classifier"):
+                app.state.classifier.neural_model = neural_model
+        else:
+            logger.warning("Neural model unavailable at startup")
+            app.state.neural_model = None
+        
+        app.state.neural_model_loaded = neural_model is not None
+        
         decoys.pre_pull_images(decoy_cfg.get("pre_pull_images", []))
         yield
         decoys.shutdown_all_decoys()
@@ -122,15 +153,78 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         )
 
     @app.get("/health")
-    async def health():
-        from agents.decision import _neural_model
+    async def health(request: Request):
+        neural_active = getattr(request.app.state, "neural_model_loaded", False)
         return {
             "status": "ok",
             "classifier": "hybrid_v2",
-            "neural_model": "active" if _neural_model is not None else "unavailable",
+            "neural_model": "active" if neural_active else "unavailable",
             "docker_available": decoys.docker_available,
             "real_service": f"http://{real_host}:{real_port}",
         }
+
+    @app.post("/api/auth/login")
+    async def auth_login(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        username = (body.get("username") or body.get("email") or "").strip()
+        password = (body.get("password") or "").strip()
+        client_ip = request.headers.get("x-mock-ip") or (request.client.host if request.client else "127.0.0.1")
+        user_agent = request.headers.get("user-agent", "")
+        
+        emp = corporate_dir.authenticate_employee(username, password)
+        if not emp:
+            return JSONResponse(status_code=401, content={"error": "invalid_credentials", "message": "Invalid corporate credentials."})
+        
+        token = corporate_dir.create_session(emp["user_id"], client_ip, user_agent)
+        response = JSONResponse(content={
+            "status": "success",
+            "message": "Authenticated successfully.",
+            "token": token,
+            "user": {
+                "user_id": emp["user_id"],
+                "name": emp["name"],
+                "email": emp["email"],
+                "role": emp["role"],
+                "department": emp["department"],
+                "assigned_ip": emp["assigned_ip"],
+                "assigned_device": emp["assigned_device"]
+            }
+        })
+        response.set_cookie(
+            key="nexus_session",
+            value=token,
+            httponly=False,
+            samesite="lax",
+            path="/"
+        )
+        return response
+
+    @app.post("/api/auth/logout")
+    async def auth_logout(request: Request):
+        token = request.cookies.get("nexus_session")
+        if token:
+            corporate_dir.terminate_session(token)
+        response = JSONResponse(content={"status": "success", "message": "Logged out."})
+        response.delete_cookie(key="nexus_session", path="/")
+        return response
+
+    @app.get("/api/auth/me")
+    async def auth_me(request: Request):
+        token = request.cookies.get("nexus_session")
+        auth_header = request.headers.get("authorization", "")
+        if not token and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+        profile = corporate_dir.validate_session(token) if token else None
+        if not profile:
+            return JSONResponse(status_code=401, content={"error": "unauthenticated"})
+        return JSONResponse(content={"status": "authenticated", "user": profile})
+
+    @app.get("/api/auth/personas")
+    async def auth_personas():
+        return JSONResponse(content={"personas": corporate_dir.get_test_personas()})
     @app.get("/api/events")
     async def sse_events(request: Request):
         async def event_generator():
@@ -233,6 +327,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         return {"status": "simulation_fired"}
 
     @app.post("/api/unblock")
+    @app.post("/api/release-ip")
     async def release_blocked_ip(request: Request):
         payload = await request.json()
         ip = payload.get("ip")
@@ -242,6 +337,7 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         return {"status": "unblocked", "ip": ip}
 
     @app.post("/api/reset_session")
+    @app.post("/api/reset-session")
     async def reset_session_risk(request: Request):
         payload = await request.json()
         session_id = payload.get("session_id")
@@ -251,9 +347,12 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             cur.execute("SELECT src_ip FROM sessions WHERE id = ?", (session_id,))
             row = cur.fetchone()
             if row:
-                ip = row[0]
-                store.unblock_ip(ip)
-                nft.unblock_ip(ip)
+                stored_key = row[0]
+                real_ip = stored_key.split(":", 1)[1] if ":" in stored_key else stored_key
+                if not real_ip.startswith("corp_"):
+                    store.unblock_ip(real_ip)
+                    nft.unblock_ip(real_ip)
+                store.unblock_ip(stored_key)
             
             # Clear database and in-memory states
             store.reset_session(session_id)
@@ -261,11 +360,14 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         return {"status": "success", "session_id": session_id}
 
     @app.post("/api/reset_all")
+    @app.post("/api/reset-all")
     async def reset_all_sessions(request: Request):
         store.conn.execute("DELETE FROM request_events")
         store.conn.execute("DELETE FROM sessions")
         store.conn.commit()
         insider_detector.session_states.clear()
+        if nft:
+            nft.flush_all()
         return {"status": "success", "message": "All sessions and blocks cleared successfully."}
 
     # ---------------- Interactive SOC Console (GlassShield) ----------------
@@ -316,6 +418,9 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     {"status": "error", "message": f"Failed to update profile for '{department}'."},
                     status_code=500,
                 )
+            # Live-refresh the insider adapter's profile snapshot so the
+            # exception takes effect without a restart.
+            insider_detector.company_profile = corporate_dir.get_company_profile()
             return JSONResponse({
                 "status": "success",
                 "message": f"Granted scope '{scope}' to department '{department}'.",
@@ -344,7 +449,9 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         blocked_until = store.get_blocked_until(src_ip)
         if blocked_until and blocked_until > time.time():
             # Log blocked attempt event to the dashboard
-            session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
+            session_key = f"int:{src_ip}" if is_internal else f"ext:{src_ip}"
+            session_prefix = "int_sess_" if is_internal else "ext_sess_"
+            session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix=session_prefix)
             
             event = {
                 "timestamp": time.time(),
@@ -417,16 +524,57 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 content={"error": "blocked", "reason": "temporary_block", "blocked_until": blocked_until},
             )
 
-        session_id = store.get_or_create_session(src_ip, idle_timeout_sec=session_idle_timeout_sec)
+        # Resolve token from cookie or header to isolate sessions by persona on internal guard (F2)
+        auth_cookie = request.cookies.get("nexus_session")
+        auth_header = request.headers.get("authorization", "")
+        auth_bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+        user_header = request.headers.get("x-user-id")
+        token = auth_cookie or auth_bearer or user_header
+
+        if is_internal:
+            session_key = f"int:corp_{token}" if token else f"int:{src_ip}"
+            session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix="int_sess_")
+        else:
+            session_key = f"ext:{src_ip}"
+            session_id = store.get_or_create_session(session_key, idle_timeout_sec=session_idle_timeout_sec, prefix="ext_sess_")
         ctx = store._get_context(session_id)
-        
+
+        # Check for binary upload in request body (PE 'MZ', ELF '\x7fELF')
+        triage_features = ctx.get("triage_features")
+        if (
+            triage_features is None
+            and len(raw_body) > 64
+            and (raw_body.startswith(b"MZ") or raw_body.startswith(b"\x7fELF") or b"\x4d\x5a\x90\x00" in raw_body[:512])
+        ):
+            try:
+                import tempfile
+                from core.malware.binary_classifier import extract_features_from_binary_file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp_bin:
+                    tmp_bin.write(raw_body)
+                    tmp_bin_path = tmp_bin.name
+                try:
+                    triage_features = extract_features_from_binary_file(tmp_bin_path)
+                    store.update_context(session_id, {"triage_features": triage_features})
+                finally:
+                    if os.path.exists(tmp_bin_path):
+                        os.unlink(tmp_bin_path)
+            except Exception as e:
+                logger.debug("Binary payload static analysis failed: %s", e)
+
         # Always fetch command history and classify the current request
         command_history = store.get_command_history(session_id)
-        decision = classify_http_request(classifier, context, command_history=command_history)
+        neural_model = getattr(request.app.state, "neural_model", None)
+        decision = classify_http_request(
+            classifier,
+            context,
+            command_history=command_history,
+            neural_model=neural_model,
+            triage_features=triage_features
+        )
         
-        # Update command history with the current extracted command
+        # Update command history with meaningful commands / payloads
         extracted_cmd = decision.get("extracted_command", "")
-        if extracted_cmd and extracted_cmd != "/":
+        if extracted_cmd and extracted_cmd != "/" and (decision.get("label") != "Safe" or request.url.query or raw_body):
             store.append_command_history(session_id, extracted_cmd)
 
         # Simple brute-force detection for HTTP login endpoints.
@@ -444,28 +592,58 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                     "severity_max": 8,
                     "http_findings": ["brute_force"],
                 }
-
-        # Determine base risk score from external neural network classification
-        confidence = decision.get("neural_confidence", 1.0)
-        ext_label = decision["label"].lower()
-        if decision.get("action") == "drop_and_block":
-            base_risk_score = 100.0
-        elif ext_label == "safe":
-            base_risk_score = confidence * 10.0
-        elif ext_label == "recon":
-            base_risk_score = 30.0 + (confidence * 20.0)
-        elif ext_label in ("downloader", "exploit"):
-            base_risk_score = 50.0 + (confidence * 25.0)
-        else: # Destructive, APT
-            base_risk_score = 75.0 + (confidence * 25.0)
-
-        # Check for Insider Threat if source IP is internal/private
-        is_internal = _is_private_ip(src_ip)
-        risk_score = base_risk_score
+                
+        # --- Logical Segregation: Flag External Reconnaissance ---
+        is_accessing_internal = any(path_lower.startswith(p) for p in internal_paths)
+        if not is_internal and is_accessing_internal:
+            # External users probing internal endpoints. Let it process normally, 
+            # but force classification to at least Recon.
+            if decision["label"] == "Safe":
+                decision["label"] = "Recon"
+                decision["rule"] = "Unauthorized reconnaissance of internal endpoint"
+                decision["action"] = "redirect_to_decoy"
+                if "discovery" not in decision.get("mitre_tactics", []):
+                    decision.setdefault("mitre_tactics", []).append("discovery")
+                decision["severity_max"] = max(decision.get("severity_max", 0), 4)
+        # Check for Insider Threat if this is the Internal HTTP Guard
+        risk_score = 0.0
         insider_threat = None
         
         if is_internal:
             from interfaces.insider_contract import UserBehaviorSignal
+            
+            # 1. Resolve corporate session from cookie or Authorization header
+            auth_cookie = request.cookies.get("nexus_session")
+            auth_header = request.headers.get("authorization", "")
+            auth_bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+            token = auth_cookie or auth_bearer
+            
+            session_profile = corporate_dir.validate_session(token) if token else None
+            
+            # Backward-compatibility fallback if tests or scripts pass explicit x-user-id header
+            if not session_profile and request.headers.get("x-user-id"):
+                legacy_uid = request.headers.get("x-user-id")
+                emp = corporate_dir.get_employee(legacy_uid)
+                if emp:
+                    session_profile = {
+                        "user_id": emp["user_id"],
+                        "name": emp["name"],
+                        "role": emp["role"],
+                        "department": emp["department"],
+                        "assigned_ip": emp["assigned_ip"],
+                        "assigned_device": emp["assigned_device"],
+                        "whitelisted_ips": emp["whitelisted_ips"],
+                    }
+                else:
+                    session_profile = {
+                        "user_id": legacy_uid,
+                        "name": legacy_uid,
+                        "role": request.headers.get("x-user-role", "normal"),
+                        "department": request.headers.get("x-user-department", "General_Staff"),
+                        "assigned_ip": "",
+                        "assigned_device": "",
+                        "whitelisted_ips": [],
+                    }
             
             # Extract simulated features from HTTP JSON body if available
             extra_details = {}
@@ -477,22 +655,62 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 except Exception:
                     pass
             
+            user_id = session_profile.get("user_id", "unknown_user") if session_profile else "unknown_user"
+            user_role = session_profile.get("role", "normal") if session_profile else "normal"
+            user_dept = session_profile.get("department", "General_Staff") if session_profile else "General_Staff"
+            
             action_details = {
                 "command": extra_details.get("command", decision.get("extracted_command", "")),
                 "file_path": request.url.path,
-                "role": request.headers.get("x-user-role", "normal"),
+                "role": user_role,
+                "department": user_dept,
                 **extra_details
             }
             
             # Dynamic failed_sudo check: if command starts with sudo and user is not admin, mark it failed
             cmd_val = action_details.get("command", "")
-            role_val = action_details.get("role", "normal").lower()
+            role_val = user_role.lower()
             if cmd_val and cmd_val.strip().lower().startswith("sudo"):
-                if "admin" not in role_val:
+                if "admin" not in role_val and "devops" not in user_dept.lower():
                     action_details["sudo_failed"] = True
-            
+
+            # Use Neural Model and MITRE annotator to determine command intention
+            neural_model = getattr(app.state, "neural_model", None)
+            cmd_intent = "Safe"
+            cmd_confidence = 1.0
+            cmd_mitre_tactics = []
+            cmd_severity_max = 0
+
+            if cmd_val and cmd_val.strip() and cmd_val != "/":
+                from core.mitre.session_annotator import annotate_session
+                try:
+                    ann = annotate_session([cmd_val])
+                    cmd_mitre_tactics = [t for t, v in ann.get("tactic_vector", {}).items() if v > 0]
+                    cmd_severity_max = ann.get("severity_max", 0)
+                except Exception:
+                    pass
+
+                if neural_model is not None:
+                    from agents.decision import _classify_neural
+                    try:
+                        n_res = _classify_neural(cmd_val, neural_model, is_http=False)
+                        if n_res:
+                            cmd_intent = n_res[1]
+                            cmd_confidence = n_res[2]
+                    except Exception:
+                        pass
+
+            action_details["neural_intent"] = cmd_intent
+            action_details["neural_confidence"] = cmd_confidence
+            action_details["mitre_tactics"] = cmd_mitre_tactics
+            action_details["severity_max"] = cmd_severity_max
+
+            if cmd_mitre_tactics:
+                decision["mitre_tactics"] = list(set(decision.get("mitre_tactics", []) + cmd_mitre_tactics))
+                decision["severity_max"] = max(decision.get("severity_max", 0), cmd_severity_max)
+
             signal = UserBehaviorSignal(
-                user_id=request.headers.get("x-user-id", "unknown_user"),
+                user_id=user_id,
                 session_id=session_id,
                 timestamp=datetime.now().isoformat() + "Z",
                 action_type=request.method,
@@ -501,26 +719,101 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                 is_internal=True
             )
             insider_threat = insider_detector.analyze_signal(signal)
-            # Combine external and internal threat risk scores
-            risk_score = max(insider_threat.risk_score, base_risk_score)
+            
+            # Internal HTTP Guard combines behavioral analysis with payload intelligence
+            risk_score = insider_threat.risk_score
+            is_anomaly = (risk_score > 30.0) or bool(insider_threat.anomaly_factors)
+            
+            if is_anomaly:
+                decision["label"] = "Insider Anomaly"
+                decision["rule"] = ", ".join(insider_threat.anomaly_factors) or "Internal behavioral anomaly"
+            elif decision.get("label") in ("Safe", None):
+                decision["label"] = "Safe"
+                decision["rule"] = "Normal session behavior"
+            
+            # Policy Decision for Internal
+            if risk_score <= 30.0:
+                policy_decision = "NORMAL"
+                action = "forward"
+            elif risk_score <= 60.0:
+                policy_decision = "MONITOR"
+                action = "forward"
+                decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
+            elif risk_score <= 80.0:
+                policy_decision = "ALERT"
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
+            else:
+                policy_decision = "CONTAIN"
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or f"Policy: Internal containment triggered. Risk level: {risk_score}%"
 
-        # Policy Engine Decides
-        if risk_score <= 30.0:
-            policy_decision = "NORMAL"
-            action = "forward"
-        elif risk_score <= 60.0:
-            policy_decision = "MONITOR"
-            action = "forward"
-            decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
-        elif risk_score <= 80.0:
-            policy_decision = "ALERT"
-            action = "redirect_to_decoy"
-            decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
+            # Deep XAI Integration for Internal
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+
+            xai_event = ClassificationEvent(
+                session_id=session_id,
+                timestamp=signal.timestamp,
+                src_ip=src_ip,
+                commands=[action_details["command"]] if action_details["command"] else [],
+                classification=decision["label"],
+                confidence=1.0,
+                mitre_techniques=[],
+                features_used={
+                    "insider_threat": is_anomaly,
+                    "is_internal": True,
+                    "role": user_role,
+                    "department": user_dept,
+                    "user_id": user_id,
+                    "employee_name": (session_profile or {}).get("name", ""),
+                    "anomaly_factors": insider_threat.anomaly_factors,
+                    "policy_decision": policy_decision,
+                    "risk_score": risk_score,
+                    "evidence_features": {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {},
+                    "headers": dict(request.headers),
+                }
+            )
+            xai_decision = RoutingDecision(
+                session_id=session_id,
+                action=action,
+                target="upstream" if action == "forward" else "decoy",
+                reason=decision["rule"]
+            )
+            narrator = xai_detector
+            xai_explanation = narrator.generate_explanation(xai_event, xai_decision)
+
+            decision["xai_summary"] = xai_explanation.summary
+            decision["xai_detailed"] = xai_explanation.detailed
+            decision["xai_risk_score"] = xai_explanation.risk_score
+            decision["xai_recommendations"] = xai_explanation.recommended_actions
+            decision["xai_feature_attributions"] = xai_explanation.feature_attributions
+            decision["xai_token_attributions"] = xai_explanation.token_attributions
+            decision["xai_counterfactual"] = xai_explanation.counterfactual_recourse
+            decision["xai_telemetry_audit"] = xai_explanation.telemetry_audit
+            decision["xai_deception"] = xai_explanation.deception_rationale
+            
         else:
-            policy_decision = "CONTAIN"
-            action = "drop_and_block"
-            decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
-            decision["label"] = "Destructive"
+            # External Guard operates SOLELY on neural threat classification
+            ext_label = decision["label"]
+            risk_score = 0.0
+
+            if decision.get("action") == "drop_and_block":
+                policy_decision = "CONTAIN"
+                action = "drop_and_block"
+            elif ext_label == "Safe":
+                policy_decision = "NORMAL"
+                action = "forward"
+            elif ext_label == "Recon":
+                policy_decision = "MONITOR"
+                action = "forward"
+            elif ext_label in ("Downloader", "Exploit"):
+                policy_decision = "ALERT"
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or f"Policy: Threat detected ({ext_label}), rerouted to decoy"
+            else:  # Destructive, ADVANCED_APT
+                policy_decision = "CONTAIN"
+                action = "redirect_to_decoy"
+                decision["rule"] = decision.get("rule") or f"Policy: Severe threat detected ({ext_label}), rerouted to decoy"
 
         decision["action"] = action
         target = f"http://{real_host}:{real_port}"
@@ -532,14 +825,24 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             pass
         elif ctx.get("redirected_to_decoy"):
             should_redirect_to_decoy = True
-        elif action == "redirect_to_decoy" or (galah_enabled and decision.get("label") not in ("Safe", "Recon")):
+        elif action == "redirect_to_decoy" or (galah_enabled and not is_internal and decision.get("label") not in ("Safe", "Recon")):
             should_redirect_to_decoy = True
 
         if action == "drop_and_block":
             target = "blocked"
             block_seconds = block_duration_minutes * 60
-            store.mark_blocked(session_id, block_seconds)
-            nft.block_ip(src_ip, reason=decision.get("rule"))
+            
+            # ONLY ban IP in kernel firewall if it is an actual brute-force attack
+            is_bruteforce = (
+                "brute_force" in decision.get("http_findings", [])
+                or "brute-force" in str(decision.get("rule", "")).lower()
+                or "brute force" in str(decision.get("rule", "")).lower()
+                or store.get_counter(session_id, "login_attempts") >= brute_force_threshold
+            )
+            if is_bruteforce:
+                store.mark_blocked(session_id, block_seconds)
+                nft.block_ip(src_ip, reason=decision.get("rule"))
+                
             result = JSONResponse(
                 status_code=403,
                 content={
@@ -554,25 +857,48 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             if decoy:
                 target = decoy.base_url
                 
-                # Check for first-time redirection or behavior escalation
+                # Check for first-time redirection, missing page, new path, or behavior escalation
                 prev_label = ctx.get("decoy_label")
                 prev_severity = ctx.get("decoy_severity_max", 0)
+                prev_path = ctx.get("decoy_last_path")
+                prev_query = ctx.get("decoy_last_query", "")
+                
+                target_rel_path = request.url.path.strip("/")
+                if not target_rel_path:
+                    target_file = "index.html"
+                else:
+                    target_file = f"{target_rel_path}.html"
+                decoy_html = getattr(decoy, "html_dir", getattr(decoy, "host_dir", "")) or ""
+                file_exists = (
+                    os.path.exists(os.path.join(decoy_html, target_file)) or 
+                    os.path.exists(os.path.join(decoy_html, target_rel_path))
+                )
+
+                is_attack = decision.get("label", "Safe") != "Safe"
+                is_in_decoy = bool(ctx.get("redirected_to_decoy"))
+                is_interactive_action = (
+                    request.method.upper() in ("POST", "PUT", "DELETE", "PATCH") or
+                    bool(request.url.query) or
+                    request.url.path != prev_path
+                )
                 is_escalation = (
-                    not ctx.get("redirected_to_decoy") or 
-                    (decision["label"] != "Safe" and (
+                    not is_in_decoy or 
+                    not file_exists or
+                    is_interactive_action or
+                    (is_attack and (
                         decision["label"] != prev_label or 
                         decision["severity_max"] > prev_severity
                     ))
                 )
                 
-                if is_escalation and galah_enabled and honeypot_gen:
+                if is_escalation and honeypot_gen:
                     try:
                         await honeypot_gen.prepare_decoy_files(
                             session_id=session_id,
                             decision=decision,
                             request=request,
                             body_str=body_str,
-                            html_dir=decoy.html_dir,
+                            html_dir=decoy.host_dir,
                             container_id=decoy.container_id,
                             decoys_manager=decoys
                         )
@@ -588,6 +914,13 @@ def create_http_guard_app(config: Dict) -> FastAPI:
                         "decoy_rule": decision.get("rule"),
                         "decoy_mitre_tactics": decision.get("mitre_tactics", []),
                         "decoy_severity_max": decision.get("severity_max", 0),
+                        "decoy_last_path": request.url.path,
+                        "decoy_last_query": str(request.url.query or ""),
+                    })
+                else:
+                    store.update_context(session_id, {
+                        "redirected_to_decoy": True,
+                        "decoy_base_url": target,
                     })
                 
                 # Decoy Cold-Start Fix
@@ -614,56 +947,19 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             try:
                 result = await forward_request(target, request, raw_body)
             except Exception:
-                if fallback_on_error:
-                    decoy = decoys.get_or_spawn_http_decoy(session_id)
-                    if decoy:
-                        target = decoy.base_url
-                        
-                        if galah_enabled and honeypot_gen:
-                            try:
-                                await honeypot_gen.prepare_decoy_files(
-                                    session_id=session_id,
-                                    decision=decision,
-                                    request=request,
-                                    body_str=body_str,
-                                    html_dir=decoy.html_dir,
-                                    container_id=decoy.container_id,
-                                    decoys_manager=decoys
-                                )
-                            except Exception:
-                                pass
+                result = JSONResponse(
+                    status_code=502,
+                    content={"error": "real_service_unreachable"},
+                )
 
-                        store.update_context(session_id, {
-                            "redirected_to_decoy": True,
-                            "decoy_base_url": target,
-                            "decoy_class_id": decision["class_id"],
-                            "decoy_label": decision["label"],
-                            "decoy_rule": decision.get("rule") or "Real service offline, fallback to decoy",
-                            "decoy_mitre_tactics": decision.get("mitre_tactics", []),
-                            "decoy_severity_max": decision.get("severity_max", 0),
-                        })
-                        try:
-                            result = await forward_request(target, request, raw_body)
-                        except Exception:
-                            result = JSONResponse(
-                                status_code=502,
-                                content={"error": "upstream_failure", "target": target},
-                            )
-                    else:
-                        result = JSONResponse(
-                            status_code=502,
-                            content={"error": "real_service_unreachable"},
-                        )
-                else:
-                    result = JSONResponse(
-                        status_code=502,
-                        content={"error": "real_service_unreachable"},
-                    )
+        aggregated = aggregate_threat_signals(decision, {}, is_internal_traffic=False)
 
         event = {
             "timestamp": time.time(),
             "session_id": session_id,
             "source_ip": src_ip,
+            "threat_type": aggregated.get("threat_type", "EXTERNAL"),
+            "threat_score": aggregated.get("score", 0.0),
             "method": request.method,
             "path": request.url.path,
             "query": str(request.url.query or ""),
@@ -688,85 +984,24 @@ def create_http_guard_app(config: Dict) -> FastAPI:
             if decision["label"] in ("Recon", "Downloader", "Exploit", "Destructive", "ADVANCED_APT"):
                 event["suspicious"] = True
 
-        # Generate XAI Explanation
-        from interfaces.xai_contract import ClassificationEvent, RoutingDecision
         is_insider_active = is_internal and insider_threat is not None
-        
+
         event["risk_score"] = risk_score
         event["policy_decision"] = policy_decision
-        event["user_id"] = request.headers.get("x-user-id", "") if is_internal else ""
-        event["client_ip"] = src_ip
         if is_insider_active:
+            event["user_id"] = user_id
             event["evidence_features"] = {k: v for k, v in insider_threat.features.items() if v > 0} if insider_threat.features else {}
+        event["client_ip"] = src_ip
 
-        if is_internal:
-            # --- GlassShield Deep XAI for the Internal Guard ---
-            # Internal HTTP Guard EXCLUSIVELY uses insider risk scoring; the
-            # narrator computes TreeSHAP attribution + counterfactual recourse.
-            xai_features = {
-                "insider_threat": is_insider_active,
-                "is_internal": True,
-                "role": request.headers.get("x-user-role", "normal"),
-                "department": request.headers.get("x-dept", ""),
-                "risk_score": risk_score,
-                "policy_decision": policy_decision,
-                "evidence_features": insider_threat.features if insider_threat else {},
-                "anomaly_factors": insider_threat.anomaly_factors if insider_threat else [],
-                "headers": dict(request.headers),
-            }
-            xai_event = ClassificationEvent(
-                session_id=session_id,
-                timestamp=datetime.now().isoformat() + "Z",
-                src_ip=src_ip,
-                commands=[extracted_cmd] if extracted_cmd else [path],
-                classification="Insider Anomaly" if is_insider_active else "Safe",
-                confidence=1.0,
-                mitre_techniques=decision.get("mitre_tactics", []),
-                features_used=xai_features,
-            )
-            xai_decision = RoutingDecision(
-                session_id=session_id,
-                action=action,
-                target="decoy" if action == "redirect_to_decoy" else ("blocked" if action == "drop_and_block" else "upstream"),
-                reason=decision.get("rule") or "Internal behavior monitoring",
-            )
-            explanation = xai_detector.generate_explanation(xai_event, xai_decision)
-        else:
-            xai_features = {
-                "risk_score": risk_score,
-                "policy_decision": policy_decision,
-                "headers": dict(request.headers),
-            }
-            xai_event = ClassificationEvent(
-                session_id=session_id,
-                timestamp=datetime.now().isoformat() + "Z",
-                src_ip=src_ip,
-                commands=[extracted_cmd] if extracted_cmd else [],
-                classification=decision["label"],
-                confidence=decision.get("neural_confidence", 1.0),
-                mitre_techniques=decision.get("mitre_tactics", []),
-                features_used=xai_features,
-            )
-            xai_decision = RoutingDecision(
-                session_id=session_id,
-                action=action,
-                target=target,
-                reason=decision.get("rule", "Classification triggered"),
-            )
-            # Pass the live neural model handle for gradient-based token saliency
-            from agents.decision import _neural_model as active_neural_model
-            explanation = xai_detector.generate_explanation(xai_event, xai_decision, active_neural_model)
-
-        # --- Event Packing: attach the full GlassShield structure to the SSE stream ---
-        event["xai_summary"] = explanation.summary
-        event["xai_detailed"] = explanation.detailed
-        event["xai_risk_score"] = explanation.risk_score
-        event["xai_recommendations"] = explanation.recommended_actions
-        event["xai_feature_attributions"] = explanation.feature_attributions
-        event["xai_token_attributions"] = explanation.token_attributions
-        event["xai_counterfactual"] = explanation.counterfactual_recourse
-        event["xai_telemetry_audit"] = explanation.telemetry_audit
-        event["xai_deception"] = explanation.deception_rationale
+        event["xai_summary"] = decision.get("xai_summary", "")
+        event["xai_detailed"] = decision.get("xai_detailed", "")
+        event["xai_risk_score"] = decision.get("xai_risk_score", risk_score)
+        event["xai_recommendations"] = decision.get("xai_recommendations", [])
+        event["xai_feature_attributions"] = decision.get("xai_feature_attributions", {})
+        event["xai_token_attributions"] = decision.get("xai_token_attributions", [])
+        event["xai_counterfactual"] = decision.get("xai_counterfactual", {})
+        event["xai_telemetry_audit"] = decision.get("xai_telemetry_audit", {})
+        event["xai_deception"] = decision.get("xai_deception", None)
 
         # Push to live dashboard stream queue
         try:
@@ -778,7 +1013,47 @@ def create_http_guard_app(config: Dict) -> FastAPI:
         store.write_event(session_id, event)
         with open(threat_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
+
+        # Dedicated Insider Threat Event Logging
+        if is_internal:
+            is_whitelisted = corporate_dir.check_ip_whitelist(user_id, src_ip) if (session_profile and user_id != "unknown_user") else True
+            insider_log_record = {
+                "timestamp": time.time(),
+                "session_id": session_id,
+                "user_id": user_id,
+                "employee_name": session_profile.get("name", user_id) if session_profile else user_id,
+                "department": user_dept,
+                "role": user_role,
+                "client_ip": src_ip,
+                "assigned_ip": session_profile.get("assigned_ip", "") if session_profile else "",
+                "whitelisted_ip": is_whitelisted,
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query or ""),
+                "label": decision["label"],
+                "policy_decision": policy_decision,
+                "action": action,
+                "risk_score": risk_score,
+                "mitre_tactics": decision.get("mitre_tactics", []),
+                "severity_max": decision.get("severity_max", 0),
+                "evidence_features": event.get("evidence_features", {}),
+                "xai_summary": decision.get("xai_summary", ""),
+                "xai_detailed": decision.get("xai_detailed", ""),
+                "rule": decision.get("rule", "")
+            }
+            try:
+                with open(insider_log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(insider_log_record) + "\n")
+            except Exception:
+                pass
+
         print(json.dumps(event), flush=True)
+
+        if is_internal and token and hasattr(result, "set_cookie"):
+            try:
+                result.set_cookie(key="nexus_session", value=token, path="/", samesite="lax")
+            except Exception:
+                pass
 
         return result
 

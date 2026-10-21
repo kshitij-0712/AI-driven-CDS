@@ -128,9 +128,10 @@ class TestNeuralTokenSaliency:
     def neural_model(cls):
         try:
             from agents import decision
-            if not decision.load_neural_model():
+            model = decision.load_neural_model()
+            if not model:
                 pytest.skip("neural model unavailable")
-            return decision._neural_model
+            return model
         except ImportError:
             pytest.skip("PyTorch not installed")
 

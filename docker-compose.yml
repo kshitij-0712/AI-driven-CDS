@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   adaptiveshield:
     build:
@@ -16,21 +14,14 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./src:/app/src
       - ./runtime:/app/runtime
       - ./config:/app/config
       - ./models:/app/models:ro
+      - ./src:/app/src
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
-      interval: 10s
+      interval: 60s
       timeout: 5s
       retries: 3
 
-  dummy-backend:
-    image: python:3.11-slim
-    container_name: adaptiveshield-dummy-backend
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - .:/app
-    working_dir: /app
-    command: python dummy_app/server.py

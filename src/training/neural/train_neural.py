@@ -6,15 +6,16 @@ BiLSTM + Structured Features architecture for threat classification.
 
 Usage:
     # From project root on Windows:
-    .venv\Scripts\python src\training\neural\train_neural.py
+    .venv/Scripts/python src/training/neural/train_neural.py
     
     # With options:
-    .venv\Scripts\python src\training\neural\train_neural.py --epochs 30 --batch-size 64
+    .venv/Scripts/python src/training/neural/train_neural.py --epochs 30 --batch-size 64
 """
 
 import sys
 import argparse
 from pathlib import Path
+from typing import Tuple
 
 # Add src to path for imports
 src_path = Path(__file__).parent.parent.parent
@@ -34,20 +35,78 @@ from training.neural.synthetic import generate_synthetic_data
 from training.neural.losses import create_loss_function, compute_class_weights
 from training.neural.trainer import (
     NeuralTrainer, 
-    save_training_results,
+    save_training_results, 
     print_confusion_matrix
 )
 
 
+def load_corpus_splits(corpus_dir: str, max_length: int, include_synthetic: bool = True) -> Tuple:
+    """Load pre-split training corpus from assemble_training_corpus.py.
+
+    Reads train.csv / val.csv / test_azure.csv + test_public.csv (concatenated
+    as the test set). Bypasses load_dataset's random re-split — the assembly
+    script already guarantees disjoint, stratified, danger-balanced splits
+    with an Azure-domain held-out set.
+    """
+    import pandas as pd
+    cdir = Path(corpus_dir)
+    required = ["train.csv", "val.csv", "test_azure.csv", "test_public.csv"]
+    for name in required:
+        p = cdir / name
+        if not p.exists():
+            raise FileNotFoundError(
+                f"{name} not found in {cdir}. Run "
+                f"src/training/neural/assemble_training_corpus.py first."
+            )
+    tokenizer = CommandTokenizer(max_length=max_length)
+    train_df = pd.read_csv(cdir / "train.csv")
+    val_df = pd.read_csv(cdir / "val.csv")
+    test_df = pd.concat(
+        [pd.read_csv(cdir / "test_azure.csv"), pd.read_csv(cdir / "test_public.csv")],
+        ignore_index=True,
+    )
+    if not include_synthetic:
+        if "origin" in train_df.columns:
+            n0 = len(train_df)
+            train_df = train_df[train_df["origin"] != "synthetic"]
+            print(f"  --no-synthetic: filtered out {n0 - len(train_df)} synthetic rows from train")
+        if "origin" in val_df.columns:
+            val_df = val_df[val_df["origin"] != "synthetic"]
+
+    # Defensive: drop rows with empty/NaN commands — zero-length sequences
+    # crash pack_padded_sequence (observed in the shared-folder corpus build)
+    def _drop_empty(df, name):
+        n0 = len(df)
+        df = df[df["commands"].notna()]
+        df = df[df["commands"].astype(str).str.strip() != ""]
+        dropped = n0 - len(df)
+        if dropped:
+            print(f"  dropped {dropped} empty-command rows from {name}")
+        return df
+    train_df = _drop_empty(train_df, "train")
+    val_df = _drop_empty(val_df, "val")
+    test_df = _drop_empty(test_df, "test")
+    print(f"Corpus splits loaded: train={len(train_df)} val={len(val_df)} "
+          f"test={len(test_df)} (azure-heldout + public)")
+    return (ThreatDataset(train_df, tokenizer),
+            ThreatDataset(val_df, tokenizer),
+            ThreatDataset(test_df, tokenizer),
+            tokenizer)
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Train brain_v5_neural model')
+    parser = argparse.ArgumentParser(description='Train brain_neural model')
     
     # Data arguments
     parser.add_argument('--data-path', type=str, default='data/exports/sessions_complete.csv',
                         help='Path to sessions_complete.csv')
-    parser.add_argument('--max-length', type=int, default=512,
+    parser.add_argument('--corpus-dir', type=str, default=None,
+                        help='Pre-split corpus dir from assemble_training_corpus.py '
+                             '(train/val/test_azure/test_public CSVs). Overrides '
+                             '--data-path and the random re-split.')
+    parser.add_argument('--max-length', type=int, default=5500,
                         help='Maximum command sequence length')
-    parser.add_argument('--downsample-safe', type=int, default=5000,
+    parser.add_argument('--downsample-safe', type=int, default=0,
                         help='Downsample Safe class to this size (0 to disable)')
     
     # Synthetic data arguments
@@ -86,9 +145,9 @@ def main():
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
                         help='Maximum training epochs')
-    parser.add_argument('--batch-size', type=int, default=64,
+    parser.add_argument('--batch-size', type=int, default=128,
                         help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-3,
+    parser.add_argument('--lr', type=float, default=1e-5,
                         help='Learning rate')
     parser.add_argument('--weight-decay', type=float, default=1e-4,
                         help='Weight decay (L2 regularization)')
@@ -101,13 +160,18 @@ def main():
                         help='Loss function type')
     parser.add_argument('--focal-gamma', type=float, default=2.0,
                         help='Focal loss gamma parameter')
+    parser.add_argument('--cost-preset', type=str, default='default',
+                        choices=['default', 'danger'],
+                        help="Class-cost preset: 'default' (Safe=1..APT=20) or "
+                             "'danger' (Safe/Recon=1, danger classes 12-18 — "
+                             "prioritizes catching Downloader/Exploit/Destructive/APT)")
     
     # Output arguments
     parser.add_argument('--output-dir', type=str, default='models',
                         help='Output directory for model')
     parser.add_argument('--checkpoint-dir', type=str, default='checkpoints',
                         help='Checkpoint directory')
-    parser.add_argument('--model-name', type=str, default='brain_v5_neural',
+    parser.add_argument('--model-name', type=str, default='brain_neural',
                         help='Model filename (without extension)')
     
     # Other arguments
@@ -117,12 +181,22 @@ def main():
                         help='Disable CUDA')
     parser.add_argument('--num-workers', type=int, default=0,
                         help='DataLoader workers (0 for Windows)')
+
+    # Crash-resume arguments
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume training after a crash/OOM: loads '
+                             'checkpoints/latest_model.pt (falls back to '
+                             'checkpoints/best_model.pt if absent). Use the '
+                             'SAME model/loss/corpus args as the original run.')
+    parser.add_argument('--resume-from', type=str, default=None,
+                        help='Explicit checkpoint path to resume from '
+                             '(overrides --resume auto-discovery)')
     
     args = parser.parse_args()
     
     # Auto-set model name if MITRE-only and default model name
-    if args.mitre_only and args.model_name == 'brain_v5_neural':
-        args.model_name = 'brain_v5_mitre_only'
+    if args.mitre_only and args.model_name == 'brain_neural':
+        args.model_name = 'brain_mitre_only'
     
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -133,16 +207,16 @@ def main():
     # Device
     device = 'cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu'
     print(f"\n{'='*60}")
-    print(" AdaptiveShield Phase 5 Neural Model Training")
+    print(" AdaptiveShield Neural Model Training")
     print('='*60)
     print(f"Device: {device}")
     if device == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
-    # Generate synthetic data if needed
+    # Generate synthetic data if needed (only for online generation without pre-split corpus)
     synthetic_data = None
-    if not args.no_synthetic:
+    if not args.no_synthetic and not args.corpus_dir:
         print(f"\nGenerating synthetic data...")
         print(f"  Recon sessions: {args.synthetic_recon}")
         print(f"  Exploit sessions: {args.synthetic_exploit}")
@@ -153,24 +227,32 @@ def main():
         )
     
     # Load and split dataset
-    print(f"\nLoading dataset from {args.data_path}...")
-    if args.use_semantic_labels:
-        print(f"Using semantic labels (mode={args.label_mode})")
-    if args.mitre_only:
-        print(f"Training MITRE-only model (21 features only, no binary features)")
-    
-    train_dataset, val_dataset, test_dataset, tokenizer = load_dataset(
-        csv_path=args.data_path,
-        max_length=args.max_length,
-        downsample_safe=args.downsample_safe if args.downsample_safe > 0 else None,
-        include_synthetic=not args.no_synthetic,
-        synthetic_data=synthetic_data,
-        random_state=args.seed,
-        use_semantic_labels=args.use_semantic_labels,
-        label_mode=args.label_mode,
-        precomputed_labels_path=args.precomputed_labels if args.use_semantic_labels else None,
-        mitre_only=args.mitre_only
-    )
+    print(f"\nLoading dataset...")
+    if args.corpus_dir:
+        print(f"Using pre-split corpus from {args.corpus_dir}")
+        train_dataset, val_dataset, test_dataset, tokenizer = load_corpus_splits(
+            corpus_dir=args.corpus_dir,
+            max_length=args.max_length,
+            include_synthetic=not args.no_synthetic,
+        )
+    else:
+        print(f"Loading dataset from {args.data_path}...")
+        if args.use_semantic_labels:
+            print(f"Using semantic labels (mode={args.label_mode})")
+        if args.mitre_only:
+            print(f"Training MITRE-only model (21 features only, no binary features)")
+        train_dataset, val_dataset, test_dataset, tokenizer = load_dataset(
+            csv_path=args.data_path,
+            max_length=args.max_length,
+            downsample_safe=args.downsample_safe if args.downsample_safe > 0 else None,
+            include_synthetic=not args.no_synthetic,
+            synthetic_data=synthetic_data,
+            random_state=args.seed,
+            use_semantic_labels=args.use_semantic_labels,
+            label_mode=args.label_mode,
+            precomputed_labels_path=args.precomputed_labels if args.use_semantic_labels else None,
+            mitre_only=args.mitre_only
+        )
     
     # Get structured feature dimension
     structured_dim = train_dataset.structured_dim
@@ -193,7 +275,7 @@ def main():
     model = create_model(
         structured_dim=structured_dim,
         device=device,
-        model_type='mitre_only' if args.mitre_only else 'full',
+        model_type='unified',
         embed_dim=args.embed_dim,
         lstm_hidden=args.lstm_hidden,
         lstm_layers=args.lstm_layers,
@@ -210,12 +292,13 @@ def main():
     
     # Create loss function
     print(f"\nLoss function: {args.loss}")
-    train_labels = np.array([train_dataset[i]['label'].item() for i in range(len(train_dataset))])
+    train_labels = train_dataset.labels if hasattr(train_dataset, 'labels') else np.array([train_dataset[i]['label'].item() for i in range(len(train_dataset))])
     loss_fn = create_loss_function(
         loss_type=args.loss,
         labels=train_labels,
         gamma=args.focal_gamma,
-        num_classes=6
+        num_classes=6,
+        cost_preset=args.cost_preset
     )
     
     # Print class weights if applicable
@@ -234,6 +317,39 @@ def main():
         checkpoint_dir=args.checkpoint_dir
     )
     
+    # Crash resume: restore full training state before the loop
+    start_epoch = 0
+    if args.resume or args.resume_from:
+        ckpt_dir = Path(args.checkpoint_dir)
+        if args.resume_from:
+            resume_path = Path(args.resume_from)
+        else:
+            resume_path = 'latest_model.pt'
+            if not (ckpt_dir/resume_path).exists():
+                fallback = 'best_model.pt'
+                if (ckpt_dir/fallback).exists():
+                    print(f"\nNOTE: latest_model.pt not found (original run predates "
+                          f"per-epoch checkpoints); resuming from best_model.pt — "
+                          f"progress since its last improvement is lost.")
+                    resume_path = fallback
+        if not (ckpt_dir/resume_path).exists():
+            raise FileNotFoundError(f"Cannot resume: no checkpoint at {resume_path}")
+        try:
+            trainer.load_checkpoint(str(resume_path))
+            start_epoch = trainer.current_epoch
+            print(f"\nRESUMED from {resume_path}")
+            print(f"  completed epochs : {start_epoch}")
+            print(f"  best_val_f1      : {trainer.best_val_f1:.4f}")
+            print(f"  best_val_loss    : {trainer.best_val_loss:.4f}")
+            print(f"  no-improve count : {trainer.epochs_without_improvement}/{args.patience}")
+            print(f"  continuing at    : epoch {start_epoch + 1} of {args.epochs}")
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"Failed to load {resume_path}: checkpoint architecture does not "
+                f"match the model built from current args (check --embed-dim / "
+                f"--lstm-hidden / --lstm-layers / --mitre-only)."
+            ) from e
+    
     # Train
     print(f"\n{'='*60}")
     print(" Training")
@@ -247,7 +363,8 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         epochs=args.epochs,
-        verbose=True
+        verbose=True,
+        start_epoch=start_epoch
     )
     
     # Load best model for final evaluation
@@ -259,6 +376,56 @@ def main():
     # Test set evaluation
     test_metrics = trainer.print_classification_report(test_loader, "Test Set Results")
     
+    # ---------------------------------------------------------
+    # LLM Active Learning & Edge Case Generation
+    # ---------------------------------------------------------
+    print(f"\n{'='*60}")
+    print(" LLM Active Learning & Edge Cases")
+    print('='*60)
+    
+    if not args.no_synthetic:
+        import asyncio
+        import yaml
+        from training.neural.llm_synthetic import llm_review_misclassifications, llm_generate_edge_cases
+        
+        try:
+            with open("config/settings.yaml", "r") as f:
+                app_config = yaml.safe_load(f)
+                
+            print("\n1. LLM reviewing misclassifications and low-confidence predictions...")
+            class_names = ['Safe', 'Recon', 'Downloader', 'Exploit', 'Destructive', 'ADVANCED_APT']
+            reviews = asyncio.run(llm_review_misclassifications(
+                config=app_config,
+                model=model,
+                val_loader=val_loader,
+                class_names=class_names,
+                max_reviews=5
+            ))
+            
+            for i, rev in enumerate(reviews):
+                print(f"\n[Review {i+1}] Predicted: {rev['predicted_label']} (True: {rev['true_label']}, Conf: {rev['confidence']:.2f})")
+                print(f"Explanation: {rev['llm_explanation'][:200]}...")
+                
+            print("\n2. LLM generating adversarial edge cases for weak classes...")
+            # We target Exploit (3) as an example weak class for adversarial generation
+            edge_cases_df = asyncio.run(llm_generate_edge_cases(
+                config=app_config,
+                weak_class=3,
+                n_samples=2
+            ))
+            
+            if not edge_cases_df.empty:
+                edge_file = "data/exports/active_learning_edges.csv"
+                import os
+                if os.path.isfile(edge_file):
+                    edge_cases_df.to_csv(edge_file, mode='a', header=False, index=False)
+                else:
+                    edge_cases_df.to_csv(edge_file, index=False)
+                print(f"Successfully generated {len(edge_cases_df)} adversarial Exploit samples and saved to {edge_file} for the next training run.")
+                
+        except Exception as e:
+            print(f"LLM Active Learning failed (Make sure Ollama is running): {e}")
+
     # Save model and results
     save_training_results(
         model=model,

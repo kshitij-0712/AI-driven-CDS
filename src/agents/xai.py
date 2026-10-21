@@ -208,7 +208,21 @@ class NeuralTokenSaliency:
 
             x = torch.tensor([token_ids], dtype=torch.long)
             lengths = torch.tensor([seq_len], dtype=torch.long)
-            structured = self._mitre_structured_input("", neural_model, seq_len)
+            mitre_t = self._mitre_structured_input("", neural_model, seq_len)
+
+            import torch.nn as nn
+
+            def _encoder_dim(enc_attr: str, default_dim: int) -> int:
+                """Best-effort input dim of a structured encoder (first Linear in_features)."""
+                enc = getattr(neural_model, enc_attr, None)
+                if enc is not None:
+                    for m in enc.modules():
+                        if isinstance(m, nn.Linear):
+                            return int(m.in_features)
+                return default_dim
+
+            changes_t = torch.zeros([1, _encoder_dim("changes_encoder", 21)], dtype=torch.float32)
+            triage_t = torch.zeros([1, _encoder_dim("triage_encoder", 70)], dtype=torch.float32)
 
             captured: Dict[str, Any] = {}
 
@@ -217,7 +231,9 @@ class NeuralTokenSaliency:
 
             handle = emb_layer.register_forward_hook(_capture_output)
             try:
-                logits = neural_model(x, structured, lengths)
+                # Production (ground-truth) 4-modality forward signature:
+                # forward(commands, mitre, changes, triage, lengths=None, ...)
+                logits = neural_model(x, mitre_t, changes_t, triage_t, lengths)
             finally:
                 handle.remove()
 
@@ -593,6 +609,19 @@ def _get_compat_narrator() -> AdaptiveXAINarrator:
     if _compat_narrator is None:
         _compat_narrator = AdaptiveXAINarrator()
     return _compat_narrator
+
+
+# Runtime singleton for inline proxies: avoids re-loading the 25MB insider
+# pickle + TreeExplainer on every request (kept within a single narrator).
+_SHARED_NARRATOR = None
+
+
+def get_shared_narrator() -> "AdaptiveXAINarrator":
+    """Return a process-wide GlassShield narrator instance (lazy init)."""
+    global _SHARED_NARRATOR
+    if _SHARED_NARRATOR is None:
+        _SHARED_NARRATOR = AdaptiveXAINarrator()
+    return _SHARED_NARRATOR
 
 
 # Backward compatibility wrapper

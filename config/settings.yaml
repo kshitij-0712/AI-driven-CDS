@@ -37,15 +37,15 @@ ml:
   enriched_model_path: "./models/brain_v3_enriched.pkl"
   deep_v4_vectorizer_path: "./data/processed/ai_ready/vectorizer_deep_v4.pkl"
   deep_v4_model_path: "./models/brain_v4_deep.pkl"
-  # Phase 5: Neural model (BiLSTM + structured features)
-  neural_v5_model_path: "./models/brain_v5_neural.pkl"
-  neural_v5_state_path: "./models/brain_v5_neural.pt"
-  neural_v5_results_path: "./models/brain_v5_neural_results.json"
+  # Unified 4-Modality Neural Model (External Perimeter Guard)
+  neural_v6_model_path: "./models/brain_neural.pt"
 
 insider:
   export_dataset_path: "./data/exports/sessions_complete.csv"
   prepared_dataset_path: "./data/exports/insider_dataset.csv"
-  model_path: "./models/insider_model.pkl"
+  model_path: "./models/internal_insider_model.pkl"
+  calibration_path: "./models/internal_insider_calibration.json"
+  ml_risk_floor_band: 0.10
   cert_output_dir: "./data/cert-outputs"
   cert_baseline_dataset: "./data/exports/cert_baseline_dataset.csv"
 
@@ -104,12 +104,14 @@ http_guard:
   listen_port: 8000
   listen_port_ssl: 8443
   real_service_host: "127.0.0.1"
-  real_service_port: 8090
+  real_service_port: 8080
   request_timeout_sec: 10
   session_idle_timeout_sec: 900
   brute_force_threshold: 8
   block_duration_minutes: 60
-  fallback_on_error: true
+  internal_paths:
+    - "/admin"
+    - "/workspace"
 
 ssh_guard:
   enabled: true
@@ -130,7 +132,7 @@ ssh_guard:
   real_service_host: "127.0.0.1"
   real_service_port: 2200
   brute_force_threshold: 5  # Change it to 20 for real world scenarios
-  server_key_path: "./config/ssh_host_rsa_key"
+  server_key_path: "./config/ssh_host_rsa_key.key"
   allowed_keys_path: "./config/authorized_keys"
 
 decoys:
@@ -142,11 +144,13 @@ decoys:
   pre_pull_images:
     - "nginx:alpine"
     - "cowrie/cowrie:latest"
-    - "dinotools/dionaea:latest"
 
 runtime:
   db_path: "./runtime/adaptiveshield.db"
   threat_log_path: "./runtime/logs/threat_events.jsonl"
+  insider_log_path: "./runtime/logs/insider_events.jsonl"
+  corporate_db_path: "./runtime/corporate_directory.db"
+  host_runtime_dir: "/home/me/data/AdaptiveShield/runtime"
 
 galah_honeypot:
   enabled: true
@@ -155,12 +159,33 @@ galah_honeypot:
     output_path: "./runtime/app_structure.json"
     auto_crawl: true
   llm:
-    default_provider: "gemini"
-    router_policy: "dynamic"
-    gemini_model: "gemini-2.5-flash"
-    ollama_model: "llama3.2:1b"
-    ollama_url: "http://127.0.0.1:11434"
+    # --- Active Provider: Ollama (running on Windows Host via VirtualBox Host-Only adapter) ---
+    provider: "ollama"
+    api_url: "http://192.168.56.1:11434"
+    api_key: ""
+    model: "qwen2.5-coder:7b-instruct-q4_K_M"
+    timeout_sec: 45
+
+    # --- To switch back to Gemini, uncomment below and comment out Ollama above ---
+    # provider: "gemini"
+    # api_url: "https://generativelanguage.googleapis.com/v1beta"
+    # api_key: "${GEMINI_API_KEY}"
+    # model: "gemini-2.5-flash"
+    # timeout_sec: 30
   cache:
     enabled: true
     ttl_seconds: 3600
+
+
+internal_http_guard:
+  enabled: true
+  listen_port: 8001
+  real_service_host: "127.0.0.1"
+  real_service_port: 8090
+
+deception:
+  enabled: true
+  tarpit_delay_ms: 850
+  insider_anomaly_threshold: 0.70
+  canary_secret: "${ADSHIELD_CANARY_SECRET:-adaptiveshield_canary_deterministic_master_key_2026}"
 
