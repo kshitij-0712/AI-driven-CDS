@@ -8,7 +8,8 @@ AdaptiveShield is an autonomous cyber-deception system that proactively detects,
 **Current State**: Full multi-agent deception architecture is OPERATIONAL. 
 - **Production Unified Neural Model**: `models/brain_neural.pt` (722,484 params, 4 input modalities: raw commands/HTTP payloads, 21-d MITRE ATT&CK vectors, system changes, 70-d binary triage metrics). Evaluated test accuracy: **94.64%**, Macro F1: **0.9498**.
 - **Runtime Binary Triage Distiller**: `models/binary_triage_distiller.pkl` (knowledge-distilled from 3,095 MOTIF samples using Ghidra + angr teacher oracle). Evaluated test accuracy: **98.06%**, ROC-AUC: **0.9952**, inference latency: **~10.8 ms**.
-- **Real-Time SOC Command Center**: Web interface at `http://127.0.0.1:8000/dashboard` streaming live event timelines, threat classifications, risk gauges, and natural language XAI explanations via Server-Sent Events (SSE).
+- **Real-Time SOC Command Center**: Web interface at `http://127.0.0.1:8000/dashboard` (and `:8001/dashboard` for the internal perimeter) streaming live event timelines, threat classifications, risk gauges, and GlassShield XAI explanations — TreeSHAP attribution bars, token saliency heatmaps, counterfactual recourse, and deception rationales — via Server-Sent Events (SSE).
+- **GlassShield XAI Engine**: OPERATIONAL. Exact Shapley attribution over the insider RF, embedding-gradient token saliency over the live BiLSTM, counterfactual recourse, deception rationalizer, telemetry auditor, and the interactive SOC console (`/api/soc/whitelist_ip`, `/api/soc/grant_scope`) with zero-retraining overrides.
 
 ## 2. Agent Definitions
 
@@ -68,15 +69,18 @@ AdaptiveShield is an autonomous cyber-deception system that proactively detects,
    - Legacy models: `brain_v2_deep.pkl`, `brain_v3_enriched.pkl`, `brain_v4_deep.pkl`, `brain_v5_neural.pkl`.
 - Output: Routing Decision (`forward`, `redirect_to_decoy`, `drop_and_block`) and Deception Mutation triggers.
 
-### XAI Agent ("The Narrator")
-- Goal: Provide human-readable, plain-English explanations for autonomous security decisions.
-- Module: `AdaptiveXAINarrator` (`src/agents/xai.py`).
-- Responsibilities:
-  - Ingest `ClassificationEvent` and `RoutingDecision` interfaces.
-  - Map executed commands and payload fragments to exact MITRE ATT&CK technique IDs and tactics.
-  - Quantify risk score (0.0 to 100.0).
-  - Generate concise executive summaries, technical rationales, and recommended SOC analyst actions.
-- Output: `XAIExplanation` contract streamed directly to `/dashboard` and written to `runtime/logs/threat_events.jsonl`.
+### XAI Agent ("The Narrator" → GlassShield Glass-Box Engine)
+- Goal: Provide mathematical, human-readable glass-box explanations for autonomous security decisions — no decision path terminates in a black box.
+- Module: `AdaptiveXAINarrator` + GlassShield services (`src/agents/xai.py`), singleton via `get_shared_narrator()`.
+- Sub-services:
+  - **`TreeSHAPExplainer`** — exact Shapley values on the 35-feature insider RF (`models/internal_insider_model.pkl`); signed % contributions with heuristic fallback when the bundle is absent.
+  - **`NeuralTokenSaliency`** — gradient attribution $S(t) = \|\partial\,\text{logit}_{c^\star}/\partial\mathbf{E}(c_t)\|_2$ over the live 4-modality `UnifiedThreatClassifier` handle; attention-weights and MITRE-regex-span fallbacks.
+  - **`CounterfactualEngine`** — minimal actionable behavior change to drop an insider session below the 80% containment band (immutable roles/identity).
+  - **`DeceptionRationalizer`** — explains which decoy spans and why (Cowrie terminal trap vs. persona-mirrored Nginx workspace).
+  - **`TelemetryAuditor`** — verifies identity headers, network provenance, and kernel-enforcement state per event.
+- Runtime wiring: `decision.py` attaches the neural model handle for gradient saliency on every HTTP/SSH classification; `http_proxy.py` + `ssh_proxy.py` emit 9 `xai_*` fields into the SSE stream and packer.
+- Interactive SOC console (`http_proxy.py`): `POST /api/soc/whitelist_ip` (persisted SQLite whitelist) and `POST /api/soc/grant_scope` (persists into `config/company_profile.json` and **live-refreshes** the insider detector — zero retraining loops).
+- Output: `XAIExplanation` contract streamed to `/dashboard` and written to `runtime/logs/threat_events.jsonl`; dashboard XAI Inspector renders attribution bars, token heatmap, recourse cards, and SOC action buttons.
 
 ## 3. Data Flow
  1. Discovery finds open services and candidate decoy ports.
@@ -516,6 +520,14 @@ Added `src/training/neural/semantic_labels.py` which labels commands based on BE
 
 ## 13. Source File Inventory
 
+### GlassShield XAI Module
+| File | Description |
+|------|-------------|
+| `src/agents/xai.py` | TreeSHAPExplainer, NeuralTokenSaliency (gradient/attention/fallback), CounterfactualEngine, DeceptionRationalizer, TelemetryAuditor, AdaptiveXAINarrator + `get_shared_narrator()` singleton |
+| `src/interfaces/xai_contract.py` | `ClassificationEvent`, `RoutingDecision`, `XAIExplanation` with GlassShield fields |
+| `tests/unit/test_xai.py` | Dedicated GlassShield suite (TreeSHAP, saliency on real model, counterfactual, fallbacks) |
+| `src/orchestrator/templates/dashboard.html` | XAI Inspector: SHAP bars, token heatmap, recourse/deception cards, SOC buttons |
+
 ### MITRE ATT&CK Module (NEW)
 | File | Description |
 |------|-------------|
@@ -558,10 +570,11 @@ Added `src/training/neural/semantic_labels.py` which labels commands based on BE
 
 ## 14. Git Information
 - **Repository**: https://github.com/kshitij-0712/AI-driven-CDS.git
-- **Branch**: `model` (neural model development)
-- **Last binary analysis commit**: `dd9998b` (Phases 2-4 complete)
-- **MITRE + export files**: committed on top of dd9998b
-- **Neural model (Phase 5)**: `brain_v5_neural.pkl` trained and saved
+- **Branch**: `xai-dashboard` (integration superset: train_1 ground truth + GlassShield XAI module)
+- **Key lineage**: `train_1` (unified neural arch, insider module, deception engine) merged into `xai-dashboard` (33d793d GlassShield implementation), conflict-resolved per the documented policy
+- **Neural model (production)**: `models/brain_neural.pt` (4-modality UnifiedThreatClassifier)
+- **Insider model**: `models/internal_insider_model.pkl` (TreeSHAP-attributed RF)
+- **Verification**: 188/188 tests passing (`pytest tests/`)
 
 ## 15. Data Provenance Summary
 | Metric | Value |
@@ -599,6 +612,9 @@ AdaptiveShield operates as an autonomous, modular security proxy layer positione
 - **SSH Decoy Builder**: `src/honeypot/ssh_decoy_builder.py` -- Bakes intent-tailored breadcrumbs (fake AWS credentials, SSH keys, process tables).
 - **Triage Watcher**: `src/core/triage/watcher.py` -- Filesystem watchdog monitoring `./runtime/decoy_ssh/<session_id>/downloads/` to detect dropped binaries and trigger instant decoy mutation.
 - **Kernel Block Manager**: `src/interceptor/nftables_manager.py` -- Enforces L3/L4 iptables/nftables drop rules for destructive attackers.
+- **GlassShield XAI Engine**: `src/agents/xai.py` -- TreeSHAP attribution, gradient token saliency, counterfactual recourse, deception rationalizer, and telemetry auditor fused into every decision event.
+- **Interactive SOC Console**: `src/interceptor/http_proxy.py` (`/api/soc/whitelist_ip`, `/api/soc/grant_scope`) -- zero-retraining analyst overrides persisted into `CorporateDirectory` and `config/company_profile.json` (with live inspector profile refresh).
+- **XAI Inspector UI**: `src/orchestrator/templates/dashboard.html` -- SHAP attribution bars, token saliency heatmap (red glyphs > 0.4), counterfactual recourse cards, deception rationale cards, SOC action buttons.
 
 ### Multi-Stage Decision Pipeline
 1. **Rule Pre-Filter:** Fast regex matching for known attack vectors (SQLi, XSS, Path Traversal, Scanners, Destructive patterns).
@@ -606,7 +622,7 @@ AdaptiveShield operates as an autonomous, modular security proxy layer positione
 3. **MITRE ATT&CK Mapping:** Extracts 21 numeric tactical features per session, computing kill chain scores and tactic severity.
 4. **Neural Inference (`brain_neural.pt`):** Multi-modal BiLSTM classification using calibrated cost-sensitive risk floors.
 5. **MOTIF Binary Triage Distiller (`binary_triage_distiller.pkl`):** Ultra-fast (<11ms) classification of dropped executables.
-6. **XAI Explanation:** Plain-English summary, risk score (0-100), and recommended SOC actions generated for every decision.
+6. **GlassShield XAI Enrichment:** TreeSHAP behavioral attribution (insider), gradient token saliency (perimeter, live model handle), counterfactual recourse, deception rationale, and telemetry audit attached to every `XAIExplanation` streamed over SSE.
 
 ### Operational Runbook
 1. **Start Real Services / Simulation:**
