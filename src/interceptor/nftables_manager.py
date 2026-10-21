@@ -48,12 +48,18 @@ class NftablesManager:
 
     def block_ip(self, ip_addr: str, reason: Optional[str] = None) -> bool:
         _ = reason
-        # Protect loopback and localhost from accidental firewall lockouts
-        if not ip_addr or ip_addr in ("127.0.0.1", "::1", "localhost", "unknown"):
+        # Exemption commented out per user request so local test IP can be verified getting blocked in nftables:
+        # if not ip_addr or ip_addr in ("127.0.0.1", "::1", "localhost", "unknown"):
+        #     return False
+        if not ip_addr or ip_addr == "unknown":
             return False
         # Add drop rule for source IP in input chain.
         return self._run(["nft", "add", "rule", "inet", self.table_name, "input", "ip", "saddr", ip_addr, "drop"])
 
     def unblock_ip(self, ip_addr: str) -> bool:
-        # For simplicity, unblocking removes the block in DB. Under Linux nft, rule handles are deleted.
-        return True
+        # Delete matching rule handles or flush table
+        return self._run(f"nft flush table inet {self.table_name}")
+
+    def flush_all(self) -> bool:
+        """Clear all firewall blocks in adaptiveshield table."""
+        return self._run(["nft", "flush", "table", "inet", self.table_name])

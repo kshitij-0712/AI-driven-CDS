@@ -58,7 +58,8 @@ HTTP_ATTACK_PATTERNS = {
         r"select\s+.+\s+from",
         r"drop\s+table",
         r"--\s*$",
-        r"/\*.*\*/",
+        r"/\*!(?:[0-9]+)?.*?\*/",
+        r"/\*.*?\*/\s*(?:union|select|from|where|order|having|drop|insert|update|delete|limit|group)",
         r"waitfor\s+delay",
         r"sleep\s*\(\s*\d+\s*\)",
         r"pg_sleep\s*\(",
@@ -441,6 +442,26 @@ def classify_http_request(
 
     user_agent = str(headers.get("user-agent", ""))
 
+    # Fast path for benign static assets (favicons, images, CSS, fonts, static scripts without query or body)
+    clean_path = path.lower().split("?")[0]
+    is_static_asset = clean_path.endswith((
+        ".ico", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+        ".css", ".js", ".woff", ".woff2", ".ttf", ".eot"
+    ))
+    if is_static_asset and not query and not body and method.upper() == "GET":
+        return {
+            "class_id": 0,
+            "label": "Safe",
+            "rule": "Benign static asset request",
+            "neural_confidence": 1.0,
+            "suspicious": False,
+            "severity_max": 0,
+            "mitre_tactics": [],
+            "action": "forward",
+            "risk_score": 0.0,
+            "probabilities": {name: (1.0 if name == "Safe" else 0.0) for name in CLASS_NAMES},
+        }
+
     # --- Build the synthetic command (Raw HTTP Format) ---
     # The neural model was trained on full HTTP requests in synthetic_batches.csv,
     # so we must reconstruct the raw HTTP envelope (Method + Path + Headers + Body).
@@ -467,11 +488,18 @@ def classify_http_request(
     # Do not chain full HTTP past history as it pushes the current request beyond the 512-char window.
     full_command = synthetic_cmd
 
-    # 1. Match HTTP attack syntax (XSS, SQLi, Path Traversal, Command Injection)
-    http_findings = _match_http_patterns(full_command)
+    # 1. Match HTTP attack syntax on user input (Path, Query, Body, Cookie, Referer)
+    # Never match attack patterns against standard browser protocol headers (Accept, Accept-Language, Host)
+    user_payload = f"{full_path}\n{unquote(body) if body else ''}"
+    cookie_hdr = headers.get("cookie", "")
+    referer_hdr = headers.get("referer", "")
+    if cookie_hdr or referer_hdr:
+        user_payload += f"\n{cookie_hdr}\n{referer_hdr}"
+
+    http_findings = _match_http_patterns(user_payload)
     http_override = None
     if http_findings:
-        raw_lower = full_command.lower()
+        raw_lower = user_payload.lower()
         if "command_injection" in http_findings and any(k in raw_lower for k in ["rm -rf", "dd if="]):
             http_override = (4, "Destructive", f"HTTP Guard: Destructive injection ({', '.join(http_findings)})")
         elif any(f in http_findings for f in ["xss", "sqli", "path_traversal", "command_injection"]):
@@ -547,14 +575,39 @@ def classify_http_request(
     else:
         action = "drop_and_block"
 
+    HTTP_FINDINGS_MITRE = {
+        "sqli": ("initial_access", 9),
+        "xss": ("initial_access", 7),
+        "path_traversal": ("initial_access", 8),
+        "command_injection": ("execution", 10),
+        "scanner": ("reconnaissance", 4),
+    }
+    override_tactics = [HTTP_FINDINGS_MITRE[f][0] for f in http_findings if f in HTTP_FINDINGS_MITRE]
+    override_severity = max([HTTP_FINDINGS_MITRE[f][1] for f in http_findings if f in HTTP_FINDINGS_MITRE], default=0)
+
+    tactics = list(set(explanation.get("mitre_tactics", []) + override_tactics))
+    sev_max = max(explanation.get("severity_max", 0), override_severity)
+
+    NEURAL_LABEL_TACTICS = {
+        "Recon": ("reconnaissance", 4),
+        "Downloader": ("command_and_control", 7),
+        "Exploit": ("initial_access", 8),
+        "Destructive": ("impact", 9),
+        "ADVANCED_APT": ("persistence", 9),
+    }
+    if label in NEURAL_LABEL_TACTICS and not tactics:
+        t, s = NEURAL_LABEL_TACTICS[label]
+        tactics = [t]
+        sev_max = max(sev_max, s)
+
     result = {
         "class_id": pred_id,
         "label": label,
         "confidence": confidence,
         "action": action,
         "rule": rule_name,
-        "mitre_tactics": explanation.get("mitre_tactics", []),
-        "severity_max": explanation.get("severity_max", 0),
+        "mitre_tactics": tactics,
+        "severity_max": sev_max,
         "http_findings": http_findings,
         "neural_confidence": confidence,
         "neural_probs": probs,

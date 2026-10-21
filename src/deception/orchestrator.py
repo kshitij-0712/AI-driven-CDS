@@ -280,12 +280,29 @@ class DeceptionOrchestrator:
 
         # 6. Call LLM Router
         raw_response = ""
+        llm_failed = False
         if self.router:
             try:
                 raw_response = await self.router.generate(intent_label, system_instruction, user_prompt)
             except Exception as e:
-                logger.error(f"Router generate error in DeceptionOrchestrator: {e}")
-                raw_response = ""
+                logger.warning(f"LLM API generation failed or timed out for session {session_id}: {e}. Dropping request without IP ban.")
+                llm_failed = True
+
+        if llm_failed:
+            # Drop the request directly: HTTP 504 Gateway Timeout without generating decoy files or IP blocking
+            return OrchestrationResult(
+                tactic=tactic,
+                status_code=504,
+                headers={"Content-Type": "application/json"},
+                body='{"error": "gateway_timeout", "detail": "LLM generation timed out. Request dropped."}',
+                canary_seeded=None,
+                canaries_compromised=compromised,
+                session_profile=profile.to_dict(),
+                generated_files=[],
+                delay_ms=0,
+                raw_response="",
+                session_updates={},
+            )
 
         # 7. Parse and Validate Response
         parsed = self._parse_json_response(raw_response, metadata.default_status_code)

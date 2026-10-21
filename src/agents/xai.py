@@ -89,7 +89,14 @@ class AdaptiveXAINarrator:
             anomaly_factors = event.features_used.get("anomaly_factors", ["Scope access violation"])
             policy = event.features_used.get("policy_decision", "CONTAIN")
             
-            summary = f"Insider Threat Alert [{policy}]: Session blocked and IP {src_ip} restricted."
+            if policy == "CONTAIN":
+                summary = f"Insider Threat Alert [CONTAIN]: Session contained and IP {src_ip} restricted."
+            elif policy == "ALERT":
+                summary = f"Insider Threat Alert [ALERT]: Session redirected to corporate decoy container."
+            elif policy == "MONITOR":
+                summary = f"Insider Monitoring [MONITOR]: Elevated behavioral risk detected. Traffic monitored."
+            else:
+                summary = f"Normal insider activity from {src_ip} forwarded safely."
             detailed_points.append(f"Identity Verification: User role '{role}' detected on internal network.")
             detailed_points.append(f"Security Policy Engine Action: {policy} (Risk Score: {risk_score}%)")
             

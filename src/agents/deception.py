@@ -1,10 +1,14 @@
 import time
 import os
+import json
+import logging
 import shutil
 import threading
 import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def decide_decoy_action(intent_label):
@@ -156,6 +160,31 @@ class DecoyManager:
         except Exception:
             pass
 
+        # Clean up any leftover directories on host that have no active matching container
+        self._cleanup_orphaned_directories()
+
+    def _cleanup_orphaned_directories(self):
+        """Clean up directories on host that do not correspond to any active running container."""
+        active_dirs = set()
+        for inst in list(self._active_http.values()):
+            if inst.host_dir:
+                active_dirs.add(os.path.abspath(os.path.dirname(inst.host_dir)))
+        for inst in list(self._active_ssh.values()):
+            if inst.host_dir:
+                active_dirs.add(os.path.abspath(inst.host_dir))
+
+        for subpath in (self.http_subpath, self.ssh_subpath):
+            scope_dir = os.path.abspath(f"./runtime/{subpath}")
+            if not os.path.isdir(scope_dir):
+                continue
+            try:
+                for item in os.listdir(scope_dir):
+                    item_path = os.path.abspath(os.path.join(scope_dir, item))
+                    if os.path.isdir(item_path) and item_path not in active_dirs:
+                        shutil.rmtree(item_path, ignore_errors=True)
+            except Exception:
+                pass
+
     @property
     def docker_available(self) -> bool:
         return self._docker is not None
@@ -197,6 +226,11 @@ class DecoyManager:
             local_base_dir = os.path.abspath(f"./runtime/{self.http_subpath}/{actual_session_id}")
             html_dir = os.path.join(local_base_dir, "html")
             conf_dir = os.path.join(local_base_dir, "conf")
+            if os.path.exists(local_base_dir):
+                try:
+                    shutil.rmtree(local_base_dir, ignore_errors=True)
+                except Exception:
+                    pass
             os.makedirs(html_dir, exist_ok=True)
             os.makedirs(conf_dir, exist_ok=True)
 
@@ -218,6 +252,9 @@ class DecoyManager:
 """
             with open(os.path.join(conf_dir, "default.conf"), "w") as f:
                 f.write(default_conf)
+
+            # Pre-populate HTTP baseline files for this scope
+            self._populate_http_baseline(html_dir)
 
             # Determine host paths for Docker mounting (Docker-in-Docker path translation)
             # Use the configured host runtime dir, falling back to our container's mount info
@@ -342,6 +379,173 @@ class DecoyManager:
         # Reuse the least recently used decoy.
         return sorted(self._active_ssh.values(), key=lambda d: d.last_used_ts)[0]
 
+    def _populate_http_baseline(self, html_dir: str):
+        """Pre-populates the HTTP decoy with the authentic clone of the service matching scope."""
+        try:
+            baseline_flag = os.path.join(html_dir, ".baseline_written")
+            if os.path.exists(baseline_flag):
+                return
+
+            struct_file = (
+                "./runtime/app_structure_internal.json"
+                if self.scope == "internal"
+                else "./runtime/app_structure_external.json"
+            )
+            target_url = (
+                "http://127.0.0.1:8090"
+                if self.scope == "internal"
+                else "http://127.0.0.1:8080"
+            )
+
+            struct_data = None
+            if os.path.exists(struct_file):
+                with open(struct_file, "r", encoding="utf-8") as f:
+                    struct_data = json.load(f)
+            elif os.path.exists("./runtime/app_structure.json"):
+                with open("./runtime/app_structure.json", "r", encoding="utf-8") as f:
+                    struct_data = json.load(f)
+
+            pages = struct_data.get("pages", {}) if struct_data else {}
+            paths_to_write = set(pages.keys())
+            paths_to_write.add("/")
+
+            import httpx
+            for p in paths_to_write:
+                rel_path = p.strip("/")
+                if not rel_path:
+                    rel_path = "index.html"
+                elif not rel_path.endswith(".html"):
+                    rel_path += ".html"
+
+                out_file = os.path.join(html_dir, rel_path)
+                os.makedirs(os.path.dirname(out_file), exist_ok=True)
+
+                content = None
+                try:
+                    resp = httpx.get(f"{target_url}{p}", timeout=0.8)
+                    if resp.status_code == 200:
+                        content = resp.text
+                except Exception:
+                    pass
+
+                if not content:
+                    if p in pages and "content_preview" in pages[p]:
+                        content = pages[p]["content_preview"]
+                    else:
+                        title = pages.get(p, {}).get("title", "Nexus Cloud Platform")
+                        theme = struct_data.get("theme", "") if struct_data else ""
+                        content = f"<!DOCTYPE html><html><head><title>{title}</title><style>{theme}</style></head><body><h1>{title}</h1></body></html>"
+
+                with open(out_file, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+            with open(baseline_flag, "w", encoding="utf-8") as f:
+                f.write("true")
+        except Exception as e:
+            logger.warning(f"Failed to pre-populate HTTP baseline: {e}")
+
+    def _populate_ssh_baseline(self, local_base_dir: str):
+        """Pre-populates Cowrie decoy with realistic Nexus corporate environment baseline."""
+        try:
+            baseline_flag = os.path.join(local_base_dir, ".baseline_written")
+            if os.path.exists(baseline_flag):
+                return
+
+            txtcmds_dir = os.path.join(local_base_dir, "txtcmds")
+            honeyfs_etc = os.path.join(local_base_dir, "honeyfs", "etc")
+            honeyfs_admin = os.path.join(local_base_dir, "honeyfs", "home", "admin")
+            honeyfs_root = os.path.join(local_base_dir, "honeyfs", "root")
+            os.makedirs(honeyfs_etc, exist_ok=True)
+            os.makedirs(honeyfs_admin, exist_ok=True)
+            os.makedirs(honeyfs_root, exist_ok=True)
+
+            txtcmd_map = {
+                "whoami": "root\n",
+                "id": "uid=0(root) gid=0(root) groups=0(root)\n",
+                "hostname": "corp-bastion-01\n",
+                "uname": "Linux corp-bastion-01 5.15.0-105-generic #115-Ubuntu SMP x86_64 GNU/Linux\n",
+                "ps": (
+                    "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\n"
+                    "root         1  0.0  0.1 168432 11200 ?        Ss   08:00   0:01 /sbin/init\n"
+                    "root       320  0.0  0.1  45120  7120 ?        Ss   08:00   0:00 /usr/lib/systemd/systemd-journald\n"
+                    "root       412  0.0  0.1  28412  6420 ?        Ss   08:00   0:00 /usr/sbin/sshd -D\n"
+                    "marcus.vance 621 0.0 0.5 450100 85200 ?       Sl   08:15   0:05 /opt/nexus/bin/k8s-sync-agent --config=/etc/nexus/cluster.yaml\n"
+                    "nexus-admin  890 0.0 0.3 320100 45200 ?       Sl   08:30   0:02 /usr/local/bin/vault-agent -config=/etc/vault/agent.hcl\n"
+                    "root      1042  0.0  0.1  38200  8100 ?        Ss   09:12   0:00 sshd: root@pts/0\n"
+                    "root      1050  0.0  0.1  22100  5400 pts/0    Ss   09:12   0:00 -bash\n"
+                ),
+                "df": (
+                    "Filesystem      Size  Used Avail Use% Mounted on\n"
+                    "udev            7.8G     0  7.8G   0% /dev\n"
+                    "tmpfs           1.6G  1.2M  1.6G   1% /run\n"
+                    "/dev/sda1        97G   28G   65G  31% /\n"
+                    "/dev/sdb1       492G  142G  325G  31% /data/nexus\n"
+                ),
+                "netstat": (
+                    "Active Internet connections (only servers)\n"
+                    "Proto Recv-Q Send-Q Local Address           Foreign Address         State\n"
+                    "tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN\n"
+                    "tcp        0      0 127.0.0.1:8080          0.0.0.0:*               LISTEN\n"
+                    "tcp        0      0 127.0.0.1:8090          0.0.0.0:*               LISTEN\n"
+                    "tcp        0      0 127.0.0.1:5432          0.0.0.0:*               LISTEN\n"
+                    "tcp        0      0 10.10.0.1:6443          0.0.0.0:*               LISTEN\n"
+                    "tcp        0      0 10.10.0.1:8200          0.0.0.0:*               LISTEN\n"
+                ),
+            }
+
+            for sub in ["", "bin", "usr/bin", "sbin", "usr/sbin"]:
+                sub_dir = os.path.join(txtcmds_dir, sub) if sub else txtcmds_dir
+                os.makedirs(sub_dir, exist_ok=True)
+                for cmd_name, cmd_content in txtcmd_map.items():
+                    with open(os.path.join(sub_dir, cmd_name), "w", encoding="utf-8") as f:
+                        f.write(cmd_content.strip() + "\n")
+
+            with open(os.path.join(honeyfs_etc, "hostname"), "w", encoding="utf-8") as f:
+                f.write("corp-bastion-01\n")
+
+            with open(os.path.join(honeyfs_etc, "hosts"), "w", encoding="utf-8") as f:
+                f.write(
+                    "127.0.0.1 localhost corp-bastion-01\n"
+                    "10.10.0.1 corp-bastion-01.corp.nexuscloud.internal\n"
+                    "10.10.1.10 auth-kdc.corp.nexuscloud.internal\n"
+                    "10.10.2.15 lnx-sre-1004.corp.nexuscloud.internal\n"
+                    "10.10.2.50 k8s-master.corp.nexuscloud.internal\n"
+                    "10.10.3.100 vault-prod-01.corp.nexuscloud.internal\n"
+                )
+
+            with open(os.path.join(honeyfs_etc, "passwd"), "w", encoding="utf-8") as f:
+                f.write(
+                    "root:x:0:0:root:/root:/bin/bash\n"
+                    "nexus-admin:x:1000:1000:Nexus Infra Admin,,,:/home/admin:/bin/bash\n"
+                    "marcus.vance:x:1001:1001:Marcus Vance (Principal SRE),,,:/home/marcus.vance:/bin/bash\n"
+                    "sarah.chen:x:1002:1002:Dr. Sarah Chen (Lead ML),,,:/home/sarah.chen:/bin/bash\n"
+                )
+
+            with open(os.path.join(honeyfs_etc, "shadow"), "w", encoding="utf-8") as f:
+                f.write(
+                    "root:$6$nexus_salt$p9X1Zl2.871k182...:19800:0:99999:7:::\n"
+                    "nexus-admin:$6$nexus_salt$xK71.02kd81...:19800:0:99999:7:::\n"
+                    "marcus.vance:$6$nexus_salt$w01kd92.z1...:19800:0:99999:7:::\n"
+                )
+
+            with open(os.path.join(honeyfs_admin, ".bash_history"), "w", encoding="utf-8") as f:
+                f.write(
+                    "sudo systemctl status k8s-sync-agent\n"
+                    "kubectl get pods -n production\n"
+                    "vault login -method=ldap\n"
+                )
+
+            with open(os.path.join(honeyfs_root, ".bash_history"), "w", encoding="utf-8") as f:
+                f.write(
+                    "systemctl restart sshd\n"
+                    "tail -n 50 /var/log/auth.log\n"
+                )
+
+            with open(baseline_flag, "w", encoding="utf-8") as f:
+                f.write("true")
+        except Exception as e:
+            logger.warning(f"Failed to pre-populate SSH baseline: {e}")
+
     def _spawn_ssh_decoy(self, session_id: str) -> Optional[DecoyInstance]:
         if not self.docker_available:
             return None
@@ -356,6 +560,11 @@ class DecoyManager:
             txtcmds_dir = os.path.join(local_base_dir, "txtcmds")
             honeyfs_dir = os.path.join(local_base_dir, "honeyfs")
             downloads_dir = os.path.join(local_base_dir, "downloads")
+            if os.path.exists(local_base_dir):
+                try:
+                    shutil.rmtree(local_base_dir, ignore_errors=True)
+                except Exception:
+                    pass
             os.makedirs(txtcmds_dir, exist_ok=True)
             os.makedirs(honeyfs_dir, exist_ok=True)
             os.makedirs(downloads_dir, exist_ok=True)
@@ -365,6 +574,33 @@ class DecoyManager:
 
             with open(os.path.join(local_base_dir, "session_id.txt"), "w") as _f:
                 _f.write(session_id)
+
+            # Ensure cowrie patches exist in runtime/cowrie_patches
+            patch_dir = os.path.abspath("./runtime/cowrie_patches")
+            os.makedirs(patch_dir, exist_ok=True)
+            local_proto_patch = os.path.join(patch_dir, "protocol.py")
+            local_fs_patch = os.path.join(patch_dir, "fs.py")
+            src_proto = os.path.abspath("./src/honeypot/cowrie_patches/protocol.py")
+            src_fs = os.path.abspath("./src/honeypot/cowrie_patches/fs.py")
+            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if not os.path.exists(src_proto):
+                src_proto = os.path.join(repo_root, "src", "honeypot", "cowrie_patches", "protocol.py")
+            if not os.path.exists(src_fs):
+                src_fs = os.path.join(repo_root, "src", "honeypot", "cowrie_patches", "fs.py")
+            import shutil
+            if not os.path.exists(local_proto_patch) and os.path.exists(src_proto):
+                try:
+                    shutil.copy(src_proto, local_proto_patch)
+                except Exception:
+                    pass
+            if not os.path.exists(local_fs_patch) and os.path.exists(src_fs):
+                try:
+                    shutil.copy(src_fs, local_fs_patch)
+                except Exception:
+                    pass
+
+            # Pre-populate SSH realistic corporate baseline
+            self._populate_ssh_baseline(local_base_dir)
 
             # Determine host paths for Docker mounting (Docker-in-Docker path translation)
             # Use the configured host runtime dir, falling back to our container's mount info
@@ -384,20 +620,41 @@ class DecoyManager:
             host_honeyfs_dir = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "honeyfs")
             host_cowrie_cfg = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "cowrie.cfg")
             host_downloads_dir = os.path.join(host_runtime_dir, self.ssh_subpath, actual_session_id, "downloads")
+            host_proto_patch = os.path.join(host_runtime_dir, "cowrie_patches", "protocol.py")
+            host_fs_patch = os.path.join(host_runtime_dir, "cowrie_patches", "fs.py")
 
-            # Create empty cowrie.cfg so it can be mounted
-            with open(os.path.join(local_base_dir, "cowrie.cfg"), "w") as f:
-                f.write("")
+            # Write realistic cowrie.cfg
+            cowrie_cfg_content = """[honeypot]
+hostname = corp-bastion-01
+contents_path = /cowrie/cowrie-git/honeyfs
+txtcmds_path = /cowrie/cowrie-git/txtcmds
+
+[shell]
+filesystem = /cowrie/cowrie-git/src/cowrie/data/fs.pickle
+"""
+            with open(os.path.join(local_base_dir, "cowrie.cfg"), "w", encoding="utf-8") as f:
+                f.write(cowrie_cfg_content)
+
+            cowrie_volumes = {
+                host_txtcmds_dir: {"bind": "/cowrie/cowrie-git/txtcmds", "mode": "rw"},
+                host_honeyfs_dir: {"bind": "/cowrie/cowrie-git/honeyfs", "mode": "rw"},
+                host_cowrie_cfg: {"bind": "/cowrie/cowrie-git/etc/cowrie.cfg", "mode": "ro"},
+                host_downloads_dir: {"bind": "/cowrie/cowrie-git/var/lib/cowrie/downloads", "mode": "rw"},
+            }
+            if os.path.exists(local_proto_patch):
+                cowrie_volumes[host_proto_patch] = {"bind": "/cowrie/cowrie-git/src/cowrie/shell/protocol.py", "mode": "ro"}
+            if os.path.exists(local_fs_patch):
+                cowrie_volumes[host_fs_patch] = {"bind": "/cowrie/cowrie-git/src/cowrie/shell/fs.py", "mode": "ro"}
 
             container = self._docker.containers.run(
                 self.ssh_image,
                 detach=True,
                 ports={"2222/tcp": None},
-                volumes={
-                    host_txtcmds_dir: {"bind": "/cowrie/cowrie-git/share/cowrie/txtcmds", "mode": "ro"},
-                    host_honeyfs_dir: {"bind": "/cowrie/cowrie-git/honeyfs", "mode": "ro"},
-                    host_cowrie_cfg: {"bind": "/cowrie/cowrie-git/etc/cowrie.cfg", "mode": "ro"},
-                    host_downloads_dir: {"bind": "/cowrie/cowrie-git/var/lib/cowrie/downloads", "mode": "rw"},
+                volumes=cowrie_volumes,
+                environment={
+                    "COWRIE_HONEYPOT_HOSTNAME": "corp-bastion-01",
+                    "COWRIE_HONEYPOT_CONTENTS_PATH": "/cowrie/cowrie-git/honeyfs",
+                    "COWRIE_HONEYPOT_TXTCMDS_PATH": "/cowrie/cowrie-git/txtcmds",
                 },
                 labels={
                     "adaptiveshield.decoy": "true",
@@ -518,9 +775,12 @@ class DecoyManager:
                 base_dir = os.path.dirname(instance.host_dir) if decoy_type == "http" else instance.host_dir
                 if os.path.exists(base_dir):
                     try:
-                        shutil.rmtree(base_dir)
+                        shutil.rmtree(base_dir, ignore_errors=True)
                     except Exception:
                         pass
+
+        # Cleanup any remaining orphaned directories on host
+        self._cleanup_orphaned_directories()
 
     def shutdown_all_decoys(self):
         """Stop and remove all active decoy containers."""
@@ -541,7 +801,7 @@ class DecoyManager:
                 base_dir = os.path.dirname(instance.host_dir) if instance.decoy_type == "http" else instance.host_dir
                 if os.path.exists(base_dir):
                     try:
-                        shutil.rmtree(base_dir)
+                        shutil.rmtree(base_dir, ignore_errors=True)
                     except Exception:
                         pass
 
@@ -557,6 +817,9 @@ class DecoyManager:
                         pass
         except Exception:
             pass
+
+        # Clean up any leftover host directories for this scope
+        self._cleanup_orphaned_directories()
 
 
 # ---------------------------------------------------------------------------

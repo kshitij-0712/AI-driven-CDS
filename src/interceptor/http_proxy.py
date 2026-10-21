@@ -97,7 +97,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         )
 
     galah_enabled = bool(config.get("galah_honeypot", {}).get("enabled", False))
-    honeypot_gen = HoneypotGenerator(config, store) if galah_enabled else None
+    honeypot_gen = HoneypotGenerator(config, store, is_internal=is_internal) if galah_enabled else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -327,6 +327,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         return {"status": "simulation_fired"}
 
     @app.post("/api/unblock")
+    @app.post("/api/release-ip")
     async def release_blocked_ip(request: Request):
         payload = await request.json()
         ip = payload.get("ip")
@@ -336,6 +337,7 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         return {"status": "unblocked", "ip": ip}
 
     @app.post("/api/reset_session")
+    @app.post("/api/reset-session")
     async def reset_session_risk(request: Request):
         payload = await request.json()
         session_id = payload.get("session_id")
@@ -358,11 +360,14 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         return {"status": "success", "session_id": session_id}
 
     @app.post("/api/reset_all")
+    @app.post("/api/reset-all")
     async def reset_all_sessions(request: Request):
         store.conn.execute("DELETE FROM request_events")
         store.conn.execute("DELETE FROM sessions")
         store.conn.commit()
         insider_detector.session_states.clear()
+        if nft:
+            nft.flush_all()
         return {"status": "success", "message": "All sessions and blocks cleared successfully."}
 
     from fastapi.responses import HTMLResponse
@@ -536,22 +541,8 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 if "discovery" not in decision.get("mitre_tactics", []):
                     decision.setdefault("mitre_tactics", []).append("discovery")
                 decision["severity_max"] = max(decision.get("severity_max", 0), 4)
-        # Determine base risk score from external neural network classification
-        confidence = decision.get("neural_confidence", 1.0)
-        ext_label = decision["label"].lower()
-        if decision.get("action") == "drop_and_block":
-            base_risk_score = 100.0
-        elif ext_label == "safe":
-            base_risk_score = confidence * 10.0
-        elif ext_label == "recon":
-            base_risk_score = 30.0 + (confidence * 20.0)
-        elif ext_label in ("downloader", "exploit"):
-            base_risk_score = 50.0 + (confidence * 25.0)
-        else: # Destructive, APT
-            base_risk_score = 75.0 + (confidence * 25.0)
-
         # Check for Insider Threat if this is the Internal HTTP Guard
-        risk_score = base_risk_score
+        risk_score = 0.0
         insider_threat = None
         
         if is_internal:
@@ -618,7 +609,42 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             if cmd_val and cmd_val.strip().lower().startswith("sudo"):
                 if "admin" not in role_val and "devops" not in user_dept.lower():
                     action_details["sudo_failed"] = True
-            
+
+            # Use Neural Model and MITRE annotator to determine command intention
+            neural_model = getattr(app.state, "neural_model", None)
+            cmd_intent = "Safe"
+            cmd_confidence = 1.0
+            cmd_mitre_tactics = []
+            cmd_severity_max = 0
+
+            if cmd_val and cmd_val.strip() and cmd_val != "/":
+                from core.mitre.session_annotator import annotate_session
+                try:
+                    ann = annotate_session([cmd_val])
+                    cmd_mitre_tactics = [t for t, v in ann.get("tactic_vector", {}).items() if v > 0]
+                    cmd_severity_max = ann.get("severity_max", 0)
+                except Exception:
+                    pass
+
+                if neural_model is not None:
+                    from agents.decision import _classify_neural
+                    try:
+                        n_res = _classify_neural(cmd_val, neural_model, is_http=False)
+                        if n_res:
+                            cmd_intent = n_res[1]
+                            cmd_confidence = n_res[2]
+                    except Exception:
+                        pass
+
+            action_details["neural_intent"] = cmd_intent
+            action_details["neural_confidence"] = cmd_confidence
+            action_details["mitre_tactics"] = cmd_mitre_tactics
+            action_details["severity_max"] = cmd_severity_max
+
+            if cmd_mitre_tactics:
+                decision["mitre_tactics"] = list(set(decision.get("mitre_tactics", []) + cmd_mitre_tactics))
+                decision["severity_max"] = max(decision.get("severity_max", 0), cmd_severity_max)
+
             signal = UserBehaviorSignal(
                 user_id=user_id,
                 session_id=session_id,
@@ -694,26 +720,27 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
             decision["xai_recommendations"] = xai_explanation.recommended_actions
             
         else:
-            # External HTTP Guard EXCLUSIVELY uses neural/hybrid external risk score
-            risk_score = base_risk_score
+            # External Guard operates SOLELY on neural threat classification
+            ext_label = decision["label"]
+            risk_score = 0.0
 
-            # Policy Engine Decides for External
-            if risk_score <= 30.0:
+            if decision.get("action") == "drop_and_block":
+                policy_decision = "CONTAIN"
+                action = "drop_and_block"
+            elif ext_label == "Safe":
                 policy_decision = "NORMAL"
                 action = "forward"
-            elif risk_score <= 60.0:
+            elif ext_label == "Recon":
                 policy_decision = "MONITOR"
                 action = "forward"
-                decision["rule"] = decision.get("rule") or "Policy: Monitor active session"
-            elif risk_score <= 80.0:
+            elif ext_label in ("Downloader", "Exploit"):
                 policy_decision = "ALERT"
                 action = "redirect_to_decoy"
-                decision["rule"] = decision.get("rule") or "Policy: High risk behavior, rerouted to decoy"
-            else:
+                decision["rule"] = decision.get("rule") or f"Policy: Threat detected ({ext_label}), rerouted to decoy"
+            else:  # Destructive, ADVANCED_APT
                 policy_decision = "CONTAIN"
                 action = "redirect_to_decoy"
-                decision["rule"] = decision.get("rule") or f"Policy: Containment triggered. Risk level: {risk_score}%"
-                decision["label"] = "Destructive"
+                decision["rule"] = decision.get("rule") or f"Policy: Severe threat detected ({ext_label}), rerouted to decoy"
 
         decision["action"] = action
         target = f"http://{real_host}:{real_port}"
@@ -775,15 +802,19 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 )
 
                 is_attack = decision.get("label", "Safe") != "Safe"
+                is_in_decoy = bool(ctx.get("redirected_to_decoy"))
+                is_interactive_action = (
+                    request.method.upper() in ("POST", "PUT", "DELETE", "PATCH") or
+                    bool(request.url.query) or
+                    request.url.path != prev_path
+                )
                 is_escalation = (
-                    not ctx.get("redirected_to_decoy") or 
+                    not is_in_decoy or 
                     not file_exists or
+                    is_interactive_action or
                     (is_attack and (
-                        request.url.path != prev_path or
-                        request.method.upper() != "GET" or
                         decision["label"] != prev_label or 
-                        decision["severity_max"] > prev_severity or
-                        str(request.url.query or "") != prev_query
+                        decision["severity_max"] > prev_severity
                     ))
                 )
                 
@@ -812,6 +843,11 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                         "decoy_severity_max": decision.get("severity_max", 0),
                         "decoy_last_path": request.url.path,
                         "decoy_last_query": str(request.url.query or ""),
+                    })
+                else:
+                    store.update_context(session_id, {
+                        "redirected_to_decoy": True,
+                        "decoy_base_url": target,
                     })
                 
                 # Decoy Cold-Start Fix
@@ -918,6 +954,8 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 "policy_decision": policy_decision,
                 "action": action,
                 "risk_score": risk_score,
+                "mitre_tactics": decision.get("mitre_tactics", []),
+                "severity_max": decision.get("severity_max", 0),
                 "evidence_features": event.get("evidence_features", {}),
                 "xai_summary": decision.get("xai_summary", ""),
                 "xai_detailed": decision.get("xai_detailed", ""),
@@ -930,6 +968,12 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
                 pass
 
         print(json.dumps(event), flush=True)
+
+        if is_internal and token and hasattr(result, "set_cookie"):
+            try:
+                result.set_cookie(key="nexus_session", value=token, path="/", samesite="lax")
+            except Exception:
+                pass
 
         return result
 

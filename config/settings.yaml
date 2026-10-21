@@ -159,11 +159,19 @@ galah_honeypot:
     output_path: "./runtime/app_structure.json"
     auto_crawl: true
   llm:
-    provider: "gemini"
-    api_url: "https://generativelanguage.googleapis.com/v1beta"
-    api_key: "${GEMINI_API_KEY}"
-    model: "gemini-2.5-flash"
-    timeout_sec: 8
+    # --- Active Provider: Ollama (running on Windows Host via VirtualBox Host-Only adapter) ---
+    provider: "ollama"
+    api_url: "http://192.168.56.1:11434"
+    api_key: ""
+    model: "qwen2.5-coder:7b-instruct-q4_K_M"
+    timeout_sec: 45
+
+    # --- To switch back to Gemini, uncomment below and comment out Ollama above ---
+    # provider: "gemini"
+    # api_url: "https://generativelanguage.googleapis.com/v1beta"
+    # api_key: "${GEMINI_API_KEY}"
+    # model: "gemini-2.5-flash"
+    # timeout_sec: 30
   cache:
     enabled: true
     ttl_seconds: 3600

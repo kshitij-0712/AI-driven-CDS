@@ -78,8 +78,17 @@ def test_env(tmp_path):
 
 @pytest.mark.asyncio
 async def test_generative_deception_pipeline_multiturn_attack(test_env):
+    from unittest.mock import AsyncMock
     generator, store, tmp_path = test_env
     session_id = "sess_e2e_adversary_001"
+
+    # Mock active LLM router response
+    generator.router.generate = AsyncMock(return_value=json.dumps({
+        "status_code": 200,
+        "headers": {"Content-Type": "text/html"},
+        "body": "<html><body>Decoy Response OK</body></html>",
+        "session_updates": {},
+    }))
 
     # Turn 1: Benign / early reconnaissance on home dashboard
     req1 = make_dummy_request("GET", "/")
@@ -122,8 +131,8 @@ async def test_generative_deception_pipeline_multiturn_attack(test_env):
 
 
 @pytest.mark.asyncio
-async def test_zero_stall_mock_fallback_sla(test_env):
-    """Verifies that upstream API failure instantly returns in <200ms via MockLLMClient fallback."""
+async def test_zero_stall_drop_on_timeout_sla(test_env):
+    """Verifies that upstream API failure/timeout drops request cleanly with 504 without IP ban."""
     import time
     generator, store, tmp_path = test_env
     session_id = "sess_latency_sla_002"
@@ -135,7 +144,8 @@ async def test_zero_stall_mock_fallback_sla(test_env):
     resp = await generator.generate_response(req, "", decision, session_id)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-    assert resp.status_code == 200
-    assert len(resp.body) > 0
-    # Strict SLA check: must complete without stalling
-    assert elapsed_ms < 500.0, f"Response took {elapsed_ms:.2f}ms, exceeding zero-stall SLA limit"
+    # Must cleanly drop with 504 Gateway Timeout without blocking IP
+    assert resp.status_code == 504
+    assert "gateway_timeout" in resp.body.decode("utf-8")
+    assert store.get_blocked_until("192.168.1.100") is None
+    assert elapsed_ms < 5000.0

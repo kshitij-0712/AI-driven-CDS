@@ -283,6 +283,18 @@ class AdaptiveInsiderDetector:
         if signal.action_details.get("print_job", False) and any(k in file_path for k in ["confidential", "salary", "code", "design"]):
             state["printing_sensitive_files"] = 1
 
+        # Neural intention & MITRE tactic awareness
+        neural_intent = signal.action_details.get("neural_intent", "Safe")
+        mitre_tactics = signal.action_details.get("mitre_tactics", [])
+        if neural_intent in ("Exploit", "Destructive", "Downloader", "ADVANCED_APT"):
+            state["anomalous_intent"] = neural_intent
+            state["anomalous_tactics"] = mitre_tactics
+            state["calculated_risk_score"] = max(state.get("calculated_risk_score", 0.0), 75.0)
+        elif state.get("access_unauthorized_scope") and any(t in mitre_tactics for t in ["credential_access", "impact", "exfiltration"]):
+            state["anomalous_intent"] = "Unauthorized Credential/Data Access"
+            state["anomalous_tactics"] = mitre_tactics
+            state["calculated_risk_score"] = max(state.get("calculated_risk_score", 0.0), 80.0)
+
         # Dynamic multi-dimensional behavior deviation score
         active_vectors = [
             float(state["work_after_hours"]),

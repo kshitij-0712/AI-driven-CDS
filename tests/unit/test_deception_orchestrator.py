@@ -174,6 +174,27 @@ async def test_orchestrator_fallback_on_empty_or_broken_llm():
     assert "Access Verification" in result.body
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_drop_on_llm_timeout():
+    mock_router = MagicMock()
+    mock_router.generate = AsyncMock(side_effect=TimeoutError("LLM call timed out after 30s"))
+
+    orchestrator = DeceptionOrchestrator(router=mock_router)
+    req_ctx = {"method": "GET", "path": "/admin", "query": "", "body": "", "headers": {}}
+    decision = {"label": "Recon"}
+
+    result = await orchestrator.orchestrate_turn(
+        request_context=req_ctx,
+        decision=decision,
+        session_id="sess_timeout_test",
+    )
+
+    # Must cleanly drop with 504 without blocking or generating decoys
+    assert result.status_code == 504
+    assert "gateway_timeout" in result.body
+    assert result.generated_files == []
+
+
 # ============================================================================
 # 3. Decoy Environment Mutator Unit Tests
 # ============================================================================

@@ -40,6 +40,10 @@ def predict_session_risk(session: Dict[str, Any], model_bundle: Optional[Dict[st
                 policy_risk = max(policy_risk, 75.0)
             if features.get("unusual_pc_login", 0.0) > 0:
                 policy_risk = max(policy_risk, 65.0)
+            if session.get("anomalous_intent") in ("Exploit", "Destructive", "Downloader", "ADVANCED_APT"):
+                policy_risk = max(policy_risk, 75.0)
+            elif session.get("anomalous_intent") == "Malicious Tactics":
+                policy_risk = max(policy_risk, 70.0)
 
             # Blended risk: max of RF model anomaly and explicit policy risk
             risk_score = round(max(ml_score * 100.0, policy_risk), 1)
@@ -50,6 +54,10 @@ def predict_session_risk(session: Dict[str, Any], model_bundle: Optional[Dict[st
                     explanation.append("Unauthorized department boundary breach: access to restricted corporate scope")
                 if features.get("unusual_pc_login", 0.0) > 0:
                     explanation.append("Suspicious session origin: Client IP not in employee authorized whitelist (Possible Cookie Theft / Session Hijack)")
+                if session.get("anomalous_intent"):
+                    intent_tactics = session.get("anomalous_tactics", [])
+                    tactic_str = f" (Tactics: {', '.join(intent_tactics)})" if intent_tactics else ""
+                    explanation.append(f"Neural threat model flagged malicious intention: {session['anomalous_intent']}{tactic_str}")
                 active_threats = [k for k in ["access_unauthorized_scope", "unusual_pc_login", "cloud_upload_count", "usb_mount_attempt", "log_deletion_attempt", "work_after_hours"] if features.get(k, 0) > 0]
                 if active_threats:
                     explanation.append(f"Contributing anomalous vectors: {', '.join(active_threats)}")

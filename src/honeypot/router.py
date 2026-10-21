@@ -35,7 +35,7 @@ class LLMRouter:
         self.api_url = llm_cfg.get("api_url", "https://generativelanguage.googleapis.com/v1beta")
         self.api_key = llm_cfg.get("api_key", os.environ.get("GEMINI_API_KEY", ""))
         self.model = llm_cfg.get("model", llm_cfg.get("gemini_model", "gemini-2.5-flash"))
-        self.timeout_sec = llm_cfg.get("timeout_sec", 8)
+        self.timeout_sec = llm_cfg.get("timeout_sec", 30)
 
         # Backward compatibility for legacy test configs
         if llm_cfg.get("ollama_url") and not llm_cfg.get("api_url"):
@@ -58,25 +58,9 @@ class LLMRouter:
         return self.client
 
     async def generate(self, intent_label: str, system_instruction: str, prompt: str) -> str:
-        """Route and execute LLM generation with instant safe fallback."""
-        try:
-            return await self.client.generate_response(system_instruction, prompt)
-        except Exception as e:
-            logger.warning(
-                f"LLM API provider '{self.provider}' unavailable ({e}). "
-                "Immediately utilizing specialized honeypot fallback generator."
-            )
-            return await self.mock_client.generate_response(system_instruction, prompt)
+        """Route and execute LLM generation without fallback (drops request on failure/timeout)."""
+        return await self.client.generate_response(system_instruction, prompt)
 
     async def chat(self, intent_label: str, messages: list) -> str:
-        """Route and execute LLM chat generation with instant safe fallback."""
-        try:
-            return await self.client.chat_response(messages)
-        except Exception as e:
-            logger.warning(
-                f"LLM API provider '{self.provider}' chat unavailable ({e}). "
-                "Immediately utilizing mock generator."
-            )
-            prompt = messages[-1].get("content", "") if messages else ""
-            sys_msg = messages[0].get("content", "") if messages else ""
-            return await self.mock_client.generate_response(sys_msg, prompt)
+        """Route and execute LLM chat generation without fallback."""
+        return await self.client.chat_response(messages)

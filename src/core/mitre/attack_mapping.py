@@ -86,7 +86,7 @@ _RAW_PATTERNS = [
     # INITIAL ACCESS (TA0001) / EXPLOIT PUBLIC-FACING APP (T1190)
     # =================================================================
     {
-        "pattern": r"(UNION\s+SELECT|OR\s+1=1|--\s*$|/\*.*\*/|'|%27)",
+        "pattern": r"(UNION\s+SELECT|OR\s+['\d\w]+\s*=\s*['\d\w]+|--\s*$|/\*!(?:[0-9]+)?.*?\*/|/\*.*?\*/\s*(?:union|select|from|where)|(?:'|%27)\s*(?:OR|AND)\s+)",
         "technique_id": "T1190",
         "technique_name": "Exploit Public-Facing Application: SQL Injection",
         "tactic": "initial_access",

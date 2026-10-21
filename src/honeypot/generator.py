@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
@@ -24,7 +24,7 @@ from deception.mutator import DecoyEnvironmentMutator
 logger = logging.getLogger(__name__)
 
 class HoneypotGenerator:
-    def __init__(self, config: Dict, store: SessionStore):
+    def __init__(self, config: Dict, store: SessionStore, is_internal: bool = False, scope: Optional[str] = None):
         self.config = config
         self.store = store
         self.state_manager = SessionStateManager(store)
@@ -32,12 +32,17 @@ class HoneypotGenerator:
         self.cache = HoneypotCache(config)
         self.orchestrator = DeceptionOrchestrator(config=config, router=self.router)
         self.mutator = DecoyEnvironmentMutator()
+        self.is_internal = is_internal or (scope == "internal")
+        self.scope = "internal" if self.is_internal else "external"
         
         galah_cfg = config.get("galah_honeypot", {})
         crawler_cfg = galah_cfg.get("crawler", {})
         
-        self.target_url = crawler_cfg.get("target_url", "http://127.0.0.1:8090")
-        self.structure_path = crawler_cfg.get("output_path", "./runtime/app_structure.json")
+        default_target = "http://127.0.0.1:8090" if self.is_internal else "http://127.0.0.1:8080"
+        default_structure = "./runtime/app_structure_internal.json" if self.is_internal else "./runtime/app_structure_external.json"
+
+        self.target_url = crawler_cfg.get("target_url", default_target)
+        self.structure_path = crawler_cfg.get("output_path", default_structure)
         self.auto_crawl = crawler_cfg.get("auto_crawl", True)
         self.app_structure = None
 
@@ -46,14 +51,16 @@ class HoneypotGenerator:
         if self.app_structure is not None:
             return
             
-        if os.path.exists(self.structure_path):
-            try:
-                with open(self.structure_path, "r", encoding="utf-8") as f:
-                    self.app_structure = json.load(f)
-                logger.info(f"Loaded existing app structure from {self.structure_path}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to load app structure: {e}")
+        search_paths = [self.structure_path, "./runtime/app_structure.json"]
+        for p in search_paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        self.app_structure = json.load(f)
+                    logger.info(f"Loaded existing app structure from {p}")
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to load app structure from {p}: {e}")
 
         # Auto crawl if missing
         if self.auto_crawl:
@@ -568,6 +575,10 @@ class HoneypotGenerator:
                     app_structure=self.app_structure,
                     client_ip=client_ip,
                 )
+                if orch_result.status_code == 504:
+                    logger.warning(f"LLM decoy generation timed out or failed for {path}. Dropping request without fallback or IP ban.")
+                    return
+
                 parsed_res = {
                     "status_code": orch_result.status_code,
                     "headers": orch_result.headers,
@@ -579,17 +590,11 @@ class HoneypotGenerator:
                     self.state_manager.update_state(session_id, orch_result.session_updates)
                 self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
             except Exception as e:
-                logger.error(f"Error during DeceptionOrchestrator turn: {e}. Falling back to static decoy.")
-                fallback_files = generate_fallback_decoy(session_id)
-                parsed_res = {
-                    "status_code": 200,
-                    "headers": {"Content-Type": "text/html"},
-                    "body": fallback_files[0]["content"],
-                    "session_updates": {}
-                }
+                logger.warning(f"Error during DeceptionOrchestrator turn: {e}. Dropping request without fallback or IP ban.")
+                return
 
         # 9. If parsed_res contains generated_files, validate and write them safely
-        if "generated_files" in parsed_res and isinstance(parsed_res["generated_files"], list):
+        if "generated_files" in parsed_res and isinstance(parsed_res["generated_files"], list) and len(parsed_res["generated_files"]) > 0:
             try:
                 validated_files = validate_decoy_payload(parsed_res)
                 generate_physical_decoy_files(session_id, validated_files, base_dir=html_dir)
@@ -597,38 +602,38 @@ class HoneypotGenerator:
                 logger.warning(f"Payload validation failed for generated_files: {e}. Using fallback.")
                 fallback_files = generate_fallback_decoy(session_id)
                 generate_physical_decoy_files(session_id, fallback_files, base_dir=html_dir)
-        else:
-            # Write single response body using path sanitizer
-            rel_path = path.strip("/")
-            if not rel_path:
-                rel_path = "index.html"
-            else:
-                # If the response is HTML and not ending in .html, append .html
-                headers = parsed_res.get("headers", {})
-                content_type = headers.get("Content-Type", headers.get("content-type", "text/html"))
-                if "html" in content_type or parsed_res.get("body", "").strip().startswith("<"):
-                    if not rel_path.endswith(".html"):
-                        rel_path += ".html"
-                        
-            try:
-                file_path = sanitize_and_validate_decoy_path(html_dir, rel_path)
-            except Exception as e:
-                logger.warning(f"Path sanitization triggered for {rel_path}: {e}. Falling back to index.html")
-                file_path = os.path.join(html_dir, "index.html")
-                
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            body = parsed_res.get("body", "")
-            if isinstance(body, dict):
-                body = json.dumps(body)
-                
-            # Guard against empty, blank, or broken HTML generated by smaller LLMs
-            if self._is_empty_or_broken_html(body):
-                logger.info(f"LLM produced empty or broken body for {path}. Synthesizing realistic decoy page.")
-                body = self._synthesize_realistic_decoy_body(path, query, label, parsed_res)
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(body)
+        # Write primary response body for the requested route
+        rel_path = path.strip("/")
+        if not rel_path:
+            rel_path = "index.html"
+        else:
+            # If the response is HTML and not ending in .html, append .html
+            headers = parsed_res.get("headers", {})
+            content_type = headers.get("Content-Type", headers.get("content-type", "text/html"))
+            if "html" in content_type or str(parsed_res.get("body", "")).strip().startswith("<"):
+                if not rel_path.endswith(".html"):
+                    rel_path += ".html"
+                    
+        try:
+            file_path = sanitize_and_validate_decoy_path(html_dir, rel_path)
+        except Exception as e:
+            logger.warning(f"Path sanitization triggered for {rel_path}: {e}. Falling back to index.html")
+            file_path = os.path.join(html_dir, "index.html")
+            
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        body = parsed_res.get("body", "")
+        if isinstance(body, dict):
+            body = json.dumps(body)
+            
+        # Guard against empty, blank, or broken HTML generated by smaller LLMs
+        if self._is_empty_or_broken_html(body):
+            logger.info(f"LLM produced empty or broken body for {path}. Synthesizing realistic decoy page.")
+            body = self._synthesize_realistic_decoy_body(path, query, label, parsed_res)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(body)
 
         # 10. Update metadata.json in base directory (parent of html_dir)
         base_dir = os.path.dirname(html_dir)
@@ -767,6 +772,13 @@ class HoneypotGenerator:
                 app_structure=self.app_structure,
                 client_ip=client_ip,
             )
+            if orch_result.status_code == 504:
+                return Response(
+                    content='{"error": "gateway_timeout", "detail": "LLM generation timed out. Request dropped."}',
+                    status_code=504,
+                    headers={"Content-Type": "application/json"}
+                )
+
             parsed_res = {
                 "status_code": orch_result.status_code,
                 "headers": orch_result.headers,
@@ -778,13 +790,12 @@ class HoneypotGenerator:
                 self.state_manager.update_state(session_id, orch_result.session_updates)
             self.cache.set(session_id, method, path, query, body_str, is_dynamic, parsed_res)
         except Exception as e:
-            logger.error(f"Error during DeceptionOrchestrator generation: {e}. Falling back to static decoy.")
-            parsed_res = {
-                "status_code": 200,
-                "headers": {"Content-Type": "text/html"},
-                "body": "<html><body><div style='background-color:#1e293b; color:#cbd5e1; font-family:sans-serif; padding:40px; border-radius:8px;'><h1>Access Blocked</h1><p>Your request lacks required authorization parameters. Security audit initiated.</p></div></body></html>",
-                "session_updates": {}
-            }
+            logger.warning(f"LLM decoy generation error: {e}. Dropping request without IP ban.")
+            return Response(
+                content='{"error": "gateway_timeout", "detail": "Decoy generation error. Request dropped."}',
+                status_code=504,
+                headers={"Content-Type": "application/json"}
+            )
 
         # Construct FastAPI Response
         resp_headers = parsed_res.get("headers", {})
