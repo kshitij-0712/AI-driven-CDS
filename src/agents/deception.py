@@ -647,28 +647,95 @@ filesystem = /cowrie/cowrie-git/src/cowrie/data/fs.pickle
                 host_cowrie_cfg: {"bind": "/cowrie/cowrie-git/etc/cowrie.cfg", "mode": "ro"},
                 host_downloads_dir: {"bind": "/cowrie/cowrie-git/var/lib/cowrie/downloads", "mode": "rw"},
             }
-            if os.path.exists(local_proto_patch):
-                cowrie_volumes[host_proto_patch] = {"bind": "/cowrie/cowrie-git/src/cowrie/shell/protocol.py", "mode": "ro"}
-            if os.path.exists(local_fs_patch):
-                cowrie_volumes[host_fs_patch] = {"bind": "/cowrie/cowrie-git/src/cowrie/shell/fs.py", "mode": "ro"}
+            patches_available = os.path.exists(local_proto_patch) and os.path.exists(local_fs_patch)
 
-            container = self._docker.containers.run(
-                self.ssh_image,
-                detach=True,
-                ports={"2222/tcp": None},
-                volumes=cowrie_volumes,
-                environment={
-                    "COWRIE_HONEYPOT_HOSTNAME": "corp-bastion-01",
-                    "COWRIE_HONEYPOT_CONTENTS_PATH": "/cowrie/cowrie-git/honeyfs",
-                    "COWRIE_HONEYPOT_TXTCMDS_PATH": "/cowrie/cowrie-git/txtcmds",
-                },
-                labels={
-                    "adaptiveshield.decoy": "true",
-                    "adaptiveshield.decoy_type": "ssh",
-                    "adaptiveshield.scope": self.scope,
-                    "adaptiveshield.session_id": session_id,
-                },
-            )
+            # Clean out dead SSH decoys piling up from previous spawn attempts
+            try:
+                for stale in self._docker.containers.list(
+                    all=True, filters={"label": "adaptiveshield.decoy_type=ssh"}
+                ):
+                    if stale.attrs.get("State", {}).get("Status", "") == "exited":
+                        stale.remove(force=True)
+            except Exception:
+                pass
+
+            # Merge the image's built-in env vars — passing 'environment' to the
+            # Docker SDK REPLACES the image env entirely. Wiping cowrie's env
+            # broke twistd plugin discovery: "twistd -n: Unknown command: cowrie".
+            base_env = {}
+            try:
+                base_env = {
+                    kv.split("=", 1)[0]: kv.split("=", 1)[1]
+                    for kv in self._docker.images.get(self.ssh_image).attrs["Config"]["Env"]
+                    if "=" in kv
+                }
+            except Exception:
+                pass
+
+            spawn_env = {
+                **base_env,
+                "COWRIE_HONEYPOT_HOSTNAME": "corp-bastion-01",
+                "COWRIE_HONEYPOT_CONTENTS_PATH": "/cowrie/cowrie-git/honeyfs",
+                "COWRIE_HONEYPOT_TXTCMDS_PATH": "/cowrie/cowrie-git/txtcmds",
+            }
+
+            def _cowrie_volumes(with_patches):
+                vols = dict(cowrie_volumes)
+                if with_patches:
+                    if os.path.exists(local_proto_patch):
+                        vols[host_proto_patch] = {"bind": "/cowrie/cowrie-git/src/cowrie/shell/protocol.py", "mode": "ro"}
+                    if os.path.exists(local_fs_patch):
+                        vols[host_fs_patch] = {"bind": "/cowrie/cowrie-git/src/cowrie/shell/fs.py", "mode": "ro"}
+                return vols
+
+            def _run_cowrie(with_patches):
+                return self._docker.containers.run(
+                    self.ssh_image,
+                    detach=True,
+                    ports={"2222/tcp": None},
+                    volumes=_cowrie_volumes(with_patches),
+                    environment=spawn_env,
+                    labels={
+                        "adaptiveshield.decoy": "true",
+                        "adaptiveshield.decoy_type": "ssh",
+                        "adaptiveshield.scope": self.scope,
+                        "adaptiveshield.session_id": session_id,
+                    },
+                )
+
+            def _cowrie_alive(c, wait_sec):
+                """True if the container keeps Running — cowrie exits within ~1s
+                when its twistd plugin cannot import (config/patch incompatibility)."""
+                for _ in range(max(1, int(wait_sec * 2))):
+                    time.sleep(0.5)
+                    try:
+                        c.reload()
+                    except Exception:
+                        return False
+                    state = c.attrs.get("State", {})
+                    if state.get("Status", "") == "exited" or state.get("Running") is False:
+                        return False
+                return True
+
+            container = _run_cowrie(patches_available)
+            if not _cowrie_alive(container, 3.0):
+                # Cowrie's twistd plugin fails to import when the runtime patches
+                # target an older source tree than the image ships (e.g.
+                # 'cannot import name honeyfs from cowrie.shell'). Self-heal:
+                # respawn a vanilla honeypot (custom hostname cfg + downloads
+                # volume remain active) so the SSH decoy layer never dies out.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Cowrie SSH decoy exited right after spawn (runtime patches "
+                    "incompatible with this cowrie image); respawning vanilla decoy"
+                )
+                try:
+                    container.remove(force=True)
+                except Exception:
+                    pass
+                container = _run_cowrie(False)
+                _cowrie_alive(container, 3.0)
+
             container.reload()
 
             port_bindings = container.attrs.get("NetworkSettings", {}).get("Ports", {})
