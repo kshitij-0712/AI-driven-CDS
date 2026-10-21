@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt requirements.txt
 COPY requirements.docker.txt requirements.docker.txt
-RUN pip install --no-cache-dir -r requirements.docker.txt
+COPY docker/wheels /app/wheels
+RUN pip install --no-cache-dir --find-links=/app/wheels -r requirements.docker.txt
 
 COPY src ./src
 COPY config ./config
