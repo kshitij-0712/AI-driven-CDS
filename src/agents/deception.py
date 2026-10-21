@@ -401,13 +401,19 @@ class DecoyManager:
             if os.path.exists(struct_file):
                 with open(struct_file, "r", encoding="utf-8") as f:
                     struct_data = json.load(f)
-            elif os.path.exists("./runtime/app_structure.json"):
+            elif os.path.exists("./runtime/app_structure.json") and self.scope != "external":
                 with open("./runtime/app_structure.json", "r", encoding="utf-8") as f:
                     struct_data = json.load(f)
 
             pages = struct_data.get("pages", {}) if struct_data else {}
             paths_to_write = set(pages.keys())
             paths_to_write.add("/")
+
+            # Dual-perimeter static default baseline endpoints when crawling has not occurred
+            if self.scope == "external":
+                paths_to_write.update(["/login", "/docs"])
+            else:
+                paths_to_write.add("/workspace")
 
             import httpx
             for p in paths_to_write:

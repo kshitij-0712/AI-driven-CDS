@@ -51,14 +51,19 @@ class HoneypotGenerator:
         if self.app_structure is not None:
             return
             
-        search_paths = [self.structure_path, "./runtime/app_structure.json"]
+        search_paths = [self.structure_path]
+        if self.is_internal:
+            search_paths.append("./runtime/app_structure.json")
+
         for p in search_paths:
             if os.path.exists(p):
                 try:
                     with open(p, "r", encoding="utf-8") as f:
-                        self.app_structure = json.load(f)
-                    logger.info(f"Loaded existing app structure from {p}")
-                    return
+                        loaded = json.load(f)
+                        if loaded and loaded.get("pages"):
+                            self.app_structure = loaded
+                            logger.info(f"Loaded existing app structure from {p}")
+                            return
                 except Exception as e:
                     logger.error(f"Failed to load app structure from {p}: {e}")
 
@@ -69,17 +74,33 @@ class HoneypotGenerator:
             await crawler.crawl()
             try:
                 with open(self.structure_path, "r", encoding="utf-8") as f:
-                    self.app_structure = json.load(f)
-                return
+                    loaded = json.load(f)
+                    if loaded and loaded.get("pages"):
+                        self.app_structure = loaded
+                        return
             except Exception as e:
                 logger.error(f"Failed to load crawled app structure: {e}")
 
-        # Fallback empty structure
+        # Fallback default structure matching scope
+        default_pages = {
+            "/": {"title": "Nexus Cloud - Public Portal", "links": ["/login", "/docs"], "forms": []},
+            "/login": {"title": "Nexus Cloud - Sign In", "links": ["/"], "forms": [{"action": "/login", "method": "POST"}]},
+            "/docs": {"title": "Nexus Cloud - Documentation", "links": ["/"], "forms": []}
+        } if not self.is_internal else {
+            "/": {"title": "Nexus Cloud - Enterprise Intranet", "links": ["/workspace"], "forms": []},
+            "/workspace": {"title": "Nexus Cloud - Employee Workspace", "links": ["/workspace"], "forms": []}
+        }
         self.app_structure = {
             "target_url": self.target_url,
             "theme": "",
-            "pages": {}
+            "pages": default_pages
         }
+        try:
+            os.makedirs(os.path.dirname(self.structure_path), exist_ok=True)
+            with open(self.structure_path, "w", encoding="utf-8") as f:
+                json.dump(self.app_structure, f, indent=2)
+        except Exception:
+            pass
 
     def _generate_baseline_page(self, path: str) -> str:
         if not self.app_structure:

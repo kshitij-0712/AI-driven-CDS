@@ -564,13 +564,73 @@ def create_http_guard_app(config: Dict, is_internal: bool = False, decoys: Optio
         # Always fetch command history and classify the current request
         command_history = store.get_command_history(session_id)
         neural_model = getattr(request.app.state, "neural_model", None)
-        decision = classify_http_request(
-            classifier,
-            context,
-            command_history=command_history,
-            neural_model=neural_model,
-            triage_features=triage_features
-        )
+
+        # --- LOCAL SERVICE-DISCOVERY SAFELIST (loopback socket only) ---
+        # Development agents (e.g. opencode) sweep for local OpenAI-compatible
+        # servers (GET /v1/models) every ~30s. The gateway owns :8000, so these
+        # probes previously fell into the neural OOD void -> Exploit + honeypot
+        # trap. Allowed ONLY when: real loopback peer, GET, exact probe path,
+        # no query/body, external perimeter. Everything else classifies normally.
+        _peer = request.client.host if request.client else ""
+        if (
+            not is_internal
+            and _peer == "127.0.0.1"
+            and request.method.upper() == "GET"
+            and request.url.path in ("/v1/models", "/v1/models/")
+            and not request.url.query
+            and not raw_body
+        ):
+            decision = {
+                "class_id": 0,
+                "label": "Safe",
+                "rule": "Local service discovery probe (loopback agent safelist)",
+                "neural_confidence": 1.0,
+                "suspicious": False,
+                "severity_max": 0,
+                "mitre_tactics": [],
+                "action": "forward",
+                "risk_score": 0.0,
+            }
+            # GlassShield narration so the Safe event stays fully explained
+            from interfaces.xai_contract import ClassificationEvent, RoutingDecision
+            probe_expl = xai_detector.generate_explanation(
+                ClassificationEvent(
+                    session_id=session_id,
+                    timestamp=datetime.now().isoformat() + "Z",
+                    src_ip=src_ip,
+                    commands=[],
+                    classification="Safe",
+                    confidence=1.0,
+                    mitre_techniques=[],
+                    features_used={"insider_threat": False, "is_internal": False,
+                                   "headers": dict(request.headers)},
+                ),
+                RoutingDecision(
+                    session_id=session_id,
+                    action="forward",
+                    target=f"http://{real_host}:{real_port}",
+                    reason=decision["rule"],
+                ),
+            )
+            decision["xai_summary"] = probe_expl.summary
+            decision["xai_detailed"] = probe_expl.detailed
+            decision["xai_risk_score"] = probe_expl.risk_score
+            decision["xai_recommendations"] = probe_expl.recommended_actions
+            decision["xai_feature_attributions"] = probe_expl.feature_attributions
+            decision["xai_token_attributions"] = probe_expl.token_attributions
+            decision["xai_counterfactual"] = probe_expl.counterfactual_recourse
+            decision["xai_telemetry_audit"] = probe_expl.telemetry_audit
+            decision["xai_deception"] = probe_expl.deception_rationale
+            # Release a previously trapped loopback session from the sticky decoy
+            store.update_context(session_id, {"redirected_to_decoy": False})
+        else:
+            decision = classify_http_request(
+                classifier,
+                context,
+                command_history=command_history,
+                neural_model=neural_model,
+                triage_features=triage_features
+            )
         
         # Update command history with meaningful commands / payloads
         extracted_cmd = decision.get("extracted_command", "")

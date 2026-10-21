@@ -255,6 +255,7 @@ class TestTelemetryAuditor:
 
 
 class TestAdaptiveXAINarrator:
+    @classmethod
     @pytest.fixture(scope="class")
     def narrator(cls):
         return AdaptiveXAINarrator(str(INSIDER_MODEL_PATH) if INSIDER_MODEL_PATH.exists() else "./models/internal_insider_model.pkl")
